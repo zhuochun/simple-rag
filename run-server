@@ -1,0 +1,70 @@
+#!/usr/bin/env ruby
+# encoding: utf-8
+
+# Query and answer questions based on an index file
+#
+# Usage: run-server config.json
+#
+# Requires OpenAI API Key stored in DOT_OPENAI_KEY
+
+require "json"
+require "ostruct"
+
+require_relative "server/retriever"
+
+if ARGV.length != 1
+    STDOUT << "Invalid arguments received, need a config file\n"
+    exit 1
+end
+
+config = JSON.parse(File.read(ARGV[0]))
+CONFIG = OpenStruct.new(config)
+CONFIG.paths = CONFIG.paths.map { |p| OpenStruct.new(p) }
+CONFIG.path_map = {}
+CONFIG.paths.each { |p| CONFIG.path_map[p.name] = p }
+
+OPENAI_KEY = ENV["DOT_OPENAI_KEY"] || ""
+if OPENAI_KEY.empty?
+    STDOUT << "Remember to set env DOT_OPENAI_KEY\n"
+    exit 9
+end
+
+require 'sinatra' # gem install sinatra
+
+# list all the paths that can be searched
+get '/paths' do
+    content_type :json
+
+    resp = []
+    CONFIG.paths.each do |p|
+        resp << { "name": p.name }
+    end
+    resp.to_json
+end
+
+# query within the paths
+post '/q' do
+    content_type :json
+
+    data = JSON.parse(request.body.read)
+
+    lookup_paths = (data["paths"] || CONFIG.paths_map.keys).map do |name|
+        CONFIG.path_map[name]
+    end
+
+    topN = (data["topN"] || 20).to_i
+
+    entries = retrieve_by_embedding(lookup_paths, data["q"])
+    entries = entries.sort_by { |item| -item["score"] }.take(topN)
+
+    resp = []
+    entries.each do |item|
+        resp << {
+            path: item["path"],
+            text: item["reader"].load.get_chunk(item["chunk"]),
+            score: item["score"],
+        }
+    end
+
+    resp.to_json
+end

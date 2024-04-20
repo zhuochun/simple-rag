@@ -1,0 +1,21 @@
+{
+    "chat": {
+        "provider": "openai",
+        "url": "",
+        "model": "gpt-3.5-turbo-16k"
+    },
+    "embedding": {
+        "provider": "openai",
+        "url": "",
+        "model": "text-embedding-3-small"
+    },
+    "paths": [
+        {
+            "name": "temp",
+            "reader": "text",
+            "threshold": 0.3,
+            "dir": "D:\\Studies\\tmp\\learning",
+            "out": "D:\\Studies\\tmp\\learning-gpt1.dt"
+        }
+    ]
+}
