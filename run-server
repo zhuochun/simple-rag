@@ -9,6 +9,7 @@
 
 require "json"
 require "ostruct"
+require "sinatra"
 
 require_relative "server/retriever"
 
@@ -28,8 +29,6 @@ if OPENAI_KEY.empty?
     STDOUT << "Remember to set env DOT_OPENAI_KEY\n"
     exit 9
 end
-
-require 'sinatra' # gem install sinatra
 
 # list all the paths that can be searched
 get '/paths' do

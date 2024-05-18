@@ -22,7 +22,7 @@ end
 
 config = JSON.parse(File.read(ARGV[0]))
 CONFIG = OpenStruct.new(config)
-CONFIG.paths = CONFIG.paths.map { |p| OpenStruct.new(path) }
+CONFIG.paths = CONFIG.paths.map { |p| OpenStruct.new(p) }
 
 OPENAI_KEY = ENV["DOT_OPENAI_KEY"] || ""
 if OPENAI_KEY.empty?
