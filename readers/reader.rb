@@ -3,6 +3,9 @@ def get_reader(name)
     when "text"
         require_relative "text"
         return TextReader
+    when "note"
+        require_relative "note"
+        return NoteReader
     else
         return nil
     end

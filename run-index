@@ -9,7 +9,7 @@
 
 require "json"
 require "ostruct"
-require 'digest'
+require "digest"
 
 require_relative "llm/openai"
 require_relative "llm/embedding"
@@ -45,7 +45,8 @@ CONFIG.paths.each do |path|
     STDOUT << "Found index: #{index_db.length}\n"
 
     # Scan directory
-    dir_blob = File.join(File.expand_path(path.dir), '**', '*.{md,markdown}')
+    name_match = path.nameMatch || "*.{md,markdown}"
+    dir_blob = File.join(File.expand_path(path.dir), "**", name_match)
     files = Dir[dir_blob]
     STDOUT << "Scan dir: #{dir_blob}, Found: #{files.length}\n"
 
@@ -59,7 +60,7 @@ CONFIG.paths.each do |path|
     # Build index
     STDOUT << "Building index @#{Time.now}\n["
     skipped = 0
-    File.open(index_file, 'w') do |index_newdb|
+    File.open(index_file, "w") do |index_newdb|
         files.each_with_index do |file, file_idx|
             chunks = Reader.new(file).load.chunks
 
