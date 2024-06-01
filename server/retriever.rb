@@ -1,10 +1,12 @@
+require_relative "cache"
+
 require_relative "../llm/openai"
 require_relative "../llm/embedding"
 
 require_relative "../readers/reader"
 
 def retrieve_by_embedding(lookup_paths, q)
-    qe = embedding(q)
+    qe = CACHE.get_or_set(q, method(:embedding).to_proc)
 
     entries = []
     lookup_paths.each do |p|
