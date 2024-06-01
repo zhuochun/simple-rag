@@ -51,6 +51,7 @@
         display: block;
     }
 </style>
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 </head>
 <body>
 <div class="container">
@@ -122,13 +123,9 @@ function performSearch() {
             score.textContent = `Score: ${item.score}`;
             score.className = 'small-text';
 
-            const textLines = item.text.split('\n');
+            const textHTML = marked.parse(item.text);
             const textContainer = document.createElement('div');
-            textLines.forEach(line => {
-                const paragraph = document.createElement('p');
-                paragraph.textContent = line;
-                textContainer.appendChild(paragraph);
-            });
+            textContainer.innerHTML = textHTML;
 
             const path = document.createElement('a');
             path.textContent = `Path: ${item.path}`;
