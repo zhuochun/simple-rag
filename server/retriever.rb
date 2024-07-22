@@ -35,7 +35,7 @@ def retrieve_by_embedding(lookup_paths, q)
             item["score"] = score
             item["lookup"] = p.name
             item["id"] = extract_id(item["path"])
-            item["url"] = extract_url(item["path"])
+            item["url"] = extract_url(item["path"], p.url)
             item["reader"] = reader.new(item["path"])
 
             entries << item
@@ -48,14 +48,18 @@ def retrieve_by_embedding(lookup_paths, q)
 end
 
 def extract_id(file_path)
-  path = Pathname.new(file_path)
-  File.join(path.each_filename.to_a[-2..-1])
+    path = Pathname.new(file_path)
+    File.join(path.each_filename.to_a[-2..-1])
 end
 
-def extract_url(file_path)
-  path = Pathname.new(file_path)
-  # Extract the filename without the extension
-  filename_without_extension = path.basename(path.extname).to_s
-  # Return the final URL
-  "https://www.notion.so/bicrement/#{filename_without_extension}"
+def extract_url(file_path, url)
+    if url
+        path = Pathname.new(file_path)
+        # Extract the filename without the extension
+        filename_without_extension = path.basename(path.extname).to_s
+        # Return the final URL
+        "#{url}#{filename_without_extension}"
+    else
+        "file://#{file_path}"
+    end
 end
