@@ -60,6 +60,9 @@ post '/q' do
     entries.each do |item|
         resp << {
             path: item["path"],
+            lookup: item["lookup"],
+            id: item["id"],
+            url: item["url"],
             text: item["reader"].load.get_chunk(item["chunk"]),
             score: item["score"],
         }

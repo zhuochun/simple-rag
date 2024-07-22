@@ -1,144 +1,186 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="UTF-8">
-<title>Search Interface</title>
-<style>
-    body, html {
-        height: 100%;
-        margin: 0;
-        font-family: Arial, sans-serif;
-    }
-    .container {
-        display: flex;
-        height: 100%;
-    }
-    .sidebar {
-        flex: 1;
-        background: #f0f0f0;
-        padding: 10px;
-        overflow-y: auto;
-    }
-    .main-content {
-        flex: 5;
-        padding: 10px;
-    }
-    .search-box {
-        width: 80%;
-        padding: 10px;
-        margin-bottom: 10px;
-    }
-    .question button {
-        padding: 10px;
-    }
-    .response {
-        width: 80%;
-        padding: 10px;
-        background: #f9f9f9;
-        border: 1px solid #ddd;
-        height: calc(100% - 70px);
-        overflow-y: auto;
-    }
-    .response > div {
-        margin: 5px 0;
-        padding: 10px;
-        background: #ffffff;
-        border: 1px solid #ccc;
-    }
-    .response .small-text {
-        font-size: small;
-        color: grey;
-        display: block;
-    }
-</style>
-<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Search Page</title>
+    <style>
+        body {
+            display: flex;
+            margin: 0;
+            padding: 0;
+            font-family: Arial, sans-serif;
+        }
+        #main-content {
+            flex-grow: 1;
+            padding: 20px;
+        }
+        #paths-container {
+            margin-bottom: 20px;
+        }
+        #paths-list {
+            list-style-type: none;
+            padding: 0;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+        }
+        #paths-list li {
+            display: flex;
+            align-items: center;
+        }
+        #paths-list label {
+            margin-left: 5px;
+        }
+        #search-container {
+            display: flex;
+            margin-bottom: 20px;
+        }
+        #search-input {
+            flex-grow: 1;
+            height: 60px;
+            font-size: 16px;
+            padding: 0 10px;
+        }
+        #search-button {
+            width: 100px;
+            height: 66px;
+            font-size: 16px;
+            margin-left: 10px;
+        }
+        #response-container {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+        }
+        .response-item {
+            border: 1px solid #ccc;
+            padding: 10px;
+            border-radius: 5px;
+            width: calc(50% - 5px);
+            box-sizing: border-box;
+        }
+    </style>
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 </head>
 <body>
-<div class="container">
-    <div class="sidebar">
-        <!-- Checkboxes will be injected here -->
-    </div>
-    <div class="main-content">
-        <div class="question">
-            <input type="text" class="search-box" id="search-input" placeholder="Enter search text">
-            <button onclick="performSearch()">Search</button>
+    <div id="main-content">
+        <div id="search-container">
+            <input type="text" id="search-input" placeholder="Enter your search query">
+            <button id="search-button">Search</button>
         </div>
-
-        <div class="response" id="response"></div>
+        <div id="paths-container">
+            <ul id="paths-list"></ul>
+        </div>
+        <div id="response-container"></div>
     </div>
-</div>
 
-<script>
-document.addEventListener('DOMContentLoaded', function() {
-    fetch('http://localhost:4567/paths')
-    .then(response => response.json())
-    .then(data => {
-        const sidebar = document.querySelector('.sidebar');
-        data.forEach(item => {
-            const label = document.createElement('label');
-            const checkbox = document.createElement('input');
-            checkbox.type = 'checkbox';
-            checkbox.checked = true;
-            checkbox.value = item.name;
-            label.appendChild(checkbox);
-            label.appendChild(document.createTextNode(item.name));
-            sidebar.appendChild(label);
-            sidebar.appendChild(document.createElement('br'));
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            const pathsList = document.getElementById('paths-list');
+            const searchInput = document.getElementById('search-input');
+            const searchButton = document.getElementById('search-button');
+            const responseContainer = document.getElementById('response-container');
+
+            // Fetch paths and render sidebar
+            fetch('http://localhost:4567/paths')
+                .then(response => response.json())
+                .then(data => {
+                    data.forEach(item => {
+                        const li = document.createElement('li');
+
+                        const checkbox = document.createElement('input');
+                        checkbox.type = 'checkbox';
+                        checkbox.id = item.name;
+                        checkbox.name = item.name;
+                        checkbox.checked = true;
+
+                        const label = document.createElement('label');
+                        label.htmlFor = item.name;
+                        label.appendChild(document.createTextNode(item.name));
+
+                        li.appendChild(checkbox);
+                        li.appendChild(label);
+                        pathsList.appendChild(li);
+                    });
+                })
+                .catch(error => console.error('Error fetching paths:', error));
+
+            // Search function
+            function performSearch() {
+                const query = searchInput.value;
+                const checkedPaths = Array.from(pathsList.querySelectorAll('input[type="checkbox"]:checked'))
+                    .map(checkbox => checkbox.name);
+
+                fetch('http://localhost:4567/q', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        q: query,
+                        paths: checkedPaths
+                    })
+                })
+                .then(response => response.json())
+                .then(data => {
+                    responseContainer.innerHTML = '';
+                    data.forEach(item => {
+                        const div = document.createElement('div');
+                        div.className = 'response-item';
+                        div.style.backgroundColor = textToLightColor(item.lookup);
+                        div.innerHTML = `
+                            <div><strong>Path:</strong> <a href="${item.url}">${item.id}</a></div>
+                            <div><strong>Score:</strong> ${item.score}</div>
+                            <div class="markdown-content">${marked.parse(item.text)}</div>
+                        `;
+                        responseContainer.appendChild(div);
+                    });
+                })
+                .catch(error => console.error('Error performing search:', error));
+            }
+
+            function textToLightColor(text) {
+                // Generate a hash from the text
+                let hash = 0;
+                for (let i = 0; i < text.length; i++) {
+                    hash = text.charCodeAt(i) + ((hash << 5) - hash);
+                }
+
+                // Use the hash to generate RGB values
+                let r = (hash & 0xFF) % 64 + 192; // 192-255
+                let g = ((hash >> 8) & 0xFF) % 64 + 192; // 192-255
+                let b = ((hash >> 16) & 0xFF) % 64 + 192; // 192-255
+
+                // Convert to hex and return
+                return `#${r.toString(16).padStart(2, '0')}${g.toString(16).padStart(2, '0')}${b.toString(16).padStart(2, '0')}`;
+            }
+
+            // Event listeners
+            searchButton.addEventListener('click', performSearch);
+            searchInput.addEventListener('keypress', function(e) {
+                if (e.key === 'Enter') {
+                    performSearch();
+                }
+            });
+
+            // Event listeners on the response container on double clicks
+            responseContainer.addEventListener('dblclick', function (event) {
+                let target = event.target;
+                while (target !== this && !target.classList.contains('response-item')) {
+                    target = target.parentNode;
+                }
+                if (target.classList.contains('response-item')) {
+                    const markdownContent = target.querySelector('.markdown-content');
+                    const firstHeader = markdownContent.querySelector('h1');
+                    if (firstHeader) {
+                        searchInput.value = firstHeader.textContent.trim();
+                        performSearch();
+                    }
+                }
+            });
+
         });
-    });
-
-    const searchInput = document.getElementById('search-input');
-    searchInput.addEventListener('keypress', function(event) {
-        if (event.key === 'Enter') {
-            performSearch();
-        }
-    });
-});
-
-function performSearch() {
-    const inputBox = document.getElementById('search-input');
-    const checkboxes = document.querySelectorAll('.sidebar input[type="checkbox"]:checked');
-    const paths = Array.from(checkboxes).map(cb => cb.value);
-
-    const payload = {
-        q: inputBox.value,
-        paths: paths
-    };
-
-    fetch('http://localhost:4567/q', {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json'
-        },
-        body: JSON.stringify(payload)
-    })
-    .then(response => response.json())
-    .then(data => {
-        const responseDiv = document.getElementById('response');
-        responseDiv.innerHTML = '';
-        data.forEach(item => {
-            const div = document.createElement('div');
-
-            const score = document.createElement('div');
-            score.textContent = `Score: ${item.score}`;
-            score.className = 'small-text';
-
-            const textHTML = marked.parse(item.text);
-            const textContainer = document.createElement('div');
-            textContainer.innerHTML = textHTML;
-
-            const path = document.createElement('a');
-            path.textContent = `Path: ${item.path}`;
-            path.href = item.path;
-            path.className = 'small-text';
-
-            div.appendChild(score);
-            div.appendChild(textContainer);
-            div.appendChild(path);
-            responseDiv.appendChild(div);
-        });
-    });
-}
-</script>
+    </script>
 </body>
 </html>
