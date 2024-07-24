@@ -88,6 +88,7 @@
                 .then(data => {
                     data.forEach(item => {
                         const li = document.createElement('li');
+                        li.style.backgroundColor = textToLightColor(item.name);
 
                         const checkbox = document.createElement('input');
                         checkbox.type = 'checkbox';
@@ -161,22 +162,6 @@
             searchInput.addEventListener('keypress', function(e) {
                 if (e.key === 'Enter') {
                     performSearch();
-                }
-            });
-
-            // Event listeners on the response container on double clicks
-            responseContainer.addEventListener('dblclick', function (event) {
-                let target = event.target;
-                while (target !== this && !target.classList.contains('response-item')) {
-                    target = target.parentNode;
-                }
-                if (target.classList.contains('response-item')) {
-                    const markdownContent = target.querySelector('.markdown-content');
-                    const firstHeader = markdownContent.querySelector('h1');
-                    if (firstHeader) {
-                        searchInput.value = firstHeader.textContent.trim();
-                        performSearch();
-                    }
                 }
             });
 
