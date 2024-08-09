@@ -12,6 +12,7 @@ require "ostruct"
 require "sinatra"
 
 require_relative "server/retriever"
+require_relative "server/memory"
 
 if ARGV.length != 1
     STDOUT << "Invalid arguments received, need a config file\n"
@@ -56,9 +57,13 @@ post '/q' do
     entries = retrieve_by_embedding(lookup_paths, data["q"])
     entries = entries.sort_by { |item| -item["score"] }.take(topN)
 
-    resp = []
+    resp = {
+        data: [],
+        eval: nil,
+    }
+
     entries.each do |item|
-        resp << {
+        resp[:data] << {
             path: item["path"],
             lookup: item["lookup"],
             id: item["id"],
@@ -66,6 +71,10 @@ post '/q' do
             text: item["reader"].load.get_chunk(item["chunk"]),
             score: item["score"],
         }
+    end
+
+    if data["experiment"]
+        resp[:eval] = update_memory(data["q"], resp[:data])
     end
 
     resp.to_json

@@ -70,6 +70,7 @@
             <button id="search-button">Search</button>
         </div>
         <div id="paths-container">
+            <label><input type="checkbox" id="config-experiment-checkbox"> Experiment</label>
             <ul id="paths-list"></ul>
         </div>
         <div id="response-container"></div>
@@ -80,6 +81,7 @@
             const pathsList = document.getElementById('paths-list');
             const searchInput = document.getElementById('search-input');
             const searchButton = document.getElementById('search-button');
+            const configExperimentCheckbox = document.getElementById('config-experiment-checkbox');
             const responseContainer = document.getElementById('response-container');
 
             // Fetch paths and render sidebar
@@ -110,6 +112,7 @@
             // Search function
             function performSearch() {
                 const query = searchInput.value;
+                const configExperiment = configExperimentCheckbox.checked
                 const checkedPaths = Array.from(pathsList.querySelectorAll('input[type="checkbox"]:checked'))
                     .map(checkbox => checkbox.name);
 
@@ -120,13 +123,25 @@
                     },
                     body: JSON.stringify({
                         q: query,
-                        paths: checkedPaths
+                        paths: checkedPaths,
+                        experiment: configExperiment,
                     })
                 })
                 .then(response => response.json())
-                .then(data => {
+                .then(resp => {
                     responseContainer.innerHTML = '';
-                    data.forEach(item => {
+
+                    if (!!resp.eval) {
+                        const div = document.createElement('div');
+                        div.className = 'response-item';
+                        div.style.backgroundColor = textToLightColor("experiment");
+                        div.innerHTML = `
+                            <div class="markdown-content">${resp.eval}</div>
+                        `;
+                        responseContainer.appendChild(div);
+                    }
+
+                    resp.data.forEach(item => {
                         const div = document.createElement('div');
                         div.className = 'response-item';
                         div.style.backgroundColor = textToLightColor(item.lookup);

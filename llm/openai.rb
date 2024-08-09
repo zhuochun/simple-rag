@@ -7,7 +7,7 @@ NEXT_ROLE = ->(role) { role != ROLE_USER ? ROLE_USER : ROLE_ASSISTANT }
 
 def chat(messages, opts = {})
   data = {
-    "model" => "gpt-3.5-turbo-16k",
+    "model" => "gpt-4o-mini",
     "messages" => messages
   }.merge(opts)
 
