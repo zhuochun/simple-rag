@@ -9,10 +9,11 @@ Guidelines:
 - If the new knowledge is a variation or extension of an existing knowledge, update the existing knowledge to reflect the new information.
 - You are also provided with the matching score (0 to 1) for each existing knowledge to the new knowledge. Make sure to leverage this information to make informed decisions.
 
-Output format:
-- Operation: Merge or Add
-- Reasoning: Explain your decision
-- Final list: Only if you decided to merge the knowledge
+Output in markdown:
+
+Operation: Merge or Add
+Reasoning: Explain your decision
+Updated knowledge: Provide the knowledge item if you decided to merge
 """
 
 def update_memory(q, existing)

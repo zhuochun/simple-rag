@@ -136,7 +136,7 @@
                         div.className = 'response-item';
                         div.style.backgroundColor = textToLightColor("experiment");
                         div.innerHTML = `
-                            <div class="markdown-content">${resp.eval}</div>
+                            <div class="markdown-content">${marked.parse(resp.eval)}</div>
                         `;
                         responseContainer.appendChild(div);
                     }
