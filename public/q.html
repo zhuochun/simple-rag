@@ -54,6 +54,12 @@
             font-size: 16px;
             margin-left: 10px;
         }
+        #synthesize-button {
+            width: 120px;
+            height: 66px;
+            font-size: 16px;
+            margin-left: 10px;
+        }
         #response-container {
             display: flex;
             flex-wrap: wrap;
@@ -75,9 +81,9 @@
             <input type="text" id="search-input" placeholder="Enter your search query">
             <button id="search-button">Search</button>
             <button id="search-plus-button">Search+</button>
+            <button id="synthesize-button">Synthesize</button>
         </div>
         <div id="paths-container">
-            <label><input type="checkbox" id="config-experiment-checkbox"> Experiment</label>
             <ul id="paths-list"></ul>
         </div>
         <div id="response-container"></div>
@@ -89,8 +95,9 @@
             const searchInput = document.getElementById('search-input');
             const searchButton = document.getElementById('search-button');
             const searchPlusButton = document.getElementById('search-plus-button');
-            const configExperimentCheckbox = document.getElementById('config-experiment-checkbox');
+            const synthesizeButton = document.getElementById('synthesize-button');
             const responseContainer = document.getElementById('response-container');
+            let retrievedNotes = [];
 
             // Fetch paths and render sidebar
             fetch('http://localhost:4567/paths')
@@ -120,7 +127,6 @@
             // Search function
             function performSearch() {
                 const query = searchInput.value;
-                const configExperiment = configExperimentCheckbox.checked
                 const checkedPaths = Array.from(pathsList.querySelectorAll('input[type="checkbox"]:checked'))
                     .map(checkbox => checkbox.name);
 
@@ -132,20 +138,54 @@
                     body: JSON.stringify({
                         q: query,
                         paths: checkedPaths,
-                        experiment: configExperiment,
                     })
                 })
                 .then(response => response.json())
                 .then(resp => {
                     responseContainer.innerHTML = '';
+                    retrievedNotes = [];
 
-                    if (!!resp.eval) {
+                    resp.data.forEach(item => {
                         const div = document.createElement('div');
                         div.className = 'response-item';
-                        div.style.backgroundColor = textToLightColor("experiment");
+                        div.style.backgroundColor = textToLightColor(item.lookup);
                         div.innerHTML = `
-                            <div class="markdown-content">${marked.parse(resp.eval)}</div>
+                            <div><strong>Path:</strong> <a href="${item.url}">${item.id}</a></div>
+                            <div><strong>Score:</strong> ${item.score}</div>
+                            <div class="markdown-content">${marked.parse(item.text)}</div>
                         `;
+                        responseContainer.appendChild(div);
+                        retrievedNotes.push(item.text);
+                    });
+                })
+                .catch(error => console.error('Error performing search:', error));
+            }
+
+            function performAgentSearch() {
+                const query = searchInput.value;
+                const checkedPaths = Array.from(pathsList.querySelectorAll('input[type="checkbox"]:checked'))
+                    .map(checkbox => checkbox.name);
+
+                fetch('http://localhost:4567/q_plus', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        q: query,
+                        paths: checkedPaths,
+                    })
+                })
+                .then(response => response.json())
+                .then(resp => {
+                    responseContainer.innerHTML = '';
+                    retrievedNotes = [];
+
+                    if (!!resp.expanded) {
+                        const div = document.createElement('div');
+                        div.className = 'response-item';
+                        div.style.backgroundColor = textToLightColor('expanded');
+                        div.innerHTML = `<div><strong>Expanded Query:</strong> ${resp.expanded}</div>`;
                         responseContainer.appendChild(div);
                     }
 
@@ -159,9 +199,10 @@
                             <div class="markdown-content">${marked.parse(item.text)}</div>
                         `;
                         responseContainer.appendChild(div);
+                        retrievedNotes.push(item.text);
                     });
                 })
-                .catch(error => console.error('Error performing search:', error));
+                .catch(error => console.error('Error performing agent search:', error));
             }
 
             function performAgentSearch() {
@@ -234,9 +275,38 @@
                 return `#${r.toString(16).padStart(2, '0')}${g.toString(16).padStart(2, '0')}${b.toString(16).padStart(2, '0')}`;
             }
 
+            function synthesizeNotes() {
+                if (retrievedNotes.length === 0) {
+                    return;
+                }
+
+                fetch('http://localhost:4567/synthesize', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        notes: retrievedNotes,
+                    })
+                })
+                .then(response => response.json())
+                .then(resp => {
+                    const div = document.createElement('div');
+                    div.className = 'response-item';
+                    div.style.backgroundColor = textToLightColor('synthesize');
+                    div.innerHTML = `
+                        <div class="markdown-content">${marked.parse(resp.note)}</div>
+                    `;
+                    responseContainer.prepend(div);
+                })
+                .catch(error => console.error('Error synthesizing notes:', error));
+            }
+
             // Event listeners
             searchButton.addEventListener('click', performSearch);
             searchPlusButton.addEventListener('click', performAgentSearch);
+            synthesizeButton.addEventListener('click', synthesizeNotes);
+
             searchInput.addEventListener('keypress', function(e) {
                 if (e.key === 'Enter') {
                     performSearch();
