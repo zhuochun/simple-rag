@@ -205,6 +205,60 @@
                 .catch(error => console.error('Error performing agent search:', error));
             }
 
+            function performAgentSearch() {
+                const query = searchInput.value;
+                const configExperiment = configExperimentCheckbox.checked
+                const checkedPaths = Array.from(pathsList.querySelectorAll('input[type="checkbox"]:checked'))
+                    .map(checkbox => checkbox.name);
+
+                fetch('http://localhost:4567/q_plus', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        q: query,
+                        paths: checkedPaths,
+                        experiment: configExperiment,
+                    })
+                })
+                .then(response => response.json())
+                .then(resp => {
+                    responseContainer.innerHTML = '';
+
+                    if (!!resp.expanded) {
+                        const div = document.createElement('div');
+                        div.className = 'response-item';
+                        div.style.backgroundColor = textToLightColor("expanded");
+                        div.innerHTML = `<div><strong>Expanded Query:</strong> ${resp.expanded}</div>`;
+                        responseContainer.appendChild(div);
+                    }
+
+                    if (!!resp.eval) {
+                        const div = document.createElement('div');
+                        div.className = 'response-item';
+                        div.style.backgroundColor = textToLightColor("experiment");
+                        div.innerHTML = `
+                            <div class="markdown-content">${marked.parse(resp.eval)}</div>
+                        `;
+                        responseContainer.appendChild(div);
+                    }
+
+                    resp.data.forEach(item => {
+                        const div = document.createElement('div');
+                        div.className = 'response-item';
+                        div.style.backgroundColor = textToLightColor(item.lookup);
+                        div.innerHTML = `
+                            <div><strong>Path:</strong> <a href="${item.url}">${item.id}</a></div>
+                            <div><strong>Score:</strong> ${item.score}</div>
+                            <div class="markdown-content">${marked.parse(item.text)}</div>
+                        `;
+                        responseContainer.appendChild(div);
+                    });
+                })
+                .catch(error => console.error('Error performing agent search:', error));
+            }
+
             function textToLightColor(text) {
                 // Generate a hash from the text
                 let hash = 0;
@@ -252,6 +306,7 @@
             searchButton.addEventListener('click', performSearch);
             searchPlusButton.addEventListener('click', performAgentSearch);
             synthesizeButton.addEventListener('click', synthesizeNotes);
+
             searchInput.addEventListener('keypress', function(e) {
                 if (e.key === 'Enter') {
                     performSearch();
