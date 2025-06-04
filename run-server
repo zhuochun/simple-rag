@@ -13,6 +13,7 @@ require "sinatra"
 
 require_relative "server/retriever"
 require_relative "server/memory"
+require_relative "server/synthesizer"
 
 if ARGV.length != 1
     STDOUT << "Invalid arguments received, need a config file\n"
@@ -78,4 +79,15 @@ post '/q' do
     end
 
     resp.to_json
+end
+
+# synthesize notes into a summary
+post '/synthesize' do
+    content_type :json
+
+    data = JSON.parse(request.body.read)
+
+    summary = synthesize_notes(data["notes"])
+
+    { note: summary }.to_json
 end
