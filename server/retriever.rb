@@ -7,6 +7,19 @@ require_relative "../llm/embedding"
 
 require_relative "../readers/reader"
 
+AGENT_PROMPT = <<~PROMPT
+You expand a short search query so it is easier to retrieve related markdown
+documents. Return only the expanded query in a single line.
+PROMPT
+
+def expand_query(q)
+    msgs = [
+        { role: ROLE_SYSTEM, content: AGENT_PROMPT },
+        { role: ROLE_USER, content: q },
+    ]
+    chat(msgs).strip
+end
+
 def retrieve_by_embedding(lookup_paths, q)
     qe = CACHE.get_or_set(q, method(:embedding).to_proc)
 
