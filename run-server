@@ -13,6 +13,7 @@ require "sinatra"
 
 require_relative "server/retriever"
 require_relative "server/synthesizer"
+require_relative "server/discuss"
 
 if ARGV.length != 1
     STDOUT << "Invalid arguments received, need a config file\n"
@@ -119,4 +120,15 @@ post '/synthesize' do
     summary = synthesize_notes(data["notes"])
 
     { note: summary }.to_json
+end
+
+# generate discussion for a single note
+post '/discuss' do
+    content_type :json
+
+    data = JSON.parse(request.body.read)
+
+    discussion = discuss_note(data["note"])
+
+    { discussion: discussion }.to_json
 end
