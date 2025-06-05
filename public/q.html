@@ -72,6 +72,9 @@
             width: calc(50% - 5px);
             box-sizing: border-box;
         }
+        .discuss-button {
+            margin-top: 10px;
+        }
     </style>
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 </head>
@@ -149,11 +152,17 @@
                         const div = document.createElement('div');
                         div.className = 'response-item';
                         div.style.backgroundColor = textToLightColor(item.lookup);
+                        div.dataset.note = item.text;
                         div.innerHTML = `
                             <div><strong>Path:</strong> <a href="${item.url}">${item.id}</a></div>
                             <div><strong>Score:</strong> ${item.score}</div>
                             <div class="markdown-content">${marked.parse(item.text)}</div>
                         `;
+                        const btn = document.createElement('button');
+                        btn.className = 'discuss-button';
+                        btn.textContent = 'Discuss';
+                        btn.addEventListener('click', () => discussCard(div));
+                        div.appendChild(btn);
                         responseContainer.appendChild(div);
                         retrievedNotes.push(item.text);
                     });
@@ -193,11 +202,17 @@
                         const div = document.createElement('div');
                         div.className = 'response-item';
                         div.style.backgroundColor = textToLightColor(item.lookup);
+                        div.dataset.note = item.text;
                         div.innerHTML = `
                             <div><strong>Path:</strong> <a href="${item.url}">${item.id}</a></div>
                             <div><strong>Score:</strong> ${item.score}</div>
                             <div class="markdown-content">${marked.parse(item.text)}</div>
                         `;
+                        const btn = document.createElement('button');
+                        btn.className = 'discuss-button';
+                        btn.textContent = 'Discuss';
+                        btn.addEventListener('click', () => discussCard(div));
+                        div.appendChild(btn);
                         responseContainer.appendChild(div);
                         retrievedNotes.push(item.text);
                     });
@@ -248,11 +263,17 @@
                         const div = document.createElement('div');
                         div.className = 'response-item';
                         div.style.backgroundColor = textToLightColor(item.lookup);
+                        div.dataset.note = item.text;
                         div.innerHTML = `
                             <div><strong>Path:</strong> <a href="${item.url}">${item.id}</a></div>
                             <div><strong>Score:</strong> ${item.score}</div>
                             <div class="markdown-content">${marked.parse(item.text)}</div>
                         `;
+                        const btn = document.createElement('button');
+                        btn.className = 'discuss-button';
+                        btn.textContent = 'Discuss';
+                        btn.addEventListener('click', () => discussCard(div));
+                        div.appendChild(btn);
                         responseContainer.appendChild(div);
                     });
                 })
@@ -300,6 +321,29 @@
                     responseContainer.prepend(div);
                 })
                 .catch(error => console.error('Error synthesizing notes:', error));
+            }
+
+            function discussCard(div) {
+                const note = div.dataset.note;
+                if (!note) {
+                    return;
+                }
+
+                fetch('http://localhost:4567/discuss', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        note: note,
+                    })
+                })
+                .then(response => response.json())
+                .then(resp => {
+                    const mdDiv = div.querySelector('.markdown-content');
+                    mdDiv.innerHTML += marked.parse(resp.discussion);
+                })
+                .catch(error => console.error('Error discussing note:', error));
             }
 
             // Event listeners
