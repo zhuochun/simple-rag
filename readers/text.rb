@@ -9,7 +9,7 @@ class TextReader
     end
 
     def load
-        return if @loaded
+        return self if @loaded
 
         chunk = ""
         File.foreach(@file) do |line|

@@ -15,7 +15,7 @@ class NoteReader
     end
 
     def load
-        return if @loaded
+        return self if @loaded
 
         File.open(@file) do |file|
             parse_conf(file)
