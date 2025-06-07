@@ -198,6 +198,14 @@
                         responseContainer.appendChild(div);
                     }
 
+                    if (resp.variants && resp.variants.length > 0) {
+                        const div = document.createElement('div');
+                        div.className = 'response-item';
+                        div.style.backgroundColor = textToLightColor('variants');
+                        div.innerHTML = `<div><strong>Variants:</strong> ${resp.variants.join(', ')}</div>`;
+                        responseContainer.appendChild(div);
+                    }
+
                     resp.data.forEach(item => {
                         const div = document.createElement('div');
                         div.className = 'response-item';
@@ -246,6 +254,16 @@
                         div.className = 'response-item';
                         div.style.backgroundColor = textToLightColor("expanded");
                         div.innerHTML = `<div><strong>Expanded Query:</strong> ${resp.expanded}</div>`;
+                        responseContainer.appendChild(div);
+                    }
+
+                    if (resp.variants && resp.variants.length > 0) {
+                        const div = document.createElement('div');
+                        div.className = 'response-item';
+                        div.style.backgroundColor = textToLightColor("variants");
+                        div.innerHTML = `
+                            <div><strong>Variants:</strong> ${resp.variants.join(', ')}</div>
+                        `;
                         responseContainer.appendChild(div);
                     }
 
