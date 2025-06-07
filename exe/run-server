@@ -11,9 +11,9 @@ require "json"
 require "ostruct"
 require "sinatra"
 
-require_relative "server/retriever"
-require_relative "server/synthesizer"
-require_relative "server/discuss"
+require_relative "../server/retriever"
+require_relative "../server/synthesizer"
+require_relative "../server/discuss"
 
 if ARGV.length != 1
     STDOUT << "Invalid arguments received, need a config file\n"
