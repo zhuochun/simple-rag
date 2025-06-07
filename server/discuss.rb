@@ -3,7 +3,7 @@ You provide a short discussion of a note from multiple perspectives.
 Focus on explaining key concepts succinctly.
 PROMPT
 
-require_relative "../llm/openai"
+require_relative "../llm/llm"
 
 # note: string
 # Returns discussion text

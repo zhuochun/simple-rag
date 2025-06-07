@@ -2,8 +2,7 @@ require "pathname"
 
 require_relative "cache"
 
-require_relative "../llm/openai"
-require_relative "../llm/embedding"
+require_relative "../llm/llm"
 
 require_relative "../readers/reader"
 

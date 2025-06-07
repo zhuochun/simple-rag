@@ -1,18 +1,12 @@
 require_relative "http"
 
-ROLE_SYSTEM = "system"
-ROLE_USER = "user"
-ROLE_ASSISTANT = "assistant"
-NEXT_ROLE = ->(role) { role != ROLE_USER ? ROLE_USER : ROLE_ASSISTANT }
-
-def chat(messages, opts = {})
+def openai_chat(messages, model, url, opts = {})
   data = {
-    "model" => "gpt-4.1-mini",
+    "model" => model,
     "messages" => messages
   }.merge(opts)
 
-  uri = "https://api.openai.com/v1/chat/completions"
-  response = http_post(uri, OPENAI_KEY, data)
+  response = http_post(url, OPENAI_KEY, data)
 
   if response.code != "200"
     STDOUT << "Chat error: #{response}\n"
@@ -25,14 +19,13 @@ def chat(messages, opts = {})
   result["choices"][0]["message"]["content"]
 end
 
-def embedding(txts, opts = {})
+def openai_embedding(txts, model, url, opts = {})
   data = {
-    "model" => "text-embedding-3-small",
+    "model" => model,
     "input" => txts
   }.merge(opts)
 
-  uri = "https://api.openai.com/v1/embeddings"
-  response = http_post(uri, OPENAI_KEY, data)
+  response = http_post(url, OPENAI_KEY, data)
 
   if response.code != "200"
     STDOUT << "Embedding error: #{response.body}\n"

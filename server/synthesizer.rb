@@ -2,7 +2,7 @@ SUM_PROMPT = """You are an expert at combining notes.
 Given a collection of notes, synthesize them into a concise new note capturing the key points.
 """
 
-require_relative "../llm/openai"
+require_relative "../llm/llm"
 
 # notes: array of strings
 # Returns summary text
