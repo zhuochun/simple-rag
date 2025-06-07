@@ -76,3 +76,49 @@ def extract_url(file_path, url)
         "file://#{file_path}"
     end
 end
+
+VARIANT_PROMPT = <<~PROMPT
+You generate a few alternative short search queries for exact text match.
+Return a JSON array of strings with three different variants.
+PROMPT
+
+def expand_variants(q)
+    msgs = [
+        { role: ROLE_SYSTEM, content: VARIANT_PROMPT },
+        { role: ROLE_USER, content: q },
+    ]
+    JSON.parse(chat(msgs)) rescue []
+end
+
+def retrieve_by_text(lookup_paths, q)
+    entries = []
+    lookup_paths.each do |p|
+        STDOUT << "Reading text index: #{p.name}\n"
+
+        index_file = File.expand_path(p.out)
+        next unless File.exist?(index_file)
+
+        reader_cls = get_reader(p.reader)
+        next if reader_cls.nil?
+
+        file_cache = {}
+        File.foreach(index_file) do |line|
+            item = JSON.parse(line)
+            reader = file_cache[item["path"]] ||= reader_cls.new(item["path"]).load
+            chunk_text = reader.get_chunk(item["chunk"])
+            next unless chunk_text&.include?(q)
+
+            item["score"] = 1.0
+            item["lookup"] = p.name
+            item["id"] = extract_id(item["path"])
+            item["url"] = extract_url(item["path"], p.url)
+            item["reader"] = reader
+
+            entries << item
+        end
+
+        STDOUT << "Matched num: #{entries.length}\n"
+    end
+
+    entries
+end
