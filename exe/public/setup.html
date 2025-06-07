@@ -49,6 +49,7 @@
             <label>Out: <input type="text" class="pout" value="${p?.out||''}"></label>
             <label>NameMatch: <input type="text" class="pnamematch" value="${p?.nameMatch||''}"></label>
             <label>URL: <input type="text" class="purl" value="${p?.url||''}"></label>
+            <label>Search Default: <input type="checkbox" class="psearchdefault" ${p?.searchDefault?'checked':''}></label>
             <button type="button" onclick="this.parentNode.remove()">Remove</button>
         `;
         const dirInput = div.querySelector('#dir_'+idx);
@@ -114,7 +115,8 @@
                 threshold: parseFloat(div.querySelector('.pthreshold').value)||0,
                 out: div.querySelector('.pout').value,
                 nameMatch: div.querySelector('.pnamematch').value,
-                url: div.querySelector('.purl').value
+                url: div.querySelector('.purl').value,
+                searchDefault: div.querySelector('.psearchdefault').checked
             });
         });
         const config={

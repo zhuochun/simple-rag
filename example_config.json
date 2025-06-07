@@ -17,7 +17,8 @@
             "dir": "D:\\Studies\\tmp\\learning",
             "out": "D:\\Studies\\tmp\\learning\\learning.dt",
             "nameMatch": "talks-*.md",
-            "url": ""
+            "url": "",
+            "searchDefault": false
         }
     ]
 }
