@@ -3,7 +3,7 @@
 require_relative "lib/simple_rag/version"
 
 Gem::Specification.new do |spec|
-  spec.name          = "simple-rag"
+  spec.name          = "simple-rag-zc"
   spec.version       = SimpleRag::VERSION
   spec.authors       = ["Zhuochun"]
   spec.email         = ["zhuochun@hotmail.com"]

@@ -18,11 +18,11 @@ To release a new version to [RubyGems](https://rubygems.org), run:
 
 ```bash
 gem build simple-rag.gemspec
-gem push simple-rag-$(ruby -Ilib -e 'require "simple_rag/version"; puts SimpleRag::VERSION').gem
+gem push simple-rag-zc-$(ruby -Ilib -e 'require "simple_rag/version"; puts SimpleRag::VERSION').gem
 ```
 
 Install the gem directly:
 
 ```bash
-gem install simple-rag
+gem install simple-rag-zc
 ```
