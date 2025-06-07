@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Setup SimpleRag</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        .path-item { margin-bottom: 15px; padding: 10px; border: 1px solid #ccc; }
+    </style>
+</head>
+<body>
+    <h1>Setup SimpleRag Config</h1>
+    <form id="config-form">
+        <h2>Paths</h2>
+        <div id="paths"></div>
+        <button type="button" onclick="addPath()">Add Path</button>
+        <h2>Chat</h2>
+        <label>Provider: <input id="chat_provider" value="openai"></label><br>
+        <label>URL: <input id="chat_url" value=""></label><br>
+        <label>Model: <input id="chat_model" value="gpt-3.5-turbo-16k"></label>
+        <h2>Embedding</h2>
+        <label>Provider: <input id="emb_provider" value="openai"></label><br>
+        <label>URL: <input id="emb_url" value=""></label><br>
+        <label>Model: <input id="emb_model" value="text-embedding-3-small"></label>
+        <br><br>
+        <button type="submit">Save</button>
+    </form>
+    <script>
+    function createPathDiv(p){
+        const idx = document.querySelectorAll('.path-item').length;
+        const div = document.createElement('div');
+        div.className = 'path-item';
+        div.innerHTML = `Name: <input class="pname" value="${p?.name||''}">
+            Reader: <input class="preader" value="${p?.reader||'text'}">
+            Threshold: <input class="pthreshold" value="${p?.threshold||0.3}"><br>
+            Dir: <input class="pdir" id="dir_${idx}" value="${p?.dir||''}">
+            <input type="file" webkitdirectory directory style="display:none" id="dirsel_${idx}">
+            <button type="button" onclick="document.getElementById('dirsel_${idx}').click()">Select Folder</button>
+            Out: <input class="pout" value="${p?.out||''}">
+            URL: <input class="purl" value="${p?.url||''}">
+            <button type="button" onclick="this.parentNode.remove()">Remove</button>`;
+        div.querySelector('#dirsel_'+idx).addEventListener('change', function(){
+            if(this.files.length>0){
+                const rel = this.files[0].webkitRelativePath;
+                const dir = rel.split('/')[0];
+                div.querySelector('#dir_'+idx).value = dir;
+            }
+        });
+        return div;
+    }
+    function addPath(p){
+        document.getElementById('paths').appendChild(createPathDiv(p));
+    }
+    fetch('/config').then(r=>r.json()).then(cfg=>{
+        if(cfg.chat){
+            document.getElementById('chat_provider').value = cfg.chat.provider||'openai';
+            document.getElementById('chat_url').value = cfg.chat.url||'';
+            document.getElementById('chat_model').value = cfg.chat.model||'gpt-3.5-turbo-16k';
+        }
+        if(cfg.embedding){
+            document.getElementById('emb_provider').value = cfg.embedding.provider||'openai';
+            document.getElementById('emb_url').value = cfg.embedding.url||'';
+            document.getElementById('emb_model').value = cfg.embedding.model||'text-embedding-3-small';
+        }
+        if(cfg.paths && cfg.paths.length>0){
+            cfg.paths.forEach(p=>addPath(p));
+        }else{
+            addPath();
+        }
+    });
+    document.getElementById('config-form').addEventListener('submit', function(e){
+        e.preventDefault();
+        const paths=[];
+        document.querySelectorAll('.path-item').forEach(div=>{
+            paths.push({
+                name: div.querySelector('.pname').value,
+                reader: div.querySelector('.preader').value,
+                threshold: parseFloat(div.querySelector('.pthreshold').value)||0,
+                dir: div.querySelector('.pdir').value,
+                out: div.querySelector('.pout').value,
+                url: div.querySelector('.purl').value
+            });
+        });
+        const config={
+            chat:{provider:document.getElementById('chat_provider').value,
+                  url:document.getElementById('chat_url').value,
+                  model:document.getElementById('chat_model').value},
+            embedding:{provider:document.getElementById('emb_provider').value,
+                       url:document.getElementById('emb_url').value,
+                       model:document.getElementById('emb_model').value},
+            paths:paths
+        };
+        fetch('/save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(config)})
+            .then(()=>alert('Saved'));
+    });
+    </script>
+</body>
+</html>
