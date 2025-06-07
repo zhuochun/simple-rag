@@ -1,4 +1,4 @@
-READERS = %w[text note]
+READERS = %w[text note journal]
 
 def get_reader(name)
     case name.to_s.downcase
@@ -8,6 +8,9 @@ def get_reader(name)
     when "note"
         require_relative "note"
         NoteReader
+    when "journal"
+        require_relative "journal"
+        JournalReader
     else
         nil
     end
