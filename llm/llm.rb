@@ -1,0 +1,57 @@
+require_relative "openai"
+require_relative "ollama"
+
+ROLE_SYSTEM = "system"
+ROLE_USER = "user"
+ROLE_ASSISTANT = "assistant"
+NEXT_ROLE = ->(role) { role != ROLE_USER ? ROLE_USER : ROLE_ASSISTANT }
+
+# Fetch configuration value with defaults
+# Supports Hash or OpenStruct configuration objects
+
+def cfg(section, key, default)
+  return default unless defined?(CONFIG)
+  sec = CONFIG.send(section) if CONFIG.respond_to?(section)
+  return default unless sec
+
+  if sec.is_a?(Hash)
+    sec.fetch(key, default)
+  elsif sec.respond_to?(key)
+    val = sec.send(key)
+    val.nil? ? default : val
+  else
+    default
+  end
+end
+
+# Route chat requests based on provider configuration
+
+def chat(messages, opts = {})
+  provider = cfg(:chat, 'provider', 'openai').downcase
+  case provider
+  when 'ollama'
+    model = cfg(:chat, 'model', 'llama2')
+    url = cfg(:chat, 'url', 'http://localhost:11434/api/chat')
+    ollama_chat(messages, model, url, opts)
+  else
+    model = cfg(:chat, 'model', 'gpt-4.1-mini')
+    url = cfg(:chat, 'url', 'https://api.openai.com/v1/chat/completions')
+    openai_chat(messages, model, url, opts)
+  end
+end
+
+# Route embedding requests based on provider configuration
+
+def embedding(txts, opts = {})
+  provider = cfg(:embedding, 'provider', 'openai').downcase
+  case provider
+  when 'ollama'
+    model = cfg(:embedding, 'model', 'nomic-embed-text')
+    url = cfg(:embedding, 'url', 'http://localhost:11434/api/embeddings')
+    ollama_embedding(txts, model, url, opts)
+  else
+    model = cfg(:embedding, 'model', 'text-embedding-3-small')
+    url = cfg(:embedding, 'url', 'https://api.openai.com/v1/embeddings')
+    openai_embedding(txts, model, url, opts)
+  end
+end

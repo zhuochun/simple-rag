@@ -11,8 +11,7 @@ require "json"
 require "ostruct"
 require "digest"
 
-require_relative "../llm/openai"
-require_relative "../llm/embedding"
+require_relative "../llm/llm"
 require_relative "../readers/reader"
 
 if ARGV.length != 1

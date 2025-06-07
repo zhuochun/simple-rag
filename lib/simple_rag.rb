@@ -8,8 +8,7 @@ $LOAD_PATH.unshift File.expand_path("..", __dir__)
 module SimpleRag
 end
 
-require "llm/openai"
-require "llm/embedding"
+require "llm/llm"
 require "readers/reader"
 require "server/retriever"
 require "server/synthesizer"
