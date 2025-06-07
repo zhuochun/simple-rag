@@ -5,13 +5,13 @@ require_relative "lib/simple_rag/version"
 Gem::Specification.new do |spec|
   spec.name          = "simple-rag"
   spec.version       = SimpleRag::VERSION
-  spec.authors       = ["Author"]
-  spec.email         = ["author@example.com"]
+  spec.authors       = ["Zhuochun"]
+  spec.email         = ["zhuochun@hotmail.com"]
 
   spec.summary       = "RAG on Markdown Files"
   spec.description   = "Simple retrieval-augmented generation on markdown files"
   spec.license       = "MIT"
-  spec.homepage      = "https://github.com/example/simple-rag"
+  spec.homepage      = "https://github.com/zhuochun/simple-rag"
 
   spec.files         = Dir[
     "README.md",
@@ -21,7 +21,7 @@ Gem::Specification.new do |spec|
     "readers/**/*",
     "server/**/*",
     "storage/**/*",
-    "public/**/*",
+    "exe/public/**/*",
     "exe/*"
   ]
 
