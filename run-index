@@ -50,9 +50,9 @@ CONFIG.paths.each do |path|
     files = Dir[dir_blob]
     STDOUT << "Scan dir: #{dir_blob}, Found: #{files.length}\n"
 
-    # Get reader
-    Reader = get_reader(path.reader)
-    if Reader.nil?
+    # Get reader class
+    reader_class = get_reader(path.reader)
+    if reader_class.nil?
         STDOUT << "Reader undefinied: #{path.reader}\n"
         exit 9
     end
@@ -63,7 +63,7 @@ CONFIG.paths.each do |path|
     created = 0
     File.open(index_file, "w") do |index_newdb|
         files.each_with_index do |file, file_idx|
-            chunks = Reader.new(file).load.chunks
+            chunks = reader_class.new(file).load.chunks
 
             chunks.each_with_index do |chunk, chunk_idx|
                 hash = Digest::SHA256.hexdigest(chunk)
