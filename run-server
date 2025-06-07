@@ -55,7 +55,23 @@ post '/q' do
 
     topN = (data["topN"] || 20).to_i
 
-    entries = retrieve_by_embedding(lookup_paths, data["q"])
+    q = data["q"]
+    entries = retrieve_by_embedding(lookup_paths, q)
+    if q.to_s.strip.length < 5 && q.to_s.split(/\s+/).length < 5
+        entries.concat(retrieve_by_text(lookup_paths, q))
+
+        unique = {}
+        entries.each do |e|
+            key = [e["path"], e["chunk"]]
+            if unique[key]
+                unique[key]["score"] = [unique[key]["score"], e["score"]].max
+            else
+                unique[key] = e
+            end
+        end
+
+        entries = unique.values
+    end
     entries = entries.sort_by { |item| -item["score"] }.take(topN)
 
     resp = {
