@@ -165,3 +165,5 @@ post '/discuss' do
 
     { discussion: discussion }.to_json
 end
+
+run! if __FILE__ == $PROGRAM_NAME
