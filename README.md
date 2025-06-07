@@ -3,7 +3,7 @@
 RAG on Markdown Files
 
 - Use **Search** for standard retrieval
-- Use **Search+** for agentic query expansion
+- Use **Search+** for agentic query expansion and fast text match
 - Use **Synthesize** to combine retrieved notes
 
 ## Setup

@@ -89,15 +89,32 @@ post '/q_plus' do
     topN = (data["topN"] || 20).to_i
 
     expanded_q = expand_query(data["q"])
-    entries = retrieve_by_embedding(lookup_paths, expanded_q)
-    entries = entries.sort_by { |item| -item["score"] }.take(topN)
+    variants = expand_variants(data["q"])
+
+    entries = []
+    entries.concat(retrieve_by_embedding(lookup_paths, data["q"]))
+    entries.concat(retrieve_by_embedding(lookup_paths, expanded_q))
+    variants.each { |v| entries.concat(retrieve_by_text(lookup_paths, v)) }
+
+    unique = {}
+    entries.each do |e|
+        key = [e["path"], e["chunk"]]
+        if unique[key]
+            unique[key]["score"] = [unique[key]["score"], e["score"]].max
+        else
+            unique[key] = e
+        end
+    end
+
+    ordered = unique.values.sort_by { |item| -item["score"] }.take(topN)
 
     resp = {
         data: [],
         expanded: expanded_q,
+        variants: variants,
     }
 
-    entries.each do |item|
+    ordered.each do |item|
         resp[:data] << {
             path: item["path"],
             lookup: item["lookup"],
