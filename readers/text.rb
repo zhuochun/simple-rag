@@ -12,13 +12,26 @@ class TextReader
         return self if @loaded
 
         chunk = ""
+        in_frontmatter = false
         File.foreach(@file) do |line|
-            if line.start_with?(/- .+:/) || line.start_with?('  - [[') # yaml like
+            stripped = line.strip
+
+            if in_frontmatter
+                if stripped == '---' || stripped == '...'
+                    in_frontmatter = false
+                end
                 next
-            elsif line.start_with?('<') # html like
+            elsif stripped == '---'
+                in_frontmatter = true
+                next
+            end
+
+            if line.start_with?('- ') && line.include?(':') || line.start_with?('  - [[')
+                next
+            elsif line.start_with?('<')
                 next
             else
-                chunk << line unless line.strip.empty?
+                chunk << line unless stripped.empty?
             end
         end
 
