@@ -11,3 +11,18 @@ RAG on Markdown Files
 - Setup Config JSON
 - Run `run-index config.json`
 - Run `run-server config.json` and open `http://localhost:4567/q.html`
+
+## Publishing
+
+To release a new version to [RubyGems](https://rubygems.org), run:
+
+```bash
+gem build simple-rag.gemspec
+gem push simple-rag-$(ruby -Ilib -e 'require "simple_rag/version"; puts SimpleRag::VERSION').gem
+```
+
+Install the gem directly:
+
+```bash
+gem install simple-rag
+```
