@@ -8,8 +8,8 @@ require_relative "../llm/embedding"
 require_relative "../readers/reader"
 
 AGENT_PROMPT = <<~PROMPT
-You expand a short search query so it is easier to retrieve related markdown
-documents. Return only the expanded query in a single line.
+Expand the user input to a better search query so it is easier to retrieve related markdown
+documents using embedding. Return only the expanded query in a single line.
 PROMPT
 
 def expand_query(q)
@@ -17,7 +17,11 @@ def expand_query(q)
         { role: ROLE_SYSTEM, content: AGENT_PROMPT },
         { role: ROLE_USER, content: q },
     ]
-    chat(msgs).strip
+
+    query = chat(msgs).strip
+    STDOUT << "Expand query: #{query}\n"
+
+    query
 end
 
 def retrieve_by_embedding(lookup_paths, q)
@@ -78,8 +82,8 @@ def extract_url(file_path, url)
 end
 
 VARIANT_PROMPT = <<~PROMPT
-You generate a few alternative short search queries for exact text match.
-Return a JSON array of strings with three different variants.
+Generate three alternative search keywords based on the user input to retrieve related markdown using exact keyword matches.
+Return the search keywords in one CSV line.
 PROMPT
 
 def expand_variants(q)
@@ -87,7 +91,10 @@ def expand_variants(q)
         { role: ROLE_SYSTEM, content: VARIANT_PROMPT },
         { role: ROLE_USER, content: q },
     ]
-    JSON.parse(chat(msgs)) rescue []
+
+    variants = chat(msgs).split(',')
+    STDOUT << "Expand variants: #{variants}\n"
+    variants
 end
 
 def retrieve_by_text(lookup_paths, q)

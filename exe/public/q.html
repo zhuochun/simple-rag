@@ -230,7 +230,6 @@
 
             function performAgentSearch() {
                 const query = searchInput.value;
-                const configExperiment = configExperimentCheckbox.checked
                 const checkedPaths = Array.from(pathsList.querySelectorAll('input[type="checkbox"]:checked'))
                     .map(checkbox => checkbox.name);
 
@@ -242,7 +241,6 @@
                     body: JSON.stringify({
                         q: query,
                         paths: checkedPaths,
-                        experiment: configExperiment,
                     })
                 })
                 .then(response => response.json())
@@ -263,16 +261,6 @@
                         div.style.backgroundColor = textToLightColor("variants");
                         div.innerHTML = `
                             <div><strong>Variants:</strong> ${resp.variants.join(', ')}</div>
-                        `;
-                        responseContainer.appendChild(div);
-                    }
-
-                    if (!!resp.eval) {
-                        const div = document.createElement('div');
-                        div.className = 'response-item';
-                        div.style.backgroundColor = textToLightColor("experiment");
-                        div.innerHTML = `
-                            <div class="markdown-content">${marked.parse(resp.eval)}</div>
                         `;
                         responseContainer.appendChild(div);
                     }

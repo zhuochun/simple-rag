@@ -9,7 +9,7 @@
 
 require "json"
 require "ostruct"
-require "sinatra"
+require 'sinatra/base'
 
 require_relative "../server/retriever"
 require_relative "../server/synthesizer"
@@ -32,33 +32,86 @@ if OPENAI_KEY.empty?
     exit 9
 end
 
-# list all the paths that can be searched
-get '/paths' do
-    content_type :json
+class SimpleRagServer < Sinatra::Application
+    # list all the paths that can be searched
+    get '/paths' do
+        content_type :json
 
-    resp = []
-    CONFIG.paths.each do |p|
-        resp << { "name": p.name }
-    end
-    resp.to_json
-end
-
-# query within the paths
-post '/q' do
-    content_type :json
-
-    data = JSON.parse(request.body.read)
-
-    lookup_paths = (data["paths"] || CONFIG.paths_map.keys).map do |name|
-        CONFIG.path_map[name]
+        resp = []
+        CONFIG.paths.each do |p|
+            resp << { "name": p.name }
+        end
+        resp.to_json
     end
 
-    topN = (data["topN"] || 20).to_i
+    # query within the paths
+    post '/q' do
+        content_type :json
 
-    q = data["q"]
-    entries = retrieve_by_embedding(lookup_paths, q)
-    if q.to_s.strip.length < 5 && q.to_s.split(/\s+/).length < 5
-        entries.concat(retrieve_by_text(lookup_paths, q))
+        data = JSON.parse(request.body.read)
+
+        lookup_paths = (data["paths"] || CONFIG.paths_map.keys).map do |name|
+            CONFIG.path_map[name]
+        end
+
+        topN = (data["topN"] || 20).to_i
+
+        q = data["q"]
+        entries = retrieve_by_embedding(lookup_paths, q)
+        if q.to_s.strip.length < 5 && q.to_s.split(/\s+/).length < 5
+            entries.concat(retrieve_by_text(lookup_paths, q))
+
+            unique = {}
+            entries.each do |e|
+                key = [e["path"], e["chunk"]]
+                if unique[key]
+                    unique[key]["score"] = (unique[key]["score"] || 0) + (e["score"] || 0)
+                else
+                    unique[key] = e
+                end
+            end
+
+            entries = unique.values
+        end
+        entries = entries.sort_by { |item| -item["score"] }.take(topN)
+
+        resp = {
+            data: [],
+        }
+
+        entries.each do |item|
+            resp[:data] << {
+                path: item["path"],
+                lookup: item["lookup"],
+                id: item["id"],
+                url: item["url"],
+                text: item["reader"].load.get_chunk(item["chunk"]),
+                score: item["score"],
+            }
+        end
+
+        resp.to_json
+    end
+
+    # agentic query - expand the query using LLM before searching
+    post '/q_plus' do
+        content_type :json
+
+        data = JSON.parse(request.body.read)
+
+        lookup_paths = (data["paths"] || CONFIG.paths_map.keys).map do |name|
+            CONFIG.path_map[name]
+        end
+
+        topN = (data["topN"] || 20).to_i
+
+        expanded_q = expand_query(data["q"])
+        variants = expand_variants(data["q"])
+
+        entries = []
+        entries.concat(retrieve_by_embedding(lookup_paths, data["q"]))
+        entries.concat(retrieve_by_embedding(lookup_paths, expanded_q))
+        variants.each { |v| entries.concat(retrieve_by_text(lookup_paths, v)) }
 
         unique = {}
         entries.each do |e|
@@ -70,100 +123,49 @@ post '/q' do
             end
         end
 
-        entries = unique.values
-    end
-    entries = entries.sort_by { |item| -item["score"] }.take(topN)
+        ordered = unique.values.sort_by { |item| -item["score"] }.take(topN)
 
-    resp = {
-        data: [],
-    }
-
-    entries.each do |item|
-        resp[:data] << {
-            path: item["path"],
-            lookup: item["lookup"],
-            id: item["id"],
-            url: item["url"],
-            text: item["reader"].load.get_chunk(item["chunk"]),
-            score: item["score"],
+        resp = {
+            data: [],
+            expanded: expanded_q,
+            variants: variants,
         }
-    end
 
-    resp.to_json
-end
-
-# agentic query - expand the query using LLM before searching
-post '/q_plus' do
-    content_type :json
-
-    data = JSON.parse(request.body.read)
-
-    lookup_paths = (data["paths"] || CONFIG.paths_map.keys).map do |name|
-        CONFIG.path_map[name]
-    end
-
-    topN = (data["topN"] || 20).to_i
-
-    expanded_q = expand_query(data["q"])
-    variants = expand_variants(data["q"])
-
-    entries = []
-    entries.concat(retrieve_by_embedding(lookup_paths, data["q"]))
-    entries.concat(retrieve_by_embedding(lookup_paths, expanded_q))
-    variants.each { |v| entries.concat(retrieve_by_text(lookup_paths, v)) }
-
-    unique = {}
-    entries.each do |e|
-        key = [e["path"], e["chunk"]]
-        if unique[key]
-            unique[key]["score"] = (unique[key]["score"] || 0) + (e["score"] || 0)
-        else
-            unique[key] = e
+        ordered.each do |item|
+            resp[:data] << {
+                path: item["path"],
+                lookup: item["lookup"],
+                id: item["id"],
+                url: item["url"],
+                text: item["reader"].load.get_chunk(item["chunk"]),
+                score: item["score"],
+            }
         end
+
+        resp.to_json
     end
 
-    ordered = unique.values.sort_by { |item| -item["score"] }.take(topN)
+    # synthesize notes into a summary
+    post '/synthesize' do
+        content_type :json
 
-    resp = {
-        data: [],
-        expanded: expanded_q,
-        variants: variants,
-    }
+        data = JSON.parse(request.body.read)
 
-    ordered.each do |item|
-        resp[:data] << {
-            path: item["path"],
-            lookup: item["lookup"],
-            id: item["id"],
-            url: item["url"],
-            text: item["reader"].load.get_chunk(item["chunk"]),
-            score: item["score"],
-        }
+        summary = synthesize_notes(data["notes"])
+
+        { note: summary }.to_json
     end
 
-    resp.to_json
+    # generate discussion for a single note
+    post '/discuss' do
+        content_type :json
+
+        data = JSON.parse(request.body.read)
+
+        discussion = discuss_note(data["note"])
+
+        { discussion: discussion }.to_json
+    end
 end
 
-# synthesize notes into a summary
-post '/synthesize' do
-    content_type :json
-
-    data = JSON.parse(request.body.read)
-
-    summary = synthesize_notes(data["notes"])
-
-    { note: summary }.to_json
-end
-
-# generate discussion for a single note
-post '/discuss' do
-    content_type :json
-
-    data = JSON.parse(request.body.read)
-
-    discussion = discuss_note(data["note"])
-
-    { discussion: discussion }.to_json
-end
-
-run! if __FILE__ == $PROGRAM_NAME
+SimpleRagServer.run!
