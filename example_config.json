@@ -15,7 +15,9 @@
             "reader": "text",
             "threshold": 0.3,
             "dir": "D:\\Studies\\tmp\\learning",
-            "out": "D:\\Studies\\tmp\\learning-gpt1.dt"
+            "out": "D:\\Studies\\tmp\\learning\\learning.dt",
+            "nameMatch": "talks-*.md",
+            "url": ""
         }
     ]
 }

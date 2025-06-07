@@ -1,12 +1,18 @@
+READERS = %w[text note]
+
 def get_reader(name)
-    case name.downcase
+    case name.to_s.downcase
     when "text"
         require_relative "text"
-        return TextReader
+        TextReader
     when "note"
         require_relative "note"
-        return NoteReader
+        NoteReader
     else
-        return nil
+        nil
     end
+end
+
+def available_readers
+    READERS
 end

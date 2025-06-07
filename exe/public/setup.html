@@ -5,7 +5,9 @@
     <title>Setup SimpleRag</title>
     <style>
         body { font-family: Arial, sans-serif; margin: 20px; }
-        .path-item { margin-bottom: 15px; padding: 10px; border: 1px solid #ccc; }
+        .path-item { margin-bottom: 20px; padding: 15px; border: 1px solid #ccc; }
+        .path-item input[type="text"], .path-item select { width: 300px; margin-bottom: 10px; }
+        .path-item label { display: block; margin-bottom: 5px; }
     </style>
 </head>
 <body>
@@ -26,58 +28,92 @@
         <button type="submit">Save</button>
     </form>
     <script>
+    let READERS = [];
+
+    function fillReaderSelect(select, value){
+        select.innerHTML = READERS.map(r=>`<option value="${r}">${r}</option>`).join('');
+        if(value){ select.value = value; }
+    }
+
     function createPathDiv(p){
         const idx = document.querySelectorAll('.path-item').length;
         const div = document.createElement('div');
         div.className = 'path-item';
-        div.innerHTML = `Name: <input class="pname" value="${p?.name||''}">
-            Reader: <input class="preader" value="${p?.reader||'text'}">
-            Threshold: <input class="pthreshold" value="${p?.threshold||0.3}"><br>
-            Dir: <input class="pdir" id="dir_${idx}" value="${p?.dir||''}">
-            <input type="file" webkitdirectory directory style="display:none" id="dirsel_${idx}">
-            <button type="button" onclick="document.getElementById('dirsel_${idx}').click()">Select Folder</button>
-            Out: <input class="pout" value="${p?.out||''}">
-            URL: <input class="purl" value="${p?.url||''}">
-            <button type="button" onclick="this.parentNode.remove()">Remove</button>`;
+        div.innerHTML = `
+            <label>Dir: <input type="text" class="pdir" id="dir_${idx}" value="${p?.dir||''}">
+                <input type="file" webkitdirectory directory style="display:none" id="dirsel_${idx}">
+                <button type="button" onclick="document.getElementById('dirsel_${idx}').click()">Select Folder</button></label>
+            <label>Name: <input type="text" class="pname" value="${p?.name||''}"></label>
+            <label>Reader: <select class="preader"></select></label>
+            <label>Threshold: <input type="text" class="pthreshold" value="${p?.threshold||0.3}"></label>
+            <label>Out: <input type="text" class="pout" value="${p?.out||''}"></label>
+            <label>NameMatch: <input type="text" class="pnamematch" value="${p?.nameMatch||''}"></label>
+            <label>URL: <input type="text" class="purl" value="${p?.url||''}"></label>
+            <button type="button" onclick="this.parentNode.remove()">Remove</button>
+        `;
+        const dirInput = div.querySelector('#dir_'+idx);
+        const nameInput = div.querySelector('.pname');
+        const outInput = div.querySelector('.pout');
+
+        function updateNameOut(){
+            if(!dirInput.value) return;
+            const parts = dirInput.value.replace(/\\/g,'/').split('/').filter(Boolean);
+            const name = parts[parts.length-1] || '';
+            nameInput.value = name;
+            outInput.value = dirInput.value.replace(/[/\\]$/, '') + '/' + name + '.dt';
+        }
+
         div.querySelector('#dirsel_'+idx).addEventListener('change', function(){
             if(this.files.length>0){
                 const rel = this.files[0].webkitRelativePath;
                 const dir = rel.split('/')[0];
-                div.querySelector('#dir_'+idx).value = dir;
+                dirInput.value = dir;
+                updateNameOut();
             }
         });
+        dirInput.addEventListener('change', updateNameOut);
+        fillReaderSelect(div.querySelector('.preader'), p?.reader||'text');
         return div;
     }
+
     function addPath(p){
         document.getElementById('paths').appendChild(createPathDiv(p));
     }
-    fetch('/config').then(r=>r.json()).then(cfg=>{
-        if(cfg.chat){
-            document.getElementById('chat_provider').value = cfg.chat.provider||'openai';
-            document.getElementById('chat_url').value = cfg.chat.url||'';
-            document.getElementById('chat_model').value = cfg.chat.model||'gpt-3.5-turbo-16k';
-        }
-        if(cfg.embedding){
-            document.getElementById('emb_provider').value = cfg.embedding.provider||'openai';
-            document.getElementById('emb_url').value = cfg.embedding.url||'';
-            document.getElementById('emb_model').value = cfg.embedding.model||'text-embedding-3-small';
-        }
-        if(cfg.paths && cfg.paths.length>0){
-            cfg.paths.forEach(p=>addPath(p));
-        }else{
-            addPath();
-        }
-    });
+
+    function loadConfig(readers){
+        READERS = readers;
+        fetch('/config').then(r=>r.json()).then(cfg=>{
+            if(cfg.chat){
+                document.getElementById('chat_provider').value = cfg.chat.provider||'openai';
+                document.getElementById('chat_url').value = cfg.chat.url||'';
+                document.getElementById('chat_model').value = cfg.chat.model||'gpt-3.5-turbo-16k';
+            }
+            if(cfg.embedding){
+                document.getElementById('emb_provider').value = cfg.embedding.provider||'openai';
+                document.getElementById('emb_url').value = cfg.embedding.url||'';
+                document.getElementById('emb_model').value = cfg.embedding.model||'text-embedding-3-small';
+            }
+            if(cfg.paths && cfg.paths.length>0){
+                cfg.paths.forEach(p=>addPath(p));
+            }else{
+                addPath();
+            }
+        });
+    }
+
+    fetch('/readers').then(r=>r.json()).then(loadConfig);
+
     document.getElementById('config-form').addEventListener('submit', function(e){
         e.preventDefault();
         const paths=[];
         document.querySelectorAll('.path-item').forEach(div=>{
             paths.push({
+                dir: div.querySelector('.pdir').value,
                 name: div.querySelector('.pname').value,
                 reader: div.querySelector('.preader').value,
                 threshold: parseFloat(div.querySelector('.pthreshold').value)||0,
-                dir: div.querySelector('.pdir').value,
                 out: div.querySelector('.pout').value,
+                nameMatch: div.querySelector('.pnamematch').value,
                 url: div.querySelector('.purl').value
             });
         });
