@@ -7,6 +7,7 @@
 
 require "json"
 require 'sinatra/base'
+require_relative '../readers/reader'
 
 if ARGV.length != 1
   STDOUT << "Invalid arguments received, need a config file\n"
@@ -23,6 +24,11 @@ class SetupServer < Sinatra::Base
 
   get '/' do
     send_file File.join(settings.public_folder, 'setup.html')
+  end
+
+  get '/readers' do
+    content_type :json
+    READERS.to_json
   end
 
   get '/config' do
