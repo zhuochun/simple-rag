@@ -39,7 +39,7 @@ class NoteReader
         note = nil
 
         file.each_line do |line|
-            line = line.chop # remove crlf chars
+            line = line.chomp # remove crlf chars
 
             if line =~ HEADER_CONF
                 # close the previous note
@@ -59,6 +59,12 @@ class NoteReader
                     note.body << line unless line.strip.empty?
                 end
             end
+        end
+
+        # append the last parsed note if the file does not end with another header
+        if !note.nil?
+            @notes << note
+            note = nil
         end
     end
 
