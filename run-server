@@ -64,7 +64,7 @@ post '/q' do
         entries.each do |e|
             key = [e["path"], e["chunk"]]
             if unique[key]
-                unique[key]["score"] = [unique[key]["score"], e["score"]].max
+                unique[key]["score"] = (unique[key]["score"] || 0) + (e["score"] || 0)
             else
                 unique[key] = e
             end
@@ -116,7 +116,7 @@ post '/q_plus' do
     entries.each do |e|
         key = [e["path"], e["chunk"]]
         if unique[key]
-            unique[key]["score"] = [unique[key]["score"], e["score"]].max
+            unique[key]["score"] = (unique[key]["score"] || 0) + (e["score"] || 0)
         else
             unique[key] = e
         end
