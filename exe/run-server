@@ -23,6 +23,7 @@ end
 config = JSON.parse(File.read(ARGV[0]))
 CONFIG = OpenStruct.new(config)
 CONFIG.paths = CONFIG.paths.map { |p| OpenStruct.new(p) }
+CONFIG.paths.each { |p| p.searchDefault = !!p.searchDefault }
 CONFIG.path_map = {}
 CONFIG.paths.each { |p| CONFIG.path_map[p.name] = p }
 
@@ -39,7 +40,7 @@ class SimpleRagServer < Sinatra::Application
 
         resp = []
         CONFIG.paths.each do |p|
-            resp << { "name": p.name }
+            resp << { name: p.name, searchDefault: p.searchDefault }
         end
         resp.to_json
     end
@@ -50,9 +51,12 @@ class SimpleRagServer < Sinatra::Application
 
         data = JSON.parse(request.body.read)
 
-        lookup_paths = (data["paths"] || CONFIG.paths_map.keys).map do |name|
-            CONFIG.path_map[name]
+        selected = data["paths"]
+        if !selected || selected.empty?
+            selected = CONFIG.paths.select { |p| p.searchDefault }.map(&:name)
+            selected = CONFIG.path_map.keys if selected.empty?
         end
+        lookup_paths = selected.map { |name| CONFIG.path_map[name] }
 
         topN = (data["topN"] || 20).to_i
 
@@ -99,9 +103,12 @@ class SimpleRagServer < Sinatra::Application
 
         data = JSON.parse(request.body.read)
 
-        lookup_paths = (data["paths"] || CONFIG.paths_map.keys).map do |name|
-            CONFIG.path_map[name]
+        selected = data["paths"]
+        if !selected || selected.empty?
+            selected = CONFIG.paths.select { |p| p.searchDefault }.map(&:name)
+            selected = CONFIG.path_map.keys if selected.empty?
         end
+        lookup_paths = selected.map { |name| CONFIG.path_map[name] }
 
         topN = (data["topN"] || 20).to_i
 

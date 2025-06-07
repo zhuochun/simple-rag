@@ -114,7 +114,7 @@
                         checkbox.type = 'checkbox';
                         checkbox.id = item.name;
                         checkbox.name = item.name;
-                        checkbox.checked = true;
+                        checkbox.checked = !!item.searchDefault;
 
                         const label = document.createElement('label');
                         label.htmlFor = item.name;
