@@ -26,7 +26,7 @@ Gem::Specification.new do |spec|
   ]
 
   spec.bindir        = "exe"
-  spec.executables   = ["run-index", "run-server"]
+  spec.executables   = ["run-index", "run-server", "run-setup"]
   spec.require_paths = ["lib"]
 
   spec.add_runtime_dependency "sinatra", "~> 4.1"
