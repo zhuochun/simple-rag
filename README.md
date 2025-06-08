@@ -9,7 +9,7 @@ RAG on Markdown Files
 ## Setup
 
 - Setup Config JSON
-- Run `run-index config.json`
+- Run `run-index config.json` (processes each path concurrently)
 - Run `run-server config.json` and open `http://localhost:4567/q.html`
 
 ## Publishing
