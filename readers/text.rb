@@ -64,11 +64,8 @@ class TextReader
 
     def count_tokens(str)
         return 0 if str.nil? || str.empty?
-        if str.match?(/\s/)
-            str.split(/\s+/).length
-        else
-            str.length
-        end
+        tokens = str.scan(/[\p{Han}]|[\p{L}\p{N}]+|[^\s]/)
+        tokens.length
     end
 
     def get_chunk(idx)
