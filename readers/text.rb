@@ -8,11 +8,16 @@ class TextReader
         @chunks = []
     end
 
+    MAX_WORDS = 7900
+
     def load
         return self if @loaded
 
-        chunk = ""
+        lines = []
+        boundary = 0
+        words = 0
         in_frontmatter = false
+
         File.foreach(@file) do |line|
             stripped = line.strip
 
@@ -26,19 +31,41 @@ class TextReader
                 next
             end
 
-            if line.start_with?('- ') && line.include?(':') || line.start_with?('  - [[')
+            if (line.start_with?('- ') && line.include?(':')) || line.start_with?('  - [[')
                 next
             elsif line.start_with?('<')
                 next
-            else
-                chunk << line unless stripped.empty?
+            end
+
+            if stripped == '---'
+                boundary = lines.length
+                next
+            end
+
+            lines << line
+            words += count_tokens(stripped)
+
+            boundary = lines.length if stripped.empty?
+
+            if words >= MAX_WORDS
+                split_at = boundary.zero? ? lines.length : boundary
+                @chunks << lines[0, split_at].join
+                lines = lines[split_at..-1] || []
+                words = lines.sum { |l| count_tokens(l.strip) }
+                boundary = 0
             end
         end
 
-        @chunks << chunk
+        @chunks << lines.join unless lines.empty?
         @loaded = true
 
         self
+    end
+
+    def count_tokens(str)
+        return 0 if str.nil? || str.empty?
+        tokens = str.scan(/[\p{Han}]|[\p{L}\p{N}]+|[^\s]/)
+        tokens.length
     end
 
     def get_chunk(idx)
