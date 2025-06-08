@@ -29,7 +29,7 @@ if OPENAI_KEY.empty?
     exit 9
 end
 
-CONFIG.paths.each do |path|
+def index_path(path)
     STDOUT << "Read path name: #{path.name}, reader: #{path.reader}\n"
 
     # Read existing index
@@ -97,3 +97,9 @@ CONFIG.paths.each do |path|
 
     STDOUT << "]\nDone @#{Time.now}, Created: #{created}, Skipped: #{skipped}\n"
 end
+
+threads = CONFIG.paths.map do |path|
+    Thread.new { index_path(path) }
+end
+
+threads.each(&:join)
