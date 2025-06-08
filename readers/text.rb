@@ -8,7 +8,7 @@ class TextReader
         @chunks = []
     end
 
-    MAX_WORDS = 7900
+    MAX_WORDS = 6000
 
     def load
         return self if @loaded
