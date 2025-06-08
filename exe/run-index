@@ -62,23 +62,28 @@ CONFIG.paths.each do |path|
     created = 0
     File.open(index_file, "w") do |index_newdb|
         files.each_with_index do |file, file_idx|
-            chunks = reader_class.new(file).load.chunks
+            begin
+                chunks = reader_class.new(file).load.chunks
 
-            chunks.each_with_index do |chunk, chunk_idx|
-                hash = Digest::SHA256.hexdigest(chunk)
+                chunks.each_with_index do |chunk, chunk_idx|
+                    hash = Digest::SHA256.hexdigest(chunk)
 
-                if index_db[hash] # found in old DB
-                    index_newdb.puts(index_db[hash].to_json)
+                    if index_db[hash] # found in old DB
+                        index_newdb.puts(index_db[hash].to_json)
 
-                    skipped += 1
-                    next
+                        skipped += 1
+                        next
+                    end
+
+                    created += 1
+                    embedding = embedding(chunk)
+
+                    line = { path: file, hash: hash, chunk: chunk_idx, embedding: embedding }
+                    index_newdb.puts(line.to_json)
                 end
-
-                created += 1
-                embedding = embedding(chunk)
-
-                line = { path: file, hash: hash, chunk: chunk_idx, embedding: embedding }
-                index_newdb.puts(line.to_json)
+            rescue => e
+                STDOUT << "\nError indexing #{file}: #{e}\n"
+                next
             end
 
             if file_idx % 50 == 0 # flush the file writes
