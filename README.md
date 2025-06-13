@@ -12,6 +12,7 @@ RAG on Markdown Files
 - Run `run-index config.json` (processes each path concurrently)
 - Run `run-server config.json` and open `http://localhost:4567/q.html`
 - Open `http://localhost:4567/duplicate.html` to review duplicate clusters
+- Open `http://localhost:4567/random.html` to explore notes randomly
 
 ## Publishing
 
