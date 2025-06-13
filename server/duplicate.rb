@@ -2,6 +2,7 @@ require "json"
 require_relative "../llm/embedding"
 require_relative "../readers/reader"
 require_relative "retriever" # for extract_id and extract_url
+require_relative "../storage/index_cache"
 
 # Find duplicate chunks across lookup paths using embedding similarity
 # Returns array of clusters, each an array of items with :path, :id, :url, :text
@@ -10,33 +11,31 @@ def find_duplicates(lookup_paths, threshold = 0.9)
   items = []
 
   lookup_paths.each do |p|
-    index_file = File.expand_path(p.out)
-    next unless File.exist?(index_file)
+    index = load_index_cache(p)
+    next unless index
 
-    reader_cls = get_reader(p.reader)
+    reader_cls = index.reader_cls
     next unless reader_cls
     file_cache = {}
 
-    File.foreach(index_file) do |line|
-      item = JSON.parse(line)
-      reader = file_cache[item["path"]] ||= reader_cls.new(item["path"]).load
-      text = reader.get_chunk(item["chunk"])
+    index.items.each do |it|
+      reader = file_cache[it[:path]] ||= reader_cls.new(it[:path]).load
+      text = reader.get_chunk(it[:chunk])
       items << {
         path: p.name,
-        id: extract_id(item["path"]),
-        url: extract_url(item["path"], p.url),
-        embedding: item["embedding"],
+        id: extract_id(it[:path]),
+        url: extract_url(it[:path], p.url),
+        embedding: it[:embedding],
+        bucket: it[:bucket],
         text: text
       }
     end
   end
 
-  # normalize embeddings and build buckets for approximate search
+  # build buckets for approximate search
   buckets = Hash.new { |h, k| h[k] = [] }
   items.each_with_index do |it, i|
-    it[:embedding] = normalize_embedding(it[:embedding])
-    key = bucket_key(it[:embedding])
-    buckets[key] << i
+    buckets[it[:bucket]] << i
   end
 
   clusters = []
@@ -51,7 +50,7 @@ def find_duplicates(lookup_paths, threshold = 0.9)
     until queue.empty?
       i = queue.pop
       cluster_indices << i
-      neighbor_indices = neighbor_keys(bucket_key(items[i][:embedding])).flat_map { |k| buckets[k] }
+      neighbor_indices = neighbor_keys(items[i][:bucket]).flat_map { |k| buckets[k] }
       neighbor_indices.each do |j|
         next if visited[j] || j == i
         sim = dot_product(items[i][:embedding], items[j][:embedding])

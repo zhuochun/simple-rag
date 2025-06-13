@@ -4,6 +4,7 @@ require_relative "cache"
 require_relative "../llm/llm"
 require_relative "../llm/embedding"
 require_relative "../readers/reader"
+require_relative "../storage/index_cache"
 
 AGENT_PROMPT = <<~PROMPT
 Expand the user input to a better search query so it is easier to retrieve related markdown
@@ -24,36 +25,33 @@ end
 
 def retrieve_by_embedding(lookup_paths, q)
     qe = CACHE.get_or_set(q, method(:embedding).to_proc)
+    qn = normalize_embedding(qe)
 
     entries = []
     lookup_paths.each do |p|
         STDOUT << "Reading index: #{p.name}\n"
 
-        index_file = File.expand_path(p.out)
-        unless File.exist?(index_file)
-            STDOUT << "Path not exists! path: #{index_file}\n"
-            next
-        end
+        index = load_index_cache(p)
+        next unless index
+        reader_cls = index.reader_cls
+        next unless reader_cls
 
-        reader = get_reader(p.reader)
-        if reader.nil?
-            STDOUT << "Reader undefinied! reader: #{path.reader}\n"
-            next
-        end
+        bucket_ids = neighbor_keys(bucket_key(qn)).flat_map { |k| index.buckets[k] }.uniq
+        bucket_ids.each do |idx|
+            item = index.items[idx]
 
-        File.foreach(index_file) do |line|
-            item = JSON.parse(line)
-
-            score = cosine_similarity(qe, item["embedding"])
+            score = dot_product(qn, item[:embedding])
             next if score < p.threshold
 
-            item["score"] = score
-            item["lookup"] = p.name
-            item["id"] = extract_id(item["path"])
-            item["url"] = extract_url(item["path"], p.url)
-            item["reader"] = reader.new(item["path"])
-
-            entries << item
+            entries << {
+                "path" => item[:path],
+                "chunk" => item[:chunk],
+                "score" => score,
+                "lookup" => p.name,
+                "id" => extract_id(item[:path]),
+                "url" => extract_url(item[:path], p.url),
+                "reader" => reader_cls.new(item[:path])
+            }
         end
 
         STDOUT << "Matched num: #{entries.length}\n"
