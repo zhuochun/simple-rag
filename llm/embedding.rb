@@ -1,19 +1,38 @@
 
 def cosine_similarity(array1, array2)
-  dot_product = 0.0
-  norm_a = 0.0
-  norm_b = 0.0
+  prod = dot_product(array1, array2)
+  norm_a = Math.sqrt(array1.inject(0.0) { |s, v| s + v * v })
+  norm_b = Math.sqrt(array2.inject(0.0) { |s, v| s + v * v })
+  prod / (norm_a * norm_b)
+end
 
-  array1.each_with_index do |value1, index|
-    value2 = array2[index]
+# Calculate dot product on two equal length arrays
+def dot_product(a1, a2)
+  sum = 0.0
+  a1.each_with_index { |v, i| sum += v * a2[i] }
+  sum
+end
 
-    dot_product += value1 * value2
-    norm_a += value1 * value1
-    norm_b += value2 * value2
+# Normalize an embedding to unit length
+def normalize_embedding(embedding)
+  norm = Math.sqrt(embedding.inject(0.0) { |s, v| s + v * v })
+  embedding.map { |v| v / norm }
+end
+
+# Generate an integer hash based on embedding sign buckets
+def bucket_key(embedding, dims = 10)
+  step = embedding.length / dims
+  key = 0
+  dims.times do |i|
+    key <<= 1
+    key |= 1 if embedding[i * step] >= 0
   end
+  key
+end
 
-  norm_a = Math.sqrt(norm_a)
-  norm_b = Math.sqrt(norm_b)
-
-  cosine_similarity = dot_product / (norm_a * norm_b)
+# Return neighboring bucket keys with Hamming distance 1
+def neighbor_keys(key, dims = 10)
+  keys = [key]
+  dims.times { |i| keys << (key ^ (1 << i)) }
+  keys
 end
