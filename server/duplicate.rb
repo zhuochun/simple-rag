@@ -31,6 +31,14 @@ def find_duplicates(lookup_paths, threshold = 0.9)
     end
   end
 
+  # normalize embeddings and build buckets for approximate search
+  buckets = Hash.new { |h, k| h[k] = [] }
+  items.each_with_index do |it, i|
+    it[:embedding] = normalize_embedding(it[:embedding])
+    key = bucket_key(it[:embedding])
+    buckets[key] << i
+  end
+
   clusters = []
   visited = Array.new(items.length, false)
 
@@ -43,9 +51,10 @@ def find_duplicates(lookup_paths, threshold = 0.9)
     until queue.empty?
       i = queue.pop
       cluster_indices << i
-      (i + 1...items.length).each do |j|
-        next if visited[j]
-        sim = cosine_similarity(items[i][:embedding], items[j][:embedding])
+      neighbor_indices = neighbor_keys(bucket_key(items[i][:embedding])).flat_map { |k| buckets[k] }
+      neighbor_indices.each do |j|
+        next if visited[j] || j == i
+        sim = dot_product(items[i][:embedding], items[j][:embedding])
         if sim >= threshold
           visited[j] = true
           queue << j
