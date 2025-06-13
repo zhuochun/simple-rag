@@ -14,6 +14,7 @@ require 'sinatra/base'
 require_relative "../server/retriever"
 require_relative "../server/synthesizer"
 require_relative "../server/discuss"
+require_relative "../server/duplicate"
 
 if ARGV.length != 1
     STDOUT << "Invalid arguments received, need a config file\n"
@@ -172,6 +173,24 @@ class SimpleRagServer < Sinatra::Application
         discussion = discuss_note(data["note"])
 
         { discussion: discussion }.to_json
+    end
+
+    # find duplicate notes across selected paths
+    post '/duplicates' do
+        content_type :json
+
+        data = JSON.parse(request.body.read)
+
+        selected = data["paths"]
+        threshold = (data["threshold"] || 0.9).to_f
+        if !selected || selected.empty?
+            selected = CONFIG.paths.map(&:name)
+        end
+        lookup_paths = selected.map { |name| CONFIG.path_map[name] }
+
+        clusters = find_duplicates(lookup_paths, threshold)
+
+        { clusters: clusters }.to_json
     end
 end
 

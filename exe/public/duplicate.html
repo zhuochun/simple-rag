@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Duplicate Finder</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 20px;
+            font-family: Arial, sans-serif;
+        }
+        #paths-list {
+            list-style-type: none;
+            padding: 0;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+        }
+        #paths-list li {
+            display: flex;
+            align-items: center;
+        }
+        #paths-list label {
+            margin-left: 5px;
+        }
+        #threshold {
+            width: 60px;
+        }
+        .cluster {
+            border: 1px solid #ccc;
+            padding: 10px;
+            margin-bottom: 20px;
+        }
+        .card {
+            border: 1px solid #ddd;
+            padding: 10px;
+            margin: 5px;
+        }
+    </style>
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+</head>
+<body>
+    <div>
+        <input type="number" id="threshold" value="0.9" step="0.05" min="0" max="1" />
+        <button id="find-btn">Find Duplicates</button>
+    </div>
+    <ul id="paths-list"></ul>
+    <div id="clusters"></div>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            const pathsList = document.getElementById('paths-list');
+            const findBtn = document.getElementById('find-btn');
+            const clustersDiv = document.getElementById('clusters');
+            const thresholdInput = document.getElementById('threshold');
+
+            fetch('http://localhost:4567/paths')
+                .then(resp => resp.json())
+                .then(data => {
+                    data.forEach(item => {
+                        const li = document.createElement('li');
+                        const checkbox = document.createElement('input');
+                        checkbox.type = 'checkbox';
+                        checkbox.id = item.name;
+                        checkbox.name = item.name;
+                        checkbox.checked = !!item.searchDefault;
+                        const label = document.createElement('label');
+                        label.htmlFor = item.name;
+                        label.textContent = item.name;
+                        li.appendChild(checkbox);
+                        li.appendChild(label);
+                        pathsList.appendChild(li);
+                    });
+                });
+
+            function renderClusters(clusters) {
+                clustersDiv.innerHTML = '';
+                clusters.forEach(cluster => {
+                    const div = document.createElement('div');
+                    div.className = 'cluster';
+                    const mergeBtn = document.createElement('button');
+                    mergeBtn.textContent = 'Merge All';
+                    mergeBtn.addEventListener('click', () => {
+                        alert('Merge placeholder');
+                    });
+                    div.appendChild(mergeBtn);
+                    cluster.forEach(item => {
+                        const card = document.createElement('div');
+                        card.className = 'card';
+                        card.innerHTML = `<div><strong>${item.path}:</strong> <a href="${item.url}">${item.id}</a></div>` +
+                                         `<div class="markdown">${marked.parse(item.text)}</div>`;
+                        div.appendChild(card);
+                    });
+                    clustersDiv.appendChild(div);
+                });
+            }
+
+            findBtn.addEventListener('click', () => {
+                const checkedPaths = Array.from(pathsList.querySelectorAll('input[type="checkbox"]:checked')).map(c => c.name);
+                const threshold = parseFloat(thresholdInput.value) || 0.9;
+                fetch('http://localhost:4567/duplicates', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ paths: checkedPaths, threshold: threshold })
+                }).then(resp => resp.json())
+                  .then(data => { renderClusters(data.clusters); });
+            });
+        });
+    </script>
+</body>
+</html>
