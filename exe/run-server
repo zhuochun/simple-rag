@@ -192,6 +192,74 @@ class SimpleRagServer < Sinatra::Application
 
         { clusters: clusters }.to_json
     end
+
+    # return random notes from selected paths
+    post '/random' do
+        content_type :json
+
+        data = JSON.parse(request.body.read)
+
+        selected = data["paths"]
+        count = (data["count"] || 3).to_i
+        if !selected || selected.empty?
+            selected = CONFIG.paths.map(&:name)
+        end
+        lookup_paths = selected.map { |name| CONFIG.path_map[name] }
+
+        samples = []
+        lookup_paths.each do |p|
+            index = load_index_cache(p)
+            next unless index
+            reader_cls = index.reader_cls
+            next unless reader_cls
+
+            index.items.sample(count).each do |it|
+                samples << {
+                    path: p.name,
+                    lookup: p.name,
+                    id: extract_id(it[:path]),
+                    url: extract_url(it[:path], p.url),
+                    text: reader_cls.new(it[:path]).load.get_chunk(it[:chunk]),
+                    score: 0,
+                }
+            end
+        end
+
+        samples = samples.sample(count)
+
+        { data: samples }.to_json
+    end
+
+    # retrieve notes similar to provided note text
+    post '/similar' do
+        content_type :json
+
+        data = JSON.parse(request.body.read)
+
+        selected = data["paths"]
+        topN = (data["topN"] || 3).to_i
+        if !selected || selected.empty?
+            selected = CONFIG.paths.map(&:name)
+        end
+        lookup_paths = selected.map { |name| CONFIG.path_map[name] }
+
+        entries = retrieve_by_embedding(lookup_paths, data["note"] || "")
+        entries = entries.sort_by { |item| -item["score"] }.take(topN)
+
+        resp = { data: [] }
+        entries.each do |item|
+            resp[:data] << {
+                path: item["path"],
+                lookup: item["lookup"],
+                id: item["id"],
+                url: item["url"],
+                text: item["reader"].load.get_chunk(item["chunk"]),
+                score: item["score"],
+            }
+        end
+
+        resp.to_json
+    end
 end
 
 SimpleRagServer.run!
