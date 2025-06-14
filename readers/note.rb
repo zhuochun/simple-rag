@@ -17,8 +17,18 @@ class NoteReader
     def load
         return self if @loaded
 
-        File.open(@file) do |file|
-            parse_conf(file)
+        unless File.exist?(@file)
+            @loaded = true
+            return self
+        end
+
+        begin
+            File.open(@file) do |file|
+                parse_conf(file)
+            end
+        rescue Errno::ENOENT
+            @loaded = true
+            return self
         end
 
         @notes.each do |note|
@@ -69,6 +79,9 @@ class NoteReader
     end
 
     def get_chunk(idx)
-        @chunks[idx || 0]
+        return nil if @chunks.empty?
+        index = idx || 0
+        return nil if index >= @chunks.length || index < -@chunks.length
+        @chunks[index]
     end
 end
