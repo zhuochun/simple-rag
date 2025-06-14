@@ -9,6 +9,7 @@
         "url": "",
         "model": "text-embedding-3-small"
     },
+    "dismissedDuplicatesFile": "dismissed.txt",
     "paths": [
         {
             "name": "temp",

@@ -4,6 +4,10 @@ require_relative "../readers/reader"
 require_relative "retriever" # for extract_id and extract_url
 require_relative "../storage/index_cache"
 
+def cluster_key(cluster)
+  cluster.map { |it| "#{it[:path]}/#{it[:id]}" }.sort.join('|')
+end
+
 # Find duplicate chunks across lookup paths using embedding similarity
 # Returns array of clusters, each an array of items with :path, :id, :url, :text
 

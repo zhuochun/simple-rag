@@ -27,6 +27,20 @@ CONFIG.paths = CONFIG.paths.map { |p| OpenStruct.new(p) }
 CONFIG.paths.each { |p| p.searchDefault = !!p.searchDefault }
 CONFIG.path_map = {}
 CONFIG.paths.each { |p| CONFIG.path_map[p.name] = p }
+require 'set'
+DISMISSED_FILE = CONFIG.dismissedDuplicatesFile
+DISMISSED_CLUSTERS = if DISMISSED_FILE && File.exist?(DISMISSED_FILE)
+    Set.new(File.read(DISMISSED_FILE).split(/\n+/))
+else
+    Set.new
+end
+
+def save_dismissed
+    return unless DISMISSED_FILE
+    File.open(DISMISSED_FILE, 'w') do |f|
+        DISMISSED_CLUSTERS.each { |id| f.puts(id) }
+    end
+end
 
 OPENAI_KEY = ENV["DOT_OPENAI_KEY"] || ""
 if OPENAI_KEY.empty?
@@ -190,7 +204,22 @@ class SimpleRagServer < Sinatra::Application
 
         clusters = find_duplicates(lookup_paths, threshold)
 
+        clusters = clusters.map { |c| { id: cluster_key(c), items: c } }
+        clusters.reject! { |c| DISMISSED_CLUSTERS.include?(c[:id]) }
+
         { clusters: clusters }.to_json
+    end
+
+    # dismiss a duplicate cluster
+    post '/dismiss' do
+        content_type :json
+
+        data = JSON.parse(request.body.read)
+        if data['id']
+            DISMISSED_CLUSTERS.add(data['id'])
+            save_dismissed
+        end
+        { ok: true }.to_json
     end
 
     # return random notes from selected paths
