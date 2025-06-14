@@ -86,8 +86,18 @@
                     mergeBtn.addEventListener('click', () => {
                         alert('Merge placeholder');
                     });
+                    const dismissBtn = document.createElement('button');
+                    dismissBtn.textContent = 'Hide';
+                    dismissBtn.addEventListener('click', () => {
+                        fetch('http://localhost:4567/dismiss', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ id: cluster.id })
+                        }).then(() => { div.remove(); });
+                    });
                     div.appendChild(mergeBtn);
-                    cluster.forEach(item => {
+                    div.appendChild(dismissBtn);
+                    cluster.items.forEach(item => {
                         const card = document.createElement('div');
                         card.className = 'card';
                         applyBackgroundColor(card, item.path);
