@@ -43,6 +43,7 @@
         }
     </style>
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <script src="utils.js"></script>
 </head>
 <body>
     <button id="random-button">Random</button>
@@ -60,6 +61,7 @@
                 .then(data => {
                     data.forEach(item => {
                         const li = document.createElement('li');
+                        applyBackgroundColor(li, item.name);
                         const checkbox = document.createElement('input');
                         checkbox.type = 'checkbox';
                         checkbox.id = item.name;
@@ -83,6 +85,7 @@
                 data.data.forEach(item => {
                     const div = document.createElement('div');
                     div.className = 'card';
+                    applyBackgroundColor(div, item.lookup);
                     div.dataset.note = item.text;
                     div.innerHTML = `
                         <div><strong>Path:</strong> <a href="${item.url}">${item.id}</a></div>

@@ -77,6 +77,7 @@
         }
     </style>
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <script src="utils.js"></script>
 </head>
 <body>
     <div id="main-content">
@@ -108,7 +109,7 @@
                 .then(data => {
                     data.forEach(item => {
                         const li = document.createElement('li');
-                        li.style.backgroundColor = textToLightColor(item.name);
+                        applyBackgroundColor(li, item.name);
 
                         const checkbox = document.createElement('input');
                         checkbox.type = 'checkbox';
@@ -151,7 +152,7 @@
                     resp.data.forEach(item => {
                         const div = document.createElement('div');
                         div.className = 'response-item';
-                        div.style.backgroundColor = textToLightColor(item.lookup);
+                        applyBackgroundColor(div, item.lookup);
                         div.dataset.note = item.text;
                         div.innerHTML = `
                             <div><strong>Path:</strong> <a href="${item.url}">${item.id}</a></div>
@@ -193,7 +194,7 @@
                     if (!!resp.expanded) {
                         const div = document.createElement('div');
                         div.className = 'response-item';
-                        div.style.backgroundColor = textToLightColor('expanded');
+                        applyBackgroundColor(div, 'expanded');
                         div.innerHTML = `<div><strong>Expanded Query:</strong> ${resp.expanded}</div>`;
                         responseContainer.appendChild(div);
                     }
@@ -201,7 +202,7 @@
                     if (resp.variants && resp.variants.length > 0) {
                         const div = document.createElement('div');
                         div.className = 'response-item';
-                        div.style.backgroundColor = textToLightColor('variants');
+                        applyBackgroundColor(div, 'variants');
                         div.innerHTML = `<div><strong>Variants:</strong> ${resp.variants.join(', ')}</div>`;
                         responseContainer.appendChild(div);
                     }
@@ -209,7 +210,7 @@
                     resp.data.forEach(item => {
                         const div = document.createElement('div');
                         div.className = 'response-item';
-                        div.style.backgroundColor = textToLightColor(item.lookup);
+                        applyBackgroundColor(div, item.lookup);
                         div.dataset.note = item.text;
                         div.innerHTML = `
                             <div><strong>Path:</strong> <a href="${item.url}">${item.id}</a></div>
@@ -229,21 +230,6 @@
             }
 
 
-            function textToLightColor(text) {
-                // Generate a hash from the text
-                let hash = 0;
-                for (let i = 0; i < text.length; i++) {
-                    hash = text.charCodeAt(i) + ((hash << 5) - hash);
-                }
-
-                // Use the hash to generate RGB values
-                let r = (hash & 0xFF) % 64 + 192; // 192-255
-                let g = ((hash >> 8) & 0xFF) % 64 + 192; // 192-255
-                let b = ((hash >> 16) & 0xFF) % 64 + 192; // 192-255
-
-                // Convert to hex and return
-                return `#${r.toString(16).padStart(2, '0')}${g.toString(16).padStart(2, '0')}${b.toString(16).padStart(2, '0')}`;
-            }
 
             function synthesizeNotes() {
                 if (retrievedNotes.length === 0) {
@@ -263,7 +249,7 @@
                 .then(resp => {
                     const div = document.createElement('div');
                     div.className = 'response-item';
-                    div.style.backgroundColor = textToLightColor('synthesize');
+                    applyBackgroundColor(div, 'synthesize');
                     div.innerHTML = `
                         <div class="markdown-content">${marked.parse(resp.note)}</div>
                     `;

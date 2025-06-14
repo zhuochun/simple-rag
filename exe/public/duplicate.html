@@ -39,6 +39,7 @@
         }
     </style>
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <script src="utils.js"></script>
 </head>
 <body>
     <div>
@@ -60,6 +61,7 @@
                 .then(data => {
                     data.forEach(item => {
                         const li = document.createElement('li');
+                        applyBackgroundColor(li, item.name);
                         const checkbox = document.createElement('input');
                         checkbox.type = 'checkbox';
                         checkbox.id = item.name;
@@ -88,6 +90,7 @@
                     cluster.forEach(item => {
                         const card = document.createElement('div');
                         card.className = 'card';
+                        applyBackgroundColor(card, item.path);
                         card.innerHTML = `<div><strong>${item.path}:</strong> <a href="${item.url}">${item.id}</a></div>` +
                                          `<div class="markdown">${marked.parse(item.text)}</div>`;
                         div.appendChild(card);
