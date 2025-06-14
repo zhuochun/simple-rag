@@ -12,14 +12,27 @@ class JournalReader
     def load
         return self if @loaded
 
-        parse_journal
+        unless File.exist?(@file)
+            @loaded = true
+            return self
+        end
+
+        begin
+            parse_journal
+        rescue Errno::ENOENT
+            @loaded = true
+            return self
+        end
 
         @loaded = true
         self
     end
 
     def get_chunk(idx)
-        @chunks[idx || 0]
+        return nil if @chunks.empty?
+        index = idx || 0
+        return nil if index >= @chunks.length || index < -@chunks.length
+        @chunks[index]
     end
 
     private
