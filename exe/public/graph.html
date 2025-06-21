@@ -157,7 +157,13 @@
             return Array.from(pathsList.querySelectorAll('input[type="checkbox"]:checked')).map(c => c.name);
         }
 
+        let currentItems = [];
+        let itemSet = new Set();
+
         function renderGraph(items) {
+            currentItems = items;
+            itemSet = new Set(items.map(it => it.url));
+
             graph.innerHTML = '';
             resizeCanvas();
             const ctx = canvas.getContext('2d');
@@ -170,13 +176,15 @@
             const scores = items.map(it => it.score);
             const maxScore = Math.max(...scores);
             const minScore = Math.min(...scores);
-            const baseRadius = 100;
-            const radiusScale = 200;
+
+            const nodeWidth = 250;
+            const baseRadius = nodeWidth;
+            const radiusScale = nodeWidth * 4;
 
             const centerNode = document.createElement('div');
             centerNode.className = 'node';
             centerNode.innerHTML = `<strong>${searchInput.value}</strong>`;
-            centerNode.style.left = '-125px';
+            centerNode.style.left = `-${nodeWidth/2}px`;
             centerNode.style.top = '-50px';
             graph.appendChild(centerNode);
 
@@ -190,9 +198,11 @@
                 const div = document.createElement('div');
                 div.className = 'node';
                 applyBackgroundColor(div, item.lookup);
+                div.dataset.note = item.text;
                 div.innerHTML = `\n                    <div><strong>Path:</strong> <a href="${item.url}">${item.id}</a></div>\n                    <div><strong>Score:</strong> ${item.score}</div>\n                    <div class="markdown-content">${marked.parse(item.text)}</div>\n                `;
-                div.style.left = `${x - 125}px`;
+                div.style.left = `${x - nodeWidth/2}px`;
                 div.style.top = `${y - 50}px`;
+                div.addEventListener('dblclick', () => fetchSimilar(div.dataset.note));
                 graph.appendChild(div);
 
                 ctx.beginPath();
@@ -200,6 +210,23 @@
                 ctx.lineTo(x, y);
                 ctx.stroke();
             });
+        }
+
+        function fetchSimilar(note) {
+            fetch('http://localhost:4567/similar', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ paths: selectedPaths(), note: note, topN: 3 })
+            }).then(resp => resp.json())
+              .then(resp => {
+                  resp.data.forEach(it => {
+                      if (!itemSet.has(it.url)) {
+                          currentItems.push(it);
+                          itemSet.add(it.url);
+                      }
+                  });
+                  renderGraph(currentItems);
+              });
         }
 
         function performSearch(url) {
