@@ -21,6 +21,7 @@ gem install simple-rag-zc
     - Use **Synthesize** to combine retrieved notes
   - Open `http://localhost:4567/duplicate.html` to review duplicate clusters
   - Open `http://localhost:4567/random.html` to explore notes randomly
+  - Open `http://localhost:4567/graph.html` to explore search results as a graph
 
 ## Publishing
 
