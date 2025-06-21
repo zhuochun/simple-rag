@@ -1,0 +1,223 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Graph Search</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+            font-family: Arial, sans-serif;
+        }
+        #controls {
+            padding: 10px;
+        }
+        #paths-list {
+            list-style-type: none;
+            padding: 0;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+        }
+        #paths-list li {
+            display: flex;
+            align-items: center;
+        }
+        #paths-list label {
+            margin-left: 5px;
+        }
+        #search-input {
+            height: 40px;
+            font-size: 16px;
+            width: 300px;
+        }
+        #search-button, #search-plus-button {
+            height: 46px;
+            margin-left: 10px;
+        }
+        #graph-wrapper {
+            flex-grow: 1;
+            position: relative;
+            overflow: hidden;
+            background: #f5f5f5;
+            cursor: grab;
+        }
+        #graph {
+            position: absolute;
+            left: 0;
+            top: 0;
+        }
+        .node {
+            position: absolute;
+            width: 250px;
+            border: 1px solid #ccc;
+            padding: 10px;
+            border-radius: 5px;
+            background: #fff;
+            box-sizing: border-box;
+        }
+        canvas {
+            position: absolute;
+            left: 0;
+            top: 0;
+            pointer-events: none;
+        }
+    </style>
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <script src="utils.js"></script>
+</head>
+<body>
+    <div id="controls">
+        <input type="text" id="search-input" placeholder="Enter your search query">
+        <button id="search-button">Search</button>
+        <button id="search-plus-button">Search+</button>
+        <ul id="paths-list"></ul>
+    </div>
+    <div id="graph-wrapper">
+        <canvas id="lines-canvas"></canvas>
+        <div id="graph"></div>
+    </div>
+
+<script>
+    document.addEventListener('DOMContentLoaded', function() {
+        const pathsList = document.getElementById('paths-list');
+        const searchInput = document.getElementById('search-input');
+        const searchButton = document.getElementById('search-button');
+        const searchPlusButton = document.getElementById('search-plus-button');
+        const graphWrapper = document.getElementById('graph-wrapper');
+        const graph = document.getElementById('graph');
+        const canvas = document.getElementById('lines-canvas');
+        let offsetX = 0, offsetY = 0;
+        let isPanning = false;
+        let startX = 0, startY = 0;
+
+        function setTransform() {
+            graph.style.transform = `translate(${offsetX}px, ${offsetY}px)`;
+            canvas.style.transform = `translate(${offsetX}px, ${offsetY}px)`;
+        }
+
+        function resizeCanvas() {
+            canvas.width = graphWrapper.clientWidth;
+            canvas.height = graphWrapper.clientHeight;
+        }
+
+        window.addEventListener('resize', function() {
+            resizeCanvas();
+            offsetX = graphWrapper.clientWidth / 2;
+            offsetY = graphWrapper.clientHeight / 2;
+            setTransform();
+        });
+
+        graphWrapper.addEventListener('mousedown', function(e) {
+            isPanning = true;
+            startX = e.clientX;
+            startY = e.clientY;
+            graphWrapper.style.cursor = 'grabbing';
+        });
+
+        document.addEventListener('mousemove', function(e) {
+            if (!isPanning) return;
+            offsetX += e.clientX - startX;
+            offsetY += e.clientY - startY;
+            startX = e.clientX;
+            startY = e.clientY;
+            setTransform();
+        });
+
+        document.addEventListener('mouseup', function() {
+            isPanning = false;
+            graphWrapper.style.cursor = 'grab';
+        });
+
+        fetch('http://localhost:4567/paths')
+            .then(resp => resp.json())
+            .then(data => {
+                data.forEach(item => {
+                    const li = document.createElement('li');
+                    applyBackgroundColor(li, item.name);
+                    const checkbox = document.createElement('input');
+                    checkbox.type = 'checkbox';
+                    checkbox.id = item.name;
+                    checkbox.name = item.name;
+                    checkbox.checked = !!item.searchDefault;
+                    const label = document.createElement('label');
+                    label.htmlFor = item.name;
+                    label.textContent = item.name;
+                    li.appendChild(checkbox);
+                    li.appendChild(label);
+                    pathsList.appendChild(li);
+                });
+            });
+
+        function selectedPaths() {
+            return Array.from(pathsList.querySelectorAll('input[type="checkbox"]:checked')).map(c => c.name);
+        }
+
+        function renderGraph(items) {
+            graph.innerHTML = '';
+            resizeCanvas();
+            const ctx = canvas.getContext('2d');
+            ctx.clearRect(0,0,canvas.width,canvas.height);
+
+            offsetX = graphWrapper.clientWidth / 2;
+            offsetY = graphWrapper.clientHeight / 2;
+            setTransform();
+
+            const scores = items.map(it => it.score);
+            const maxScore = Math.max(...scores);
+            const minScore = Math.min(...scores);
+            const baseRadius = 100;
+            const radiusScale = 200;
+
+            const centerNode = document.createElement('div');
+            centerNode.className = 'node';
+            centerNode.innerHTML = `<strong>${searchInput.value}</strong>`;
+            centerNode.style.left = '-125px';
+            centerNode.style.top = '-50px';
+            graph.appendChild(centerNode);
+
+            items.forEach((item, index) => {
+                const angle = index * (2 * Math.PI / items.length);
+                const norm = maxScore === minScore ? 0.5 : (maxScore - item.score) / (maxScore - minScore);
+                const radius = baseRadius + radiusScale * norm;
+                const x = radius * Math.cos(angle);
+                const y = radius * Math.sin(angle);
+
+                const div = document.createElement('div');
+                div.className = 'node';
+                applyBackgroundColor(div, item.lookup);
+                div.innerHTML = `\n                    <div><strong>Path:</strong> <a href="${item.url}">${item.id}</a></div>\n                    <div><strong>Score:</strong> ${item.score}</div>\n                    <div class="markdown-content">${marked.parse(item.text)}</div>\n                `;
+                div.style.left = `${x - 125}px`;
+                div.style.top = `${y - 50}px`;
+                graph.appendChild(div);
+
+                ctx.beginPath();
+                ctx.moveTo(0, 0);
+                ctx.lineTo(x, y);
+                ctx.stroke();
+            });
+        }
+
+        function performSearch(url) {
+            const query = searchInput.value;
+            fetch(url, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ q: query, paths: selectedPaths() })
+            }).then(resp => resp.json())
+              .then(resp => { renderGraph(resp.data); });
+        }
+
+        searchButton.addEventListener('click', () => performSearch('http://localhost:4567/q'));
+        searchPlusButton.addEventListener('click', () => performSearch('http://localhost:4567/q_plus'));
+        searchInput.addEventListener('keypress', function(e) {
+            if (e.key === 'Enter') { performSearch('http://localhost:4567/q'); }
+        });
+    });
+</script>
+</body>
+</html>
