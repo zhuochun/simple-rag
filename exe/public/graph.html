@@ -50,21 +50,26 @@
             position: absolute;
             left: 0;
             top: 0;
+            transform-origin: 0 0;
         }
         .node {
             position: absolute;
-            width: 250px;
+            width: 200px;
+            height: 120px;
+            overflow-y: auto;
             border: 1px solid #ccc;
-            padding: 10px;
+            padding: 5px;
             border-radius: 5px;
             background: #fff;
             box-sizing: border-box;
+            font-size: 12px;
         }
         canvas {
             position: absolute;
             left: 0;
             top: 0;
             pointer-events: none;
+            transform-origin: 0 0;
         }
     </style>
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
@@ -92,12 +97,13 @@
         const graph = document.getElementById('graph');
         const canvas = document.getElementById('lines-canvas');
         let offsetX = 0, offsetY = 0;
+        let scale = 1;
         let isPanning = false;
         let startX = 0, startY = 0;
 
         function setTransform() {
-            graph.style.transform = `translate(${offsetX}px, ${offsetY}px)`;
-            canvas.style.transform = `translate(${offsetX}px, ${offsetY}px)`;
+            graph.style.transform = `translate(${offsetX}px, ${offsetY}px) scale(${scale})`;
+            canvas.style.transform = `translate(${offsetX}px, ${offsetY}px) scale(${scale})`;
         }
 
         function resizeCanvas() {
@@ -107,12 +113,14 @@
 
         window.addEventListener('resize', function() {
             resizeCanvas();
+            scale = 1;
             offsetX = graphWrapper.clientWidth / 2;
             offsetY = graphWrapper.clientHeight / 2;
             setTransform();
         });
 
         graphWrapper.addEventListener('mousedown', function(e) {
+            if (e.target !== graphWrapper) return;
             isPanning = true;
             startX = e.clientX;
             startY = e.clientY;
@@ -132,6 +140,17 @@
             isPanning = false;
             graphWrapper.style.cursor = 'grab';
         });
+
+        const minScale = 0.5;
+        const maxScale = 3;
+        graphWrapper.addEventListener('wheel', function(e) {
+            e.preventDefault();
+            const delta = e.deltaY < 0 ? 1.1 : 0.9;
+            scale *= delta;
+            if (scale < minScale) scale = minScale;
+            if (scale > maxScale) scale = maxScale;
+            setTransform();
+        }, { passive: false });
 
         fetch('http://localhost:4567/paths')
             .then(resp => resp.json())
@@ -177,7 +196,8 @@
             const maxScore = Math.max(...scores);
             const minScore = Math.min(...scores);
 
-            const nodeWidth = 250;
+            const nodeWidth = 200;
+            const nodeHeight = 120;
             const baseRadius = nodeWidth;
             const radiusScale = nodeWidth * 4;
 
@@ -185,7 +205,7 @@
             centerNode.className = 'node';
             centerNode.innerHTML = `<strong>${searchInput.value}</strong>`;
             centerNode.style.left = `-${nodeWidth/2}px`;
-            centerNode.style.top = '-50px';
+            centerNode.style.top = `-${nodeHeight/2}px`;
             graph.appendChild(centerNode);
 
             items.forEach((item, index) => {
@@ -201,7 +221,7 @@
                 div.dataset.note = item.text;
                 div.innerHTML = `\n                    <div><strong>Path:</strong> <a href="${item.url}">${item.id}</a></div>\n                    <div><strong>Score:</strong> ${item.score}</div>\n                    <div class="markdown-content">${marked.parse(item.text)}</div>\n                `;
                 div.style.left = `${x - nodeWidth/2}px`;
-                div.style.top = `${y - 50}px`;
+                div.style.top = `${y - nodeHeight/2}px`;
                 div.addEventListener('dblclick', () => fetchSimilar(div.dataset.note));
                 graph.appendChild(div);
 
