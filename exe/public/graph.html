@@ -64,7 +64,7 @@
             box-sizing: border-box;
             font-size: 12px;
         }
-        canvas {
+        #lines-canvas {
             position: absolute;
             left: 0;
             top: 0;
@@ -73,6 +73,7 @@
         }
     </style>
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <script src="https://d3js.org/d3.v7.min.js"></script>
     <script src="utils.js"></script>
 </head>
 <body>
@@ -83,7 +84,7 @@
         <ul id="paths-list"></ul>
     </div>
     <div id="graph-wrapper">
-        <canvas id="lines-canvas"></canvas>
+        <svg id="lines-canvas"></svg>
         <div id="graph"></div>
     </div>
 
@@ -95,7 +96,8 @@
         const searchPlusButton = document.getElementById('search-plus-button');
         const graphWrapper = document.getElementById('graph-wrapper');
         const graph = document.getElementById('graph');
-        const canvas = document.getElementById('lines-canvas');
+        const svg = document.getElementById('lines-canvas');
+
         let offsetX = 0, offsetY = 0;
         let scale = 1;
         let isPanning = false;
@@ -103,12 +105,12 @@
 
         function setTransform() {
             graph.style.transform = `translate(${offsetX}px, ${offsetY}px) scale(${scale})`;
-            canvas.style.transform = `translate(${offsetX}px, ${offsetY}px) scale(${scale})`;
+            svg.style.transform = `translate(${offsetX}px, ${offsetY}px) scale(${scale})`;
         }
 
         function resizeCanvas() {
-            canvas.width = graphWrapper.clientWidth;
-            canvas.height = graphWrapper.clientHeight;
+            svg.setAttribute('width', graphWrapper.clientWidth);
+            svg.setAttribute('height', graphWrapper.clientHeight);
         }
 
         window.addEventListener('resize', function() {
@@ -178,74 +180,107 @@
 
         let currentItems = [];
         let itemSet = new Set();
+        let nodes = [];
+        let links = [];
+        let simulation = null;
+
+        function addNode(item, isQuery=false) {
+            const n = {
+                id: isQuery ? 'query' : item.url,
+                item: item
+            };
+            const div = document.createElement('div');
+            div.className = 'node';
+            if (isQuery) {
+                div.innerHTML = `<strong>${item}</strong>`;
+            } else {
+                applyBackgroundColor(div, item.lookup);
+                div.dataset.note = item.text;
+                div.innerHTML = `\n                    <div><strong>Path:</strong> <a href="${item.url}">${item.id}</a></div>\n                    <div><strong>Score:</strong> ${item.score}</div>\n                    <div class="markdown-content">${marked.parse(item.text)}</div>\n                `;
+                div.addEventListener('dblclick', () => fetchSimilar(n));
+            }
+            graph.appendChild(div);
+            n.div = div;
+            nodes.push(n);
+            return n;
+        }
+
+        function startSimulation() {
+            if (simulation) simulation.stop();
+            simulation = d3.forceSimulation(nodes)
+                .force('link', d3.forceLink(links)
+                    .id(d => d.id)
+                    .distance(d => Math.max(50, 200 * (1 - (d.score || 0))))
+                    .strength(d => Math.max(0.1, d.score || 0)))
+                .force('charge', d3.forceManyBody().strength(-300))
+                .force('center', d3.forceCenter(0, 0));
+
+            simulation.on('tick', () => {
+                d3.select(svg).selectAll('line')
+                    .data(links)
+                    .join('line')
+                    .attr('stroke', '#999')
+                    .attr('x1', d => d.source.x)
+                    .attr('y1', d => d.source.y)
+                    .attr('x2', d => d.target.x)
+                    .attr('y2', d => d.target.y);
+
+                nodes.forEach(n => {
+                    if (!n.div) return;
+                    n.div.style.left = `${n.x - 100}px`;
+                    n.div.style.top = `${n.y - 60}px`;
+                });
+            });
+        }
 
         function renderGraph(items) {
-            currentItems = items;
+            currentItems = items.slice();
             itemSet = new Set(items.map(it => it.url));
-
+            nodes = [];
+            links = [];
             graph.innerHTML = '';
-            resizeCanvas();
-            const ctx = canvas.getContext('2d');
-            ctx.clearRect(0,0,canvas.width,canvas.height);
+            svg.innerHTML = '';
 
+            resizeCanvas();
             offsetX = graphWrapper.clientWidth / 2;
             offsetY = graphWrapper.clientHeight / 2;
             setTransform();
 
-            const scores = items.map(it => it.score);
-            const maxScore = Math.max(...scores);
-            const minScore = Math.min(...scores);
-
-            const nodeWidth = 200;
-            const nodeHeight = 120;
-            const baseRadius = nodeWidth;
-            const radiusScale = nodeWidth * 4;
-
-            const centerNode = document.createElement('div');
-            centerNode.className = 'node';
-            centerNode.innerHTML = `<strong>${searchInput.value}</strong>`;
-            centerNode.style.left = `-${nodeWidth/2}px`;
-            centerNode.style.top = `-${nodeHeight/2}px`;
-            graph.appendChild(centerNode);
-
-            items.forEach((item, index) => {
-                const angle = index * (2 * Math.PI / items.length);
-                const norm = maxScore === minScore ? 0.5 : (maxScore - item.score) / (maxScore - minScore);
-                const radius = baseRadius + radiusScale * norm;
-                const x = radius * Math.cos(angle);
-                const y = radius * Math.sin(angle);
-
-                const div = document.createElement('div');
-                div.className = 'node';
-                applyBackgroundColor(div, item.lookup);
-                div.dataset.note = item.text;
-                div.innerHTML = `\n                    <div><strong>Path:</strong> <a href="${item.url}">${item.id}</a></div>\n                    <div><strong>Score:</strong> ${item.score}</div>\n                    <div class="markdown-content">${marked.parse(item.text)}</div>\n                `;
-                div.style.left = `${x - nodeWidth/2}px`;
-                div.style.top = `${y - nodeHeight/2}px`;
-                div.addEventListener('dblclick', () => fetchSimilar(div.dataset.note));
-                graph.appendChild(div);
-
-                ctx.beginPath();
-                ctx.moveTo(0, 0);
-                ctx.lineTo(x, y);
-                ctx.stroke();
+            const qNode = addNode(searchInput.value, true);
+            items.forEach(it => {
+                const n = addNode(it);
+                links.push({ source: qNode, target: n, score: it.score });
             });
+
+            startSimulation();
         }
 
-        function fetchSimilar(note) {
+        function addItems(newItems, parentNode) {
+            let changed = false;
+            newItems.forEach(it => {
+                let target = nodes.find(n => n.id === it.url);
+                if (!target) {
+                    target = addNode(it);
+                    itemSet.add(it.url);
+                    currentItems.push(it);
+                    changed = true;
+                }
+                if (parentNode) {
+                    links.push({ source: parentNode, target: target, score: it.score });
+                    changed = true;
+                }
+            });
+            if (changed) startSimulation();
+        }
+
+        function fetchSimilar(node) {
             fetch('http://localhost:4567/similar', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ paths: selectedPaths(), note: note, topN: 3 })
+                body: JSON.stringify({ paths: selectedPaths(), note: node.item.text, topN: 3 })
             }).then(resp => resp.json())
               .then(resp => {
-                  resp.data.forEach(it => {
-                      if (!itemSet.has(it.url)) {
-                          currentItems.push(it);
-                          itemSet.add(it.url);
-                      }
-                  });
-                  renderGraph(currentItems);
+                  addItems(resp.data, node);
               });
         }
 
@@ -264,6 +299,7 @@
         searchInput.addEventListener('keypress', function(e) {
             if (e.key === 'Enter') { performSearch('http://localhost:4567/q'); }
         });
+
     });
 </script>
 </body>
