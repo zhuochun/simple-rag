@@ -175,9 +175,9 @@
             graph.innerHTML = '';
             if (!items || items.length === 0) { rootNode = null; return; }
             nodeMap.clear();
-            rootNode = { id: items[0].url, item: items[0], children: [] };
+            rootNode = { id: 'root', item: null, children: [] };
             nodeMap.set(rootNode.id, rootNode);
-            items.slice(1).forEach(it => addChild(rootNode, it));
+            items.forEach(it => addChild(rootNode, it));
             renderTreemap();
         }
 
@@ -224,8 +224,12 @@
 
             const merged = enter.merge(sel);
             merged.each(function(d) {
-                if (d.data.item) applyBackgroundColor(this, d.data.item.lookup);
+                if (d.data.item) {
+                    applyBackgroundColor(this, d.data.item.lookup);
+                }
             });
+
+            merged.style('display', d => d.data.item ? 'block' : 'none');
 
             merged.select('.content').html(d => {
                 if (!d.data.item) return `<strong>ROOT</strong>`;
