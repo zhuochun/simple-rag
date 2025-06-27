@@ -178,7 +178,7 @@
             rootNode = { id: 'root', item: null, children: [] };
             nodeMap.set(rootNode.id, rootNode);
             items.forEach(it => addChild(rootNode, it));
-            renderTreemap();
+            renderIcicle();
         }
 
         function fetchSimilar(node) {
@@ -189,11 +189,11 @@
             }).then(resp => resp.json())
               .then(resp => {
                   resp.data.forEach(it => addChild(node, it));
-                  renderTreemap();
+                  renderIcicle();
               });
         }
 
-        function renderTreemap() {
+        function renderIcicle() {
             if (!rootNode) return;
             graph.innerHTML = '';
             const width = graphWrapper.clientWidth;
@@ -203,10 +203,8 @@
                 .sum(d => Math.max(d.item ? d.item.score : 0, MIN_VALUE))
                 .sort((a, b) => b.value - a.value);
 
-            d3.treemap()
-                .size([width, height])
-                .padding(2)
-                .tile(d3.treemapSquarify)(root);
+            d3.partition()
+                .size([height, width])(root);
 
             const sel = d3.select(graph)
                 .selectAll('div.node')
@@ -240,10 +238,10 @@
                 `;
             });
 
-            merged.style('left', d => `${d.x0}px`)
-                .style('top', d => `${d.y0}px`)
-                .style('width', d => `${Math.max(20, d.x1 - d.x0)}px`)
-                .style('height', d => `${Math.max(20, d.y1 - d.y0)}px`);
+            merged.style('left', d => `${d.y0}px`)
+                .style('top', d => `${d.x0}px`)
+                .style('width', d => `${Math.max(20, d.y1 - d.y0)}px`)
+                .style('height', d => `${Math.max(20, d.x1 - d.x0)}px`);
         }
 
         function performSearch(url) {
