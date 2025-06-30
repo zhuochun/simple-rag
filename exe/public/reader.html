@@ -131,6 +131,24 @@
                                    '<div class="markdown-content">' + marked.parse(data.extraction) + '</div>';
                 responseContainer.appendChild(extDiv);
 
+                if (data.retrievals && data.retrievals.length > 0) {
+                    const retDiv = document.createElement('div');
+                    retDiv.className = 'response-item';
+                    applyBackgroundColor(retDiv, 'retrieval');
+                    let html = '<h3>Retrievals</h3>';
+                    data.retrievals.forEach((grp, idx) => {
+                        html += `<div><strong>Group ${idx + 1}</strong></div>`;
+                        grp.forEach(item => {
+                            html += `
+                                <div><strong>Path:</strong> <a href="${item.url}">${item.id}</a> (${item.score.toFixed(3)})</div>
+                                <div class="markdown-content">${marked.parse(item.text)}</div>
+                            `;
+                        });
+                    });
+                    retDiv.innerHTML = html;
+                    responseContainer.appendChild(retDiv);
+                }
+
                 const argDiv = document.createElement('div');
                 argDiv.className = 'response-item';
                 applyBackgroundColor(argDiv, 'argument');

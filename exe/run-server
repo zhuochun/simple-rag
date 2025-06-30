@@ -307,28 +307,31 @@ class SimpleRagServer < Sinatra::Application
 
         article = fetch_article(url) rescue ''
         extraction = extract_article(article)
+        groups = split_extraction_groups(extraction)
 
-        entries = retrieve_by_embedding(lookup_paths, extraction)
-        entries = entries.sort_by { |item| -item['score'] }.take(5)
-
-        retrieved = []
+        retrievals = []
         notes = []
-        entries.each do |item|
-            text = item['reader'].load.get_chunk(item['chunk'])
-            retrieved << {
-                path: item['path'],
-                lookup: item['lookup'],
-                id: item['id'],
-                url: item['url'],
-                text: text,
-                score: item['score'],
-            }
-            notes << text
+        groups.each do |g|
+            entries = retrieve_by_embedding(lookup_paths, g)
+            entries = entries.sort_by { |item| -item['score'] }.take(5)
+
+            retrievals << entries.map do |item|
+                text = item['reader'].load.get_chunk(item['chunk'])
+                notes << text
+                {
+                    path: item['path'],
+                    lookup: item['lookup'],
+                    id: item['id'],
+                    url: item['url'],
+                    text: text,
+                    score: item['score'],
+                }
+            end
         end
 
         argument = argue_new_content(notes, extraction)
 
-        { extraction: extraction, argument: argument, data: retrieved }.to_json
+        { extraction: extraction, argument: argument, retrievals: retrievals }.to_json
     end
 end
 
