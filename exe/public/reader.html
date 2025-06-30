@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>URL Reader</title>
+    <style>
+        body {
+            display: flex;
+            margin: 0;
+            padding: 0;
+            font-family: Arial, sans-serif;
+        }
+        #main-content {
+            flex-grow: 1;
+            padding: 20px;
+        }
+        #paths-container {
+            margin-bottom: 20px;
+        }
+        #paths-list {
+            list-style-type: none;
+            padding: 0;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+        }
+        #paths-list li {
+            display: flex;
+            align-items: center;
+        }
+        #paths-list label {
+            margin-left: 5px;
+        }
+        #input-container {
+            display: flex;
+            margin-bottom: 20px;
+        }
+        #url-input {
+            flex-grow: 1;
+            height: 40px;
+            font-size: 16px;
+            padding: 0 10px;
+        }
+        #read-button {
+            width: 100px;
+            height: 44px;
+            font-size: 16px;
+            margin-left: 10px;
+        }
+        #response-container {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+        .response-item {
+            border: 1px solid #ccc;
+            padding: 10px;
+            border-radius: 5px;
+        }
+    </style>
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <script src="utils.js"></script>
+</head>
+<body>
+    <div id="main-content">
+        <div id="input-container">
+            <input type="text" id="url-input" placeholder="Enter URL">
+            <button id="read-button">Read</button>
+        </div>
+        <div id="paths-container">
+            <ul id="paths-list"></ul>
+        </div>
+        <div id="response-container"></div>
+    </div>
+
+<script>
+    document.addEventListener('DOMContentLoaded', function() {
+        const pathsList = document.getElementById('paths-list');
+        const urlInput = document.getElementById('url-input');
+        const readButton = document.getElementById('read-button');
+        const responseContainer = document.getElementById('response-container');
+
+        // load paths
+        fetch('http://localhost:4567/paths')
+            .then(resp => resp.json())
+            .then(data => {
+                data.forEach(item => {
+                    const li = document.createElement('li');
+                    applyBackgroundColor(li, item.name);
+
+                    const checkbox = document.createElement('input');
+                    checkbox.type = 'checkbox';
+                    checkbox.id = item.name;
+                    checkbox.name = item.name;
+                    checkbox.checked = !!item.searchDefault;
+
+                    const label = document.createElement('label');
+                    label.htmlFor = item.name;
+                    label.textContent = item.name;
+
+                    li.appendChild(checkbox);
+                    li.appendChild(label);
+                    pathsList.appendChild(li);
+                });
+            });
+
+        function performRead() {
+            const url = urlInput.value.trim();
+            if (!url) { return; }
+            const checkedPaths = Array.from(pathsList.querySelectorAll('input[type="checkbox"]:checked')).map(c => c.name);
+
+            fetch('http://localhost:4567/read_url', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    url: url,
+                    paths: checkedPaths,
+                })
+            })
+            .then(resp => resp.json())
+            .then(data => {
+                responseContainer.innerHTML = '';
+
+                const extDiv = document.createElement('div');
+                extDiv.className = 'response-item';
+                applyBackgroundColor(extDiv, 'extraction');
+                extDiv.innerHTML = '<h3>Extraction</h3>' +
+                                   '<div class="markdown-content">' + marked.parse(data.extraction) + '</div>';
+                responseContainer.appendChild(extDiv);
+
+                const argDiv = document.createElement('div');
+                argDiv.className = 'response-item';
+                applyBackgroundColor(argDiv, 'argument');
+                argDiv.innerHTML = '<h3>New Content</h3>' +
+                                   '<div class="markdown-content">' + marked.parse(data.argument) + '</div>';
+                responseContainer.appendChild(argDiv);
+            })
+            .catch(error => console.error('Error reading url:', error));
+        }
+
+        readButton.addEventListener('click', performRead);
+        urlInput.addEventListener('keypress', function(e) {
+            if (e.key === 'Enter') {
+                performRead();
+            }
+        });
+    });
+</script>
+</body>
+</html>

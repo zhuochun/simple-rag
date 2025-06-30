@@ -9,6 +9,9 @@
         "url": "",
         "model": "text-embedding-3-small"
     },
+    "jina": {
+        "token": ""
+    },
     "dismissedDuplicatesFile": "dismissed.txt",
     "paths": [
         {
