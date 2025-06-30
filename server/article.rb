@@ -1,4 +1,5 @@
 require 'net/http'
+require 'uri'
 require_relative '../llm/llm'
 
 JINA_READER_API = 'https://r.jina.ai/'
@@ -29,6 +30,49 @@ def fetch_article(url)
     response = http.request(request)
     response.body
   end
+end
+
+# Save article URL and analysis to cache markdown file
+# url: the original URL
+# article: fetched markdown text
+# extraction: extracted bullet points
+# argument: new content bullet points
+def save_article_result(url, article, extraction, argument)
+  dir = cfg(:jina, 'cacheDir', '')
+  return if dir.to_s.strip.empty?
+
+  require 'fileutils'
+  FileUtils.mkdir_p(dir)
+
+  host = 'unknown'
+  path = 'content'
+  begin
+    uri = URI.parse(url)
+    host = uri.host || host
+    path = uri.path.gsub(%r{[^0-9A-Za-z]+}, '-')
+    path = 'root' if path.empty?
+  rescue
+    # ignore malformed urls
+  end
+
+  ts = Time.now.strftime('%Y-%m-%d-%H')
+  fname = File.join(dir, "#{ts}-#{host}-#{path}.md")
+
+  File.open(fname, 'w') do |f|
+    f.puts "# URL"
+    f.puts url
+    f.puts
+    f.puts "## Original Content"
+    f.puts article
+    f.puts
+    f.puts "## Extraction"
+    f.puts extraction
+    f.puts
+    f.puts "## New Content"
+    f.puts argument
+  end
+rescue StandardError => e
+  warn "Failed to save article result: #{e.message}"
 end
 
 # Extract core concepts from article markdown
