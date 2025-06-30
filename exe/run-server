@@ -331,6 +331,8 @@ class SimpleRagServer < Sinatra::Application
 
         argument = argue_new_content(notes, extraction)
 
+        save_article_result(url, article, extraction, argument)
+
         { extraction: extraction, argument: argument, retrievals: retrievals }.to_json
     end
 end

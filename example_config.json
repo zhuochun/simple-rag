@@ -10,7 +10,8 @@
         "model": "text-embedding-3-small"
     },
     "jina": {
-        "token": ""
+        "token": "",
+        "cacheDir": ""
     },
     "dismissedDuplicatesFile": "dismissed.txt",
     "paths": [
