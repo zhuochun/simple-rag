@@ -5,6 +5,7 @@ JINA_READER_API = 'https://r.jina.ai/'
 
 EXTRACT_PROMPT = <<~PROMPT
 Extract the core concepts, opinions and discussions from the following text.
+Organize related points into groups separated by blank lines.
 Return the result in concise markdown bullet points.
 PROMPT
 
@@ -40,6 +41,13 @@ def extract_article(text)
     { role: ROLE_USER, content: text }
   ]
   chat(msgs)
+end
+
+# Split the extracted text into thematic groups separated by blank lines.
+# extraction: string returned from +extract_article+
+# Returns an array of strings, one per group.
+def split_extraction_groups(extraction)
+  extraction.to_s.strip.split(/\n\s*\n+/).map(&:strip).reject(&:empty?)
 end
 
 # Compare article with existing notes to highlight new or opposing info
