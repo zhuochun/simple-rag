@@ -1,6 +1,6 @@
 
 class NoteReader
-    HEADER_CONF = /^## (.+?) \[(.+?)\]$/
+    HEADER_CONF = /^## (.+?)$/
     LINK = /^- \[([ xX])\] /
 
     Note = Struct.new(:lineno, :body, :title, :done)
