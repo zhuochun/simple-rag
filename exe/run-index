@@ -24,8 +24,18 @@ CONFIG = OpenStruct.new(config)
 CONFIG.paths = CONFIG.paths.map { |p| OpenStruct.new(p) }
 
 OPENAI_KEY = ENV["DOT_OPENAI_KEY"] || ""
-if OPENAI_KEY.empty?
+GEMINI_KEY = ENV["DOT_GEMINI_KEY"] || ""
+
+chat_provider = CONFIG.dig(:chat, :provider) || CONFIG.dig("chat", "provider") || 'openai'
+embedding_provider = CONFIG.dig(:embedding, :provider) || CONFIG.dig("embedding", "provider") || 'openai'
+
+if (chat_provider.downcase == 'openai' || embedding_provider.downcase == 'openai') && OPENAI_KEY.empty?
     STDOUT << "Remember to set env DOT_OPENAI_KEY\n"
+    exit 9
+end
+
+if (chat_provider.downcase == 'gemini' || embedding_provider.downcase == 'gemini') && GEMINI_KEY.empty?
+    STDOUT << "Remember to set env DOT_GEMINI_KEY\n"
     exit 9
 end
 
