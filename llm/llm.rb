@@ -1,6 +1,7 @@
 require_relative "openai"
 require_relative "ollama"
 require_relative "gemini"
+require_relative "openrouter"
 
 ROLE_SYSTEM = "system"
 ROLE_USER = "user"
@@ -38,6 +39,10 @@ def chat(messages, opts = {})
     model = cfg(:chat, 'model', 'gemini-2.5-flash')
     url = cfg(:chat, 'url', 'https://generativelanguage.googleapis.com/v1beta/models')
     gemini_chat(messages, model, url, opts)
+  when 'openrouter'
+    model = cfg(:chat, 'model', 'gpt-4.1-mini')
+    url = cfg(:chat, 'url', 'https://openrouter.ai/api/v1/chat/completions')
+    openrouter_chat(messages, model, url, opts)
   else
     model = cfg(:chat, 'model', 'gpt-4.1-mini')
     url = cfg(:chat, 'url', 'https://api.openai.com/v1/chat/completions')
@@ -58,6 +63,10 @@ def embedding(txts, opts = {})
     model = cfg(:embedding, 'model', 'gemini-embedding-001')
     url = cfg(:embedding, 'url', 'https://generativelanguage.googleapis.com/v1beta/models')
     gemini_embedding(txts, model, url, opts)
+  when 'openrouter'
+    model = cfg(:embedding, 'model', 'text-embedding-3-small')
+    url = cfg(:embedding, 'url', 'https://openrouter.ai/api/v1/embeddings')
+    openrouter_embedding(txts, model, url, opts)
   else
     model = cfg(:embedding, 'model', 'text-embedding-3-small')
     url = cfg(:embedding, 'url', 'https://api.openai.com/v1/embeddings')

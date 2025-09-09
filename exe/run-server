@@ -46,6 +46,7 @@ end
 
 OPENAI_KEY = ENV["DOT_OPENAI_KEY"] || ""
 GEMINI_KEY = ENV["DOT_GEMINI_KEY"] || ""
+OPENROUTER_KEY = ENV["DOT_OPENROUTER_KEY"] || ""
 
 chat_provider = CONFIG.dig(:chat, :provider) || CONFIG.dig("chat", "provider") || 'openai'
 embedding_provider = CONFIG.dig(:embedding, :provider) || CONFIG.dig("embedding", "provider") || 'openai'
@@ -57,6 +58,11 @@ end
 
 if (chat_provider.downcase == 'gemini' || embedding_provider.downcase == 'gemini') && GEMINI_KEY.empty?
     STDOUT << "Remember to set env DOT_GEMINI_KEY\n"
+    exit 9
+end
+
+if (chat_provider.downcase == 'openrouter' || embedding_provider.downcase == 'openrouter') && OPENROUTER_KEY.empty?
+    STDOUT << "Remember to set env DOT_OPENROUTER_KEY\n"
     exit 9
 end
 
