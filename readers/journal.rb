@@ -1,5 +1,9 @@
 class JournalReader
     SKIP_HEADINGS = ["\u7CBE\u529B", "\u611F\u6069"]
+    include ChunkUtils
+
+    MAX_WORDS = 1000
+    MIN_WORDS = 10
 
     attr_accessor :file, :chunks
 
@@ -73,7 +77,11 @@ class JournalReader
         return if SKIP_HEADINGS.any? { |k| heading.include?(k) }
         return if lines.length < 3
 
-        @chunks << lines.join("\n")
+        content = lines.join("\n")
+        split_chunk_by_tokens(content, MAX_WORDS).each do |chunk|
+            @chunks << chunk
+        end
+        @chunks = filter_small_chunks(@chunks, MIN_WORDS)
     end
 
     def clean_line(line)

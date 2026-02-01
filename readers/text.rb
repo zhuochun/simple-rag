@@ -1,5 +1,7 @@
 
 class TextReader
+    include ChunkUtils
+
     attr_accessor :file, :chunks
 
     def initialize(file)
@@ -8,7 +10,8 @@ class TextReader
         @chunks = []
     end
 
-    MAX_WORDS = 6000
+    MAX_WORDS = 1000
+    MIN_WORDS = 10
 
     def load
         return self if @loaded
@@ -66,15 +69,10 @@ class TextReader
             # file was removed after existence check; skip loading
         end
 
+        @chunks = filter_small_chunks(@chunks, MIN_WORDS)
         @loaded = true
 
         self
-    end
-
-    def count_tokens(str)
-        return 0 if str.nil? || str.empty?
-        tokens = str.scan(/[\p{Han}]|[\p{L}\p{N}]+|[^\s]/)
-        tokens.length
     end
 
     def get_chunk(idx)

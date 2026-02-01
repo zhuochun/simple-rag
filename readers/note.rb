@@ -1,5 +1,9 @@
 
 class NoteReader
+    include ChunkUtils
+
+    MAX_WORDS = 1000
+    MIN_WORDS = 10
     HEADER_CONF = /^## (.+?)$/
     LINK = /^- \[([ xX])\] /
 
@@ -33,8 +37,12 @@ class NoteReader
 
         @notes.each do |note|
             next unless note.done
-            chunks << note.body.join("\n")
+            content = note.body.join("\n")
+            split_chunk_by_tokens(content, MAX_WORDS).each do |chunk|
+                chunks << chunk
+            end
         end
+        @chunks = filter_small_chunks(@chunks, MIN_WORDS)
 
         @loaded = true
         self
