@@ -33,6 +33,11 @@ def http_error_details(response, url = nil)
   parts.join(", ")
 end
 
+def raise_http_error(prefix, response, url = nil)
+  details = http_error_details(response, url)
+  raise RuntimeError, "#{prefix}: #{details}"
+end
+
 def http_post(uri, auth, reqData)
   url = URI(uri)
 

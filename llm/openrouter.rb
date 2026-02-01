@@ -11,8 +11,7 @@ def openrouter_chat(messages, model, url, opts = {})
   response = http_post(url, OPENROUTER_KEY, data)
 
   if response.code != "200"
-    STDOUT << "Chat error: #{http_error_details(response, url)}\n"
-    exit 1
+    raise_http_error("Chat error", response, url)
   end
 
   result = JSON.parse(response.body)
@@ -32,8 +31,7 @@ def openrouter_embedding(txts, model, url, opts = {})
   response = http_post(url, OPENROUTER_KEY, data)
 
   if response.code != "200"
-    STDOUT << "Embedding error: #{http_error_details(response, url)}\n"
-    exit 1
+    raise_http_error("Embedding error", response, url)
   end
 
   result = JSON.parse(response.body)

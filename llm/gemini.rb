@@ -31,8 +31,7 @@ def gemini_chat(messages, model, base_url, opts = {})
   response = gemini_http_post(api_url, GEMINI_KEY, data)
 
   if response.code != "200"
-    STDOUT << "Chat error: #{http_error_details(response, api_url)}\n"
-    exit 1
+    raise_http_error("Chat error", response, api_url)
   end
 
   result = JSON.parse(response.body)
@@ -50,8 +49,7 @@ def gemini_embedding(txts, model, base_url, opts = {})
   response = gemini_http_post(api_url, GEMINI_KEY, data)
 
   if response.code != "200"
-    STDOUT << "Embedding error: #{http_error_details(response, api_url)}\n"
-    exit 1
+    raise_http_error("Embedding error", response, api_url)
   end
 
   result = JSON.parse(response.body)

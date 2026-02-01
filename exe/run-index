@@ -10,6 +10,8 @@
 require "json"
 require "ostruct"
 require "digest"
+require "stringio"
+require "thread"
 
 require_relative "../llm/llm"
 require_relative "../readers/reader"
@@ -45,11 +47,12 @@ if (chat_provider.downcase == 'openrouter' || embedding_provider.downcase == 'op
     exit 9
 end
 
-def index_path(path)
-    STDOUT << "Read path name: #{path.name}, reader: #{path.reader}\n"
+def index_path(path, out, status_cb, log_cb)
+    out << "Read path name: #{path.name}, reader: #{path.reader}\n"
+    status_cb.call("Reading index")
 
     # Read existing index
-    STDOUT << "Read existing index: #{path.out}, time: @#{Time.now}\n"
+    out << "Read existing index: #{path.out}, time: @#{Time.now}\n"
     index_db = {}
     index_file = File.expand_path(path.out)
 
@@ -57,31 +60,41 @@ def index_path(path)
         item = JSON.parse(line)
         index_db[item["hash"]] = item
     end if File.exist?(index_file)
-    STDOUT << "Found index: #{index_db.length}\n"
+    out << "Found index: #{index_db.length}\n"
+    status_cb.call("Scanning dir")
 
     # Scan directory
     name_match = path.nameMatch || "*.{md,markdown}"
     dir_blob = File.join(File.expand_path(path.dir), "**", name_match)
     files = Dir[dir_blob]
-    STDOUT << "Scan dir: #{dir_blob}, Found: #{files.length}\n"
+    out << "Scan dir: #{dir_blob}, Found: #{files.length}\n"
 
     # Get reader class
     reader_class = get_reader(path.reader)
     if reader_class.nil?
-        STDOUT << "Reader undefinied: #{path.reader}\n"
+        out << "Reader undefinied: #{path.reader}\n"
         exit 9
     end
 
     # Build index
-    STDOUT << "Building index @#{Time.now}\n["
+    out << "Building index @#{Time.now}\n["
+    status_cb.call("Indexing 0/#{files.length} files, created=0, skipped=0")
     skipped = 0
     created = 0
     File.open(index_file, "w") do |index_newdb|
         files.each_with_index do |file, file_idx|
+            status_cb.call("Indexing #{file_idx}/#{files.length} files, created=#{created}, skipped=#{skipped}")
             begin
                 chunks = reader_class.new(file).load.chunks
+            rescue => e
+                out << "\nError reading #{file}: #{e.class}: #{e.message}\n"
+                out << "Backtrace: #{e.backtrace&.first}\n"
+                log_cb.call("[#{path.name}] Error reading #{file}: #{e.class}: #{e.message}")
+                next
+            end
 
-                chunks.each_with_index do |chunk, chunk_idx|
+            chunks.each_with_index do |chunk, chunk_idx|
+                begin
                     hash = Digest::SHA256.hexdigest(chunk)
 
                     if index_db[hash] # found in old DB
@@ -96,26 +109,92 @@ def index_path(path)
 
                     line = { path: file, hash: hash, chunk: chunk_idx, embedding: embedding }
                     index_newdb.puts(line.to_json)
+                rescue => e
+                    out << "\nError indexing file=#{file}, chunk=#{chunk_idx}: #{e.class}: #{e.message}\n"
+                    out << "Hash: #{hash}\n" if defined?(hash)
+                    out << "Backtrace: #{e.backtrace&.first}\n"
+                    log_cb.call("[#{path.name}] Error indexing #{file} chunk #{chunk_idx}: #{e.class}: #{e.message}")
+                    next
                 end
-            rescue => e
-                STDOUT << "\nError indexing #{file}: #{e}\n"
-                next
             end
 
             if file_idx % 50 == 0 # flush the file writes
                 index_newdb.flush
-                STDOUT << file_idx
+                out << file_idx
             else
-                STDOUT << "."
+                out << "."
             end
         end
     end
 
-    STDOUT << "]\nDone @#{Time.now}, Created: #{created}, Skipped: #{skipped}\n"
+    out << "]\nDone @#{Time.now}, Created: #{created}, Skipped: #{skipped}\n"
+    status_cb.call("Done. created=#{created}, skipped=#{skipped}")
+end
+
+status_mutex = Mutex.new
+status_map = {}
+log_lines = []
+
+status_cb = lambda do |name, msg|
+    status_mutex.synchronize { status_map[name] = msg }
+end
+
+log_cb = lambda do |line|
+    status_mutex.synchronize do
+        log_lines << line
+        log_lines.shift while log_lines.length > 20
+    end
+end
+
+printer = Thread.new do
+    next unless STDOUT.tty?
+    loop do
+        lines = nil
+        logs = nil
+        status_mutex.synchronize do
+            lines = status_map.map { |k, v| "#{k}: #{v}" }
+            logs = log_lines.dup
+        end
+        STDOUT << "\e[2J\e[H"
+        STDOUT << "Index status (live)\n"
+        lines.each { |l| STDOUT << l << "\n" }
+        STDOUT << "\nRecent errors\n"
+        if logs.empty?
+            STDOUT << "(none)\n"
+        else
+            logs.each { |l| STDOUT << l << "\n" }
+        end
+        STDOUT.flush
+        sleep 0.2
+    end
 end
 
 threads = CONFIG.paths.map do |path|
-    Thread.new { index_path(path) }
+    Thread.new do
+        buffer = StringIO.new
+        begin
+            status_cb.call(path.name, "Starting")
+            index_path(path, buffer, ->(msg) { status_cb.call(path.name, msg) }, log_cb)
+        rescue => e
+            buffer << "\nThread error: #{e.class}: #{e.message}\n"
+            buffer << "Backtrace: #{e.backtrace&.first}\n"
+        ensure
+            Thread.current[:output] = buffer.string
+            Thread.current[:path_name] = path.name
+            status_cb.call(path.name, "Finished")
+        end
+    end
 end
 
-threads.each(&:join)
+threads.each do |t|
+    t.join
+end
+
+printer.kill if printer&.alive?
+
+threads.each do |t|
+    name = t[:path_name] || "path"
+    STDOUT << "\n=== Index output: #{name} ===\n"
+    STDOUT << (t[:output] || "")
+    STDOUT << "\n=== End: #{name} ===\n"
+end
