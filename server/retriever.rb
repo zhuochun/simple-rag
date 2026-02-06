@@ -1,4 +1,5 @@
 require "pathname"
+require "json"
 
 require_relative "cache"
 require_relative "../llm/llm"
@@ -26,7 +27,43 @@ def expand_query(q)
     query
 end
 
-def retrieve_by_embedding(lookup_paths, q)
+def with_sqlite_store(path_config, store_cache = nil)
+    if store_cache
+        key = [path_config.db_file, path_config.db_table]
+        store = store_cache[key]
+        unless store
+            store = SqliteIndex.new(path_config.db_file, path_config.db_table)
+            store_cache[key] = store
+        end
+        return yield(store)
+    end
+
+    store = SqliteIndex.new(path_config.db_file, path_config.db_table)
+    begin
+        yield(store)
+    ensure
+        store.close
+    end
+end
+
+def close_store_cache(store_cache)
+    return unless store_cache
+
+    store_cache.each_value do |store|
+        begin
+            store.close
+        rescue
+            # ignore close errors
+        end
+    end
+    store_cache.clear
+end
+
+def normalize_search_terms(query_or_queries)
+    Array(query_or_queries).flatten.map(&:to_s).map(&:strip).reject(&:empty?).uniq
+end
+
+def retrieve_by_embedding(lookup_paths, q, store_cache: nil)
     begin
         qe = CACHE.get_or_set(q, method(:embedding).to_proc)
         qn = normalize_embedding(qe)
@@ -42,8 +79,7 @@ def retrieve_by_embedding(lookup_paths, q)
         next if reader_cls.nil?
 
         if p.db_file && p.db_table
-            store = SqliteIndex.new(p.db_file, p.db_table)
-            begin
+            with_sqlite_store(p, store_cache) do |store|
                 file_cache = {}
                 matched_candidates = 0
 
@@ -100,13 +136,12 @@ def retrieve_by_embedding(lookup_paths, q)
                         end
                     end
                 end
-            ensure
-                store.close
             end
         else
             index = load_index_cache(p)
             next unless index
 
+            file_cache = {}
             bucket_ids = neighbor_keys(bucket_key(qn)).flat_map { |k| index.buckets[k] }.uniq
             bucket_ids.each do |idx|
                 item = index.items[idx]
@@ -121,7 +156,7 @@ def retrieve_by_embedding(lookup_paths, q)
                     "lookup" => p.name,
                     "id" => extract_id(item[:path]),
                     "url" => extract_url(item[:path], p.url),
-                    "reader" => reader_cls.new(item[:path])
+                    "reader" => (file_cache[item[:path]] ||= reader_cls.new(item[:path]))
                 }
             end
         end
@@ -160,12 +195,15 @@ def expand_variants(q)
         { role: ROLE_USER, content: q },
     ]
 
-    variants = chat(msgs).split(',')
+    variants = chat(msgs).split(',').map(&:strip).reject(&:empty?).uniq
     STDOUT << "Expand variants: #{variants}\n"
     variants
 end
 
-def retrieve_by_text(lookup_paths, q)
+def retrieve_by_text(lookup_paths, query_or_queries, store_cache: nil)
+    queries = normalize_search_terms(query_or_queries)
+    return [] if queries.empty?
+
     entries = []
     lookup_paths.each do |p|
         STDOUT << "Reading text index: #{p.name}\n"
@@ -175,13 +213,12 @@ def retrieve_by_text(lookup_paths, q)
 
         file_cache = {}
         if p.db_file && p.db_table
-            store = SqliteIndex.new(p.db_file, p.db_table)
-            begin
-                store.text_search(q).each do |item|
+            with_sqlite_store(p, store_cache) do |store|
+                store.text_search_any(queries).each do |item|
                     reader = file_cache[item["path"]] ||= reader_cls.new(item["path"])
                     if item["text"].nil?
                         text = reader.load.get_chunk(item["chunk"])
-                        next unless text&.include?(q)
+                        next unless text && queries.any? { |q| text.include?(q) }
                     end
 
                     item["score"] = 1.0
@@ -192,8 +229,6 @@ def retrieve_by_text(lookup_paths, q)
 
                     entries << item
                 end
-            ensure
-                store.close
             end
             STDOUT << "Matched num: #{entries.length}\n"
             next
@@ -206,7 +241,7 @@ def retrieve_by_text(lookup_paths, q)
             item = JSON.parse(line)
             reader = file_cache[item["path"]] ||= reader_cls.new(item["path"]).load
             chunk_text = reader.get_chunk(item["chunk"])
-            next unless chunk_text&.include?(q)
+            next unless chunk_text && queries.any? { |q| chunk_text.include?(q) }
 
             item["score"] = 1.0
             item["lookup"] = p.name

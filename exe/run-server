@@ -8,7 +8,8 @@
 # Requires OpenAI API Key stored in DOT_OPENAI_KEY
 
 require "json"
-require 'sinatra/base'
+require "set"
+require "sinatra/base"
 
 require_relative "../server/retriever"
 require_relative "../server/synthesizer"
@@ -28,7 +29,7 @@ rescue => e
     STDOUT << "Config error: #{e.message}\n"
     exit 1
 end
-require 'set'
+
 DISMISSED_FILE = CONFIG.dismissedDuplicatesFile
 DISMISSED_CLUSTERS = if DISMISSED_FILE && File.exist?(DISMISSED_FILE)
     Set.new(File.read(DISMISSED_FILE).split(/\n+/))
@@ -38,190 +39,178 @@ end
 
 def save_dismissed
     return unless DISMISSED_FILE
-    File.open(DISMISSED_FILE, 'w') do |f|
+    File.open(DISMISSED_FILE, "w") do |f|
         DISMISSED_CLUSTERS.each { |id| f.puts(id) }
     end
 end
 
+def resolve_lookup_paths(selected, default_to_search_default: false)
+    names = Array(selected).compact
+
+    if names.empty?
+        if default_to_search_default
+            names = CONFIG.paths.select { |p| p.searchDefault }.map(&:name)
+            names = CONFIG.path_map.keys if names.empty?
+        else
+            names = CONFIG.paths.map(&:name)
+        end
+    end
+
+    names.map { |name| CONFIG.path_map[name] }.compact
+end
+
+def merge_entries_by_chunk(entries)
+    unique = {}
+
+    entries.each do |entry|
+        key = [entry["path"], entry["chunk"]]
+        if unique[key]
+            unique[key]["score"] = (unique[key]["score"] || 0.0) + (entry["score"] || 0.0)
+        else
+            unique[key] = entry
+        end
+    end
+
+    unique.values
+end
+
+def top_n_by_score(entries, top_n)
+    n = top_n.to_i
+    return [] if n <= 0 || entries.empty?
+
+    if entries.length <= n
+        return entries.sort_by { |item| -(item["score"] || 0.0) }
+    end
+
+    entries.max_by(n) { |item| item["score"] || 0.0 }
+           .sort_by { |item| -(item["score"] || 0.0) }
+end
+
+def serialize_entries(entries)
+    reader_cache = {}
+
+    entries.map do |item|
+        reader = reader_cache[item["path"]] ||= item["reader"].load
+        {
+            path: item["path"],
+            lookup: item["lookup"],
+            id: item["id"],
+            url: item["url"],
+            text: reader.get_chunk(item["chunk"]),
+            score: item["score"],
+        }
+    end
+end
 
 OPENAI_KEY = ENV["DOT_OPENAI_KEY"] || ""
 GEMINI_KEY = ENV["DOT_GEMINI_KEY"] || ""
 OPENROUTER_KEY = ENV["DOT_OPENROUTER_KEY"] || ""
 
-chat_provider = CONFIG.dig(:chat, :provider) || CONFIG.dig("chat", "provider") || 'openai'
-embedding_provider = CONFIG.dig(:embedding, :provider) || CONFIG.dig("embedding", "provider") || 'openai'
+chat_provider = CONFIG.dig(:chat, :provider) || CONFIG.dig("chat", "provider") || "openai"
+embedding_provider = CONFIG.dig(:embedding, :provider) || CONFIG.dig("embedding", "provider") || "openai"
 
-if (chat_provider.downcase == 'openai' || embedding_provider.downcase == 'openai') && OPENAI_KEY.empty?
+if (chat_provider.downcase == "openai" || embedding_provider.downcase == "openai") && OPENAI_KEY.empty?
     STDOUT << "Remember to set env DOT_OPENAI_KEY\n"
     exit 9
 end
 
-if (chat_provider.downcase == 'gemini' || embedding_provider.downcase == 'gemini') && GEMINI_KEY.empty?
+if (chat_provider.downcase == "gemini" || embedding_provider.downcase == "gemini") && GEMINI_KEY.empty?
     STDOUT << "Remember to set env DOT_GEMINI_KEY\n"
     exit 9
 end
 
-if (chat_provider.downcase == 'openrouter' || embedding_provider.downcase == 'openrouter') && OPENROUTER_KEY.empty?
+if (chat_provider.downcase == "openrouter" || embedding_provider.downcase == "openrouter") && OPENROUTER_KEY.empty?
     STDOUT << "Remember to set env DOT_OPENROUTER_KEY\n"
     exit 9
 end
 
 class SimpleRagServer < Sinatra::Application
     # list all the paths that can be searched
-    get '/paths' do
+    get "/paths" do
         content_type :json
 
-        resp = []
-        CONFIG.paths.each do |p|
-            resp << { name: p.name, searchDefault: p.searchDefault }
-        end
-        resp.to_json
+        CONFIG.paths.map { |p| { name: p.name, searchDefault: p.searchDefault } }.to_json
     end
 
     # query within the paths
-    post '/q' do
+    post "/q" do
         content_type :json
 
         data = JSON.parse(request.body.read)
+        lookup_paths = resolve_lookup_paths(data["paths"], default_to_search_default: true)
 
-        selected = data["paths"]
-        if !selected || selected.empty?
-            selected = CONFIG.paths.select { |p| p.searchDefault }.map(&:name)
-            selected = CONFIG.path_map.keys if selected.empty?
-        end
-        lookup_paths = selected.map { |name| CONFIG.path_map[name] }
-
-        topN = (data["topN"] || 20).to_i
-
+        top_n = (data["topN"] || 20).to_i
         q = data["q"]
+
         entries = retrieve_by_embedding(lookup_paths, q)
         if q.to_s.strip.length < 5 && q.to_s.split(/\s+/).length < 5
             entries.concat(retrieve_by_text(lookup_paths, q))
-
-            unique = {}
-            entries.each do |e|
-                key = [e["path"], e["chunk"]]
-                if unique[key]
-                    unique[key]["score"] = (unique[key]["score"] || 0) + (e["score"] || 0)
-                else
-                    unique[key] = e
-                end
-            end
-
-            entries = unique.values
-        end
-        entries = entries.sort_by { |item| -item["score"] }.take(topN)
-
-        resp = {
-            data: [],
-        }
-
-        entries.each do |item|
-            resp[:data] << {
-                path: item["path"],
-                lookup: item["lookup"],
-                id: item["id"],
-                url: item["url"],
-                text: item["reader"].load.get_chunk(item["chunk"]),
-                score: item["score"],
-            }
+            entries = merge_entries_by_chunk(entries)
         end
 
-        resp.to_json
+        ordered = top_n_by_score(entries, top_n)
+        { data: serialize_entries(ordered) }.to_json
     end
 
     # agentic query - expand the query using LLM before searching
-    post '/q_plus' do
+    post "/q_plus" do
         content_type :json
 
         data = JSON.parse(request.body.read)
-
-        selected = data["paths"]
-        if !selected || selected.empty?
-            selected = CONFIG.paths.select { |p| p.searchDefault }.map(&:name)
-            selected = CONFIG.path_map.keys if selected.empty?
-        end
-        lookup_paths = selected.map { |name| CONFIG.path_map[name] }
-
-        topN = (data["topN"] || 20).to_i
+        lookup_paths = resolve_lookup_paths(data["paths"], default_to_search_default: true)
+        top_n = (data["topN"] || 20).to_i
 
         expanded_q = expand_query(data["q"])
         variants = expand_variants(data["q"])
 
+        store_cache = {}
         entries = []
-        entries.concat(retrieve_by_embedding(lookup_paths, data["q"]))
-        entries.concat(retrieve_by_embedding(lookup_paths, expanded_q))
-        variants.each { |v| entries.concat(retrieve_by_text(lookup_paths, v)) }
-
-        unique = {}
-        entries.each do |e|
-            key = [e["path"], e["chunk"]]
-            if unique[key]
-                unique[key]["score"] = (unique[key]["score"] || 0) + (e["score"] || 0)
-            else
-                unique[key] = e
-            end
+        begin
+            entries.concat(retrieve_by_embedding(lookup_paths, data["q"], store_cache: store_cache))
+            entries.concat(retrieve_by_embedding(lookup_paths, expanded_q, store_cache: store_cache))
+            entries.concat(retrieve_by_text(lookup_paths, variants, store_cache: store_cache)) unless variants.empty?
+        ensure
+            close_store_cache(store_cache)
         end
 
-        ordered = unique.values.sort_by { |item| -item["score"] }.take(topN)
+        ordered = top_n_by_score(merge_entries_by_chunk(entries), top_n)
 
-        resp = {
-            data: [],
+        {
+            data: serialize_entries(ordered),
             expanded: expanded_q,
             variants: variants,
-        }
-
-        ordered.each do |item|
-            resp[:data] << {
-                path: item["path"],
-                lookup: item["lookup"],
-                id: item["id"],
-                url: item["url"],
-                text: item["reader"].load.get_chunk(item["chunk"]),
-                score: item["score"],
-            }
-        end
-
-        resp.to_json
+        }.to_json
     end
 
     # synthesize notes into a summary
-    post '/synthesize' do
+    post "/synthesize" do
         content_type :json
 
         data = JSON.parse(request.body.read)
-
         summary = synthesize_notes(data["notes"])
 
         { note: summary }.to_json
     end
 
     # generate discussion for a single note
-    post '/discuss' do
+    post "/discuss" do
         content_type :json
 
         data = JSON.parse(request.body.read)
-
         discussion = discuss_note(data["note"])
 
         { discussion: discussion }.to_json
     end
 
     # find duplicate notes across selected paths
-    post '/duplicates' do
+    post "/duplicates" do
         content_type :json
 
         data = JSON.parse(request.body.read)
-
-        selected = data["paths"]
         threshold = (data["threshold"] || 0.9).to_f
-        if !selected || selected.empty?
-            selected = CONFIG.paths.map(&:name)
-        end
-        lookup_paths = selected.map { |name| CONFIG.path_map[name] }
+        lookup_paths = resolve_lookup_paths(data["paths"])
 
         clusters = find_duplicates(lookup_paths, threshold)
-
         clusters = clusters.map { |c| { id: cluster_key(c), items: c } }
         clusters.reject! { |c| DISMISSED_CLUSTERS.include?(c[:id]) }
 
@@ -229,143 +218,127 @@ class SimpleRagServer < Sinatra::Application
     end
 
     # dismiss a duplicate cluster
-    post '/dismiss' do
+    post "/dismiss" do
         content_type :json
 
         data = JSON.parse(request.body.read)
-        if data['id']
-            DISMISSED_CLUSTERS.add(data['id'])
+        if data["id"]
+            DISMISSED_CLUSTERS.add(data["id"])
             save_dismissed
         end
+
         { ok: true }.to_json
     end
 
     # return random notes from selected paths
-    post '/random' do
+    post "/random" do
         content_type :json
 
         data = JSON.parse(request.body.read)
-
-        selected = data["paths"]
         count = (data["count"] || 3).to_i
-        if !selected || selected.empty?
-            selected = CONFIG.paths.map(&:name)
-        end
-        lookup_paths = selected.map { |name| CONFIG.path_map[name] }
+        lookup_paths = resolve_lookup_paths(data["paths"])
 
         samples = []
         lookup_paths.each do |p|
             reader_cls = get_reader(p.reader)
             next unless reader_cls
 
+            file_cache = {}
             if p.db_file && p.db_table
-                store = SqliteIndex.new(p.db_file, p.db_table)
-                begin
-                    store.random_chunks(count).each do |it|
+                with_sqlite_store(p) do |store|
+                    store.random_chunk_refs(count).each do |it|
+                        reader = file_cache[it["path"]] ||= reader_cls.new(it["path"]).load
                         samples << {
                             path: p.name,
                             lookup: p.name,
                             id: extract_id(it["path"]),
                             url: extract_url(it["path"], p.url),
-                            text: reader_cls.new(it["path"]).load.get_chunk(it["chunk"]),
+                            text: reader.get_chunk(it["chunk"]),
                             score: 0,
                         }
                     end
-                ensure
-                    store.close
                 end
                 next
             end
 
             index = load_index_cache(p)
             next unless index
+
             index.items.sample(count).each do |it|
+                reader = file_cache[it[:path]] ||= reader_cls.new(it[:path]).load
                 samples << {
                     path: p.name,
                     lookup: p.name,
                     id: extract_id(it[:path]),
                     url: extract_url(it[:path], p.url),
-                    text: reader_cls.new(it[:path]).load.get_chunk(it[:chunk]),
+                    text: reader.get_chunk(it[:chunk]),
                     score: 0,
                 }
             end
         end
 
-        samples = samples.sample(count)
-
-        { data: samples }.to_json
+        { data: samples.sample(count) }.to_json
     end
 
     # retrieve notes similar to provided note text
-    post '/similar' do
+    post "/similar" do
         content_type :json
 
         data = JSON.parse(request.body.read)
-
-        selected = data["paths"]
-        topN = (data["topN"] || 3).to_i
-        if !selected || selected.empty?
-            selected = CONFIG.paths.map(&:name)
-        end
-        lookup_paths = selected.map { |name| CONFIG.path_map[name] }
+        lookup_paths = resolve_lookup_paths(data["paths"])
+        top_n = (data["topN"] || 3).to_i
 
         entries = retrieve_by_embedding(lookup_paths, data["note"] || "")
-        entries = entries.sort_by { |item| -item["score"] }.take(topN)
+        ordered = top_n_by_score(entries, top_n)
 
-        resp = { data: [] }
-        entries.each do |item|
-            resp[:data] << {
-                path: item["path"],
-                lookup: item["lookup"],
-                id: item["id"],
-                url: item["url"],
-                text: item["reader"].load.get_chunk(item["chunk"]),
-                score: item["score"],
-            }
-        end
-
-        resp.to_json
+        { data: serialize_entries(ordered) }.to_json
     end
 
     # read a URL, extract concepts and compare with existing notes
-    post '/read_url' do
+    post "/read_url" do
         content_type :json
 
         data = JSON.parse(request.body.read)
-        url = data['url']
+        url = data["url"]
+        lookup_paths = resolve_lookup_paths(data["paths"])
 
-        selected = data['paths']
-        if !selected || selected.empty?
-            selected = CONFIG.paths.map(&:name)
-        end
-        lookup_paths = selected.map { |name| CONFIG.path_map[name] }
-
-        article = fetch_article(url) rescue ''
+        article = fetch_article(url) rescue ""
         extraction = extract_article(article)
         groups = split_extraction_groups(extraction)
 
         retrievals = []
         notes = []
-        groups.each do |g|
-            entries = retrieve_by_embedding(lookup_paths, g)
-            entries = entries.sort_by { |item| -item['score'] }.take(5)
+        notes_seen = Set.new
 
-            retrievals << entries.map do |item|
-                text = item['reader'].load.get_chunk(item['chunk'])
-                notes << text
-                {
-                    path: item['path'],
-                    lookup: item['lookup'],
-                    id: item['id'],
-                    url: item['url'],
-                    text: text,
-                    score: item['score'],
-                }
+        store_cache = {}
+        begin
+            groups.each do |group|
+                entries = retrieve_by_embedding(lookup_paths, group, store_cache: store_cache)
+                ordered = top_n_by_score(entries, 5)
+                reader_cache = {}
+
+                retrievals << ordered.map do |item|
+                    reader = reader_cache[item["path"]] ||= item["reader"].load
+                    text = reader.get_chunk(item["chunk"])
+                    if text && notes_seen.add?(text)
+                        notes << text
+                    end
+
+                    {
+                        path: item["path"],
+                        lookup: item["lookup"],
+                        id: item["id"],
+                        url: item["url"],
+                        text: text,
+                        score: item["score"],
+                    }
+                end
             end
+        ensure
+            close_store_cache(store_cache)
         end
 
         argument = argue_new_content(notes, extraction)
-
         save_article_result(url, article, extraction, argument)
 
         { extraction: extraction, argument: argument, retrievals: retrievals }.to_json

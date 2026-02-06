@@ -16,6 +16,8 @@ class SqliteIndex
 
     @db = SQLite3::Database.new(@db_file)
     @db.results_as_hash = true
+    @vector_dim_cache = nil
+    @vector_dim_loaded = false
     @vector_available = setup_vector_extension
     ensure_schema!
   end
@@ -132,15 +134,35 @@ class SqliteIndex
     ).map { |row| decode_row(row) }
   end
 
+  def random_chunk_refs(count)
+    @db.execute(
+      "SELECT path, chunk FROM #{quoted_table} ORDER BY RANDOM() LIMIT ?",
+      [count.to_i]
+    ).map do |row|
+      {
+        "path" => row["path"],
+        "chunk" => row["chunk"].to_i
+      }
+    end
+  end
+
   def text_search(query, limit = nil)
-    sql = "SELECT path, chunk, hash, embedding, bucket, text FROM #{quoted_table} WHERE text IS NOT NULL AND INSTR(text, ?) > 0"
-    binds = [query.to_s]
+    text_search_any([query], limit: limit)
+  end
+
+  def text_search_any(queries, limit: nil)
+    terms = Array(queries).map(&:to_s).map(&:strip).reject(&:empty?).uniq
+    return [] if terms.empty?
+
+    clauses = terms.map { "INSTR(text, ?) > 0" }.join(" OR ")
+    sql = "SELECT path, chunk, hash, bucket, text FROM #{quoted_table} WHERE text IS NOT NULL AND (#{clauses})"
+    binds = terms
     if limit && limit.to_i > 0
       sql += " LIMIT ?"
       binds << limit.to_i
     end
 
-    @db.execute(sql, binds).map { |row| decode_row(row) }
+    @db.execute(sql, binds).map { |row| decode_text_row(row) }
   end
 
   def delete_stale_chunks(path, valid_chunks)
@@ -211,6 +233,16 @@ class SqliteIndex
       "chunk" => row["chunk"].to_i,
       "hash" => row["hash"],
       "embedding" => parse_embedding(row["embedding"]),
+      "bucket" => row["bucket"],
+      "text" => row["text"]
+    }
+  end
+
+  def decode_text_row(row)
+    {
+      "path" => row["path"],
+      "chunk" => row["chunk"].to_i,
+      "hash" => row["hash"],
       "bucket" => row["bucket"],
       "text" => row["text"]
     }
@@ -318,10 +350,16 @@ class SqliteIndex
   end
 
   def vector_dim
-    raw = @db.get_first_value("SELECT value FROM #{quoted_meta_table} WHERE key = 'vector_dim'")
-    return nil if raw.nil?
+    return @vector_dim_cache if @vector_dim_loaded
 
-    raw.to_i
+    raw = @db.get_first_value("SELECT value FROM #{quoted_meta_table} WHERE key = 'vector_dim'")
+    @vector_dim_loaded = true
+    if raw.nil?
+      @vector_dim_cache = nil
+      return nil
+    end
+
+    @vector_dim_cache = raw.to_i
   end
 
   def ensure_vector_table_for_dim!(dim)
@@ -342,6 +380,8 @@ class SqliteIndex
       "INSERT INTO #{quoted_meta_table}(key, value) VALUES('vector_dim', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
       [dim.to_i.to_s]
     )
+    @vector_dim_cache = dim.to_i
+    @vector_dim_loaded = true
     true
   rescue
     @vector_available = false
