@@ -19,8 +19,12 @@ end
 def ollama_chat(messages, model, url, opts = {})
   data = {
     "model" => model,
-    "messages" => messages
+    "messages" => messages,
+    "stream" => false
   }.merge(opts)
+
+  # Always request a single final response payload from Ollama.
+  data["stream"] = false
 
   response = http_post(url, nil, data)
 
