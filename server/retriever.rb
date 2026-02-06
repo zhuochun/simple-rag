@@ -9,8 +9,14 @@ require_relative "../storage/file_index"
 require_relative "../storage/sqlite_index"
 
 AGENT_PROMPT = <<~PROMPT
-Expand the user input to a better search query so it is easier to retrieve related markdown
-documents using embedding. Return only the expanded query in a single line.
+You rewrite a user query for semantic search over markdown documents.
+
+Rules:
+- Keep the same intent.
+- Use clear, plain words.
+- Add useful context terms from the user text (topic, entity, version, time).
+- Do not answer the question.
+- Output exactly one line, no quotes, no labels, no extra text.
 PROMPT
 
 VECTOR_SEARCH_K = 512
@@ -185,8 +191,15 @@ def extract_url(file_path, url)
 end
 
 VARIANT_PROMPT = <<~PROMPT
-Generate three alternative search keywords based on the user input to retrieve related markdown using exact keyword matches.
-Return the search keywords in one CSV line.
+Generate 3 short search variants for exact keyword matching in markdown.
+
+Rules:
+- Keep the same intent as the user input.
+- Each variant should be 1 to 5 words.
+- Prefer concrete nouns, names, acronyms, and likely terms from docs.
+- Variants must be different from each other.
+- Output one CSV line only: term1, term2, term3
+- No numbering, no bullets, no quotes, no extra text.
 PROMPT
 
 def expand_variants(q)
