@@ -191,7 +191,21 @@
         .card-actions {
             margin-top: 12px;
             display: flex;
+            gap: 8px;
             justify-content: flex-end;
+        }
+        .explore-btn {
+            border: 1px solid #ced7e7;
+            background: #f8fafc;
+            color: #334155;
+            border-radius: 8px;
+            padding: 6px 10px;
+            font: inherit;
+            font-weight: 700;
+            cursor: pointer;
+        }
+        .explore-btn:hover {
+            background: #eef2f7;
         }
         .similar-btn {
             border: 1px solid #c8d8f5;
@@ -332,14 +346,27 @@
                         </div>
                         <div class="markdown">${marked.parse(item.text)}</div>
                         <div class="card-actions">
+                            <button type="button" class="explore-btn">Explore</button>
                             <button type="button" class="similar-btn">Similar</button>
                         </div>
                     `;
                     div.querySelector('.card-link').addEventListener('click', event => event.stopPropagation());
+                    div.querySelector('.explore-btn').addEventListener('click', () => openInGraph(item.text));
                     div.querySelector('.similar-btn').addEventListener('click', () => fetchSimilar(div.dataset.note));
                     div.querySelector('.card-header').prepend(pathPill);
                     responseContainer.appendChild(div);
                 });
+            }
+
+            function openInGraph(note) {
+                const safeNote = typeof note === 'string' ? note.trim() : '';
+                if (!safeNote) {
+                    setStatus('Cannot explore an empty note.', true);
+                    return;
+                }
+                const key = `graphExploreNote:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`;
+                localStorage.setItem(key, JSON.stringify({ note: safeNote, createdAt: Date.now() }));
+                window.location.href = `graph.html?exploreKey=${encodeURIComponent(key)}`;
             }
 
             function fetchRandom() {
@@ -353,7 +380,7 @@
                     body: JSON.stringify({ paths: selectedPaths(), count })
                 }).then(resp => resp.json())
                   .then(renderCards)
-                  .then(() => setStatus('Click any card to load similar notes.'))
+                  .then(() => setStatus('Use Similar or Explore on any card.'))
                   .catch(() => setStatus('Failed to fetch random cards.', true))
                   .finally(() => {
                       randomButton.disabled = false;

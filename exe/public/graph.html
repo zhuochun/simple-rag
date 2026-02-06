@@ -980,6 +980,36 @@
               });
         }
 
+        function loadExploreFromUrl() {
+            const params = new URLSearchParams(window.location.search);
+            const exploreKey = params.get('exploreKey');
+            if (!exploreKey) return;
+
+            try {
+                const payload = localStorage.getItem(exploreKey);
+                if (!payload) {
+                    setStatus('Explore payload expired');
+                    return;
+                }
+
+                localStorage.removeItem(exploreKey);
+                const parsed = JSON.parse(payload);
+                const note = parsed && typeof parsed.note === 'string' ? parsed.note.trim() : '';
+                if (!note) {
+                    setStatus('Explore payload is empty');
+                    return;
+                }
+
+                searchInput.value = note;
+                performSearch(api('/q'), 'query_hit');
+            } catch (err) {
+                console.error(err);
+                setStatus('Failed to load explore payload');
+            } finally {
+                window.history.replaceState({}, '', window.location.pathname);
+            }
+        }
+
         function expandNode(node) {
             if (!node || node.type !== 'note' || expandedNodeIds.has(node.id)) return;
 
@@ -1163,6 +1193,7 @@
                     pathsList.appendChild(li);
                 });
                 draw();
+                loadExploreFromUrl();
             });
 
         pathsList.addEventListener('change', draw);
