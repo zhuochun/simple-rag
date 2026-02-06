@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Graph Search</title>
+    <title>Graph Explorer</title>
     <style>
         body {
             margin: 0;
@@ -11,7 +11,9 @@
             display: flex;
             flex-direction: column;
             min-height: 100vh;
-            font-family: Arial, sans-serif;
+            font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
+            background: #eef2f7;
+            color: #1f2937;
         }
         .top-nav {
             display: flex;
@@ -31,11 +33,18 @@
             color: #ffffff;
         }
         #controls {
-            padding: 10px;
+            padding: 10px 16px;
+            border-bottom: 1px solid #d1d5db;
+            background: #f8fafc;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            align-items: center;
         }
         #paths-list {
             list-style-type: none;
             padding: 0;
+            margin: 0;
             display: flex;
             flex-wrap: wrap;
             gap: 10px;
@@ -48,36 +57,177 @@
             margin-left: 5px;
         }
         #search-input {
-            height: 40px;
-            font-size: 16px;
-            width: 300px;
+            height: 38px;
+            font-size: 14px;
+            width: 320px;
+            max-width: 100%;
+            border: 1px solid #cbd5e1;
+            border-radius: 6px;
+            padding: 0 10px;
+            box-sizing: border-box;
         }
-        #search-button, #search-plus-button {
-            height: 46px;
-            margin-left: 10px;
+        #search-button, #search-plus-button, #reset-view-button {
+            height: 38px;
+            border: 1px solid #cbd5e1;
+            border-radius: 6px;
+            padding: 0 12px;
+            background: white;
+            cursor: pointer;
+        }
+        #search-button:hover, #search-plus-button:hover, #reset-view-button:hover {
+            background: #f1f5f9;
+        }
+        #workspace {
+            flex-grow: 1;
+            min-height: 0;
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) 340px;
+            gap: 0;
         }
         #graph-wrapper {
-            flex-grow: 1;
             position: relative;
             overflow: hidden;
-            background: #f5f5f5;
+            background: radial-gradient(circle at top, #fbfdff 0%, #edf2f7 60%, #e5ebf3 100%);
             cursor: grab;
         }
-        #graph {
+        #graph-wrapper.panning {
+            cursor: grabbing;
+        }
+        #graph-canvas {
             position: absolute;
             left: 0;
             top: 0;
-            transform-origin: 0 0;
+            width: 100%;
+            height: 100%;
+            touch-action: none;
         }
-        .node {
+        #status-chip {
             position: absolute;
-            overflow: auto;
-            border: 1px solid #ccc;
-            padding: 5px;
-            border-radius: 5px;
-            background: #fff;
-            box-sizing: border-box;
+            top: 12px;
+            left: 12px;
+            padding: 6px 10px;
+            border-radius: 999px;
+            border: 1px solid #cbd5e1;
+            background: rgba(255, 255, 255, 0.9);
             font-size: 12px;
+            pointer-events: none;
+        }
+        #legend {
+            position: absolute;
+            right: 12px;
+            top: 12px;
+            background: rgba(255, 255, 255, 0.9);
+            border: 1px solid #cbd5e1;
+            border-radius: 8px;
+            padding: 8px;
+            font-size: 12px;
+        }
+        #legend .row {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            margin-top: 4px;
+        }
+        #legend .row:first-child {
+            margin-top: 0;
+        }
+        .swatch {
+            width: 12px;
+            height: 12px;
+            border-radius: 2px;
+            border: 1px solid #cbd5e1;
+            box-sizing: border-box;
+        }
+        #inspector {
+            border-left: 1px solid #d1d5db;
+            background: #ffffff;
+            display: flex;
+            flex-direction: column;
+            min-height: 0;
+        }
+        #inspector-head {
+            padding: 12px;
+            border-bottom: 1px solid #e5e7eb;
+            font-size: 14px;
+        }
+        #inspector-actions {
+            padding: 8px 12px;
+            border-bottom: 1px solid #e5e7eb;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+        }
+        #inspector-actions button {
+            height: 32px;
+            border: 1px solid #cbd5e1;
+            border-radius: 6px;
+            background: white;
+            padding: 0 10px;
+            cursor: pointer;
+            font-size: 12px;
+        }
+        #inspector-actions button:hover {
+            background: #f8fafc;
+        }
+        #inspector-body {
+            padding: 12px;
+            overflow: auto;
+            flex-grow: 1;
+            font-size: 13px;
+            line-height: 1.4;
+        }
+        #inspector-body .meta {
+            margin-bottom: 10px;
+            padding: 8px;
+            border: 1px solid #e5e7eb;
+            border-radius: 8px;
+            background: #f8fafc;
+        }
+        #inspector-body .empty {
+            color: #64748b;
+        }
+        #hotkeys {
+            padding: 8px 12px 12px 12px;
+            border-top: 1px solid #e5e7eb;
+            font-size: 11px;
+            color: #64748b;
+            background: #f8fafc;
+        }
+        #hotkeys code {
+            background: #e2e8f0;
+            border-radius: 4px;
+            padding: 1px 4px;
+        }
+        #search-plus-output {
+            width: 100%;
+            display: none;
+            font-size: 12px;
+            color: #475569;
+            margin-top: 2px;
+        }
+        #search-plus-output.show {
+            display: block;
+        }
+        @media (max-width: 980px) {
+            #workspace {
+                grid-template-columns: 1fr;
+                grid-template-rows: minmax(420px, 58vh) minmax(220px, 1fr);
+            }
+            #inspector {
+                border-left: 0;
+                border-top: 1px solid #d1d5db;
+            }
+            #controls {
+                gap: 6px;
+            }
+            #search-input {
+                width: 100%;
+                order: 1;
+            }
+            #paths-list {
+                order: 2;
+                width: 100%;
+            }
         }
     </style>
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
@@ -96,10 +246,41 @@
         <input type="text" id="search-input" placeholder="Enter your search query">
         <button id="search-button">Search</button>
         <button id="search-plus-button">Search+</button>
+        <button id="reset-view-button">Reset View</button>
         <ul id="paths-list"></ul>
+        <div id="search-plus-output"></div>
     </div>
-    <div id="graph-wrapper">
-        <div id="graph"></div>
+    <div id="workspace">
+        <div id="graph-wrapper">
+            <canvas id="graph-canvas"></canvas>
+            <div id="status-chip">Idle</div>
+            <div id="legend">
+                <div class="row"><span class="swatch" style="background:#f5e2b8;"></span>Note Node</div>
+                <div class="row"><span class="swatch" style="background:#dbeafe;"></span>Query Node</div>
+                <div class="row"><span class="swatch" style="background:#64748b;"></span>Query Hit Edge</div>
+                <div class="row"><span class="swatch" style="background:#0ea5e9;"></span>Similarity Edge</div>
+            </div>
+        </div>
+        <aside id="inspector">
+            <div id="inspector-head">Selection: 0 nodes</div>
+            <div id="inspector-actions">
+                <button id="expand-node-button" type="button">Expand</button>
+                <button id="pin-node-button" type="button">Pin/Unpin</button>
+                <button id="focus-node-button" type="button">Focus</button>
+                <button id="open-node-button" type="button">Open</button>
+            </div>
+            <div id="inspector-body">
+                <div class="empty">Select a note node to inspect details.</div>
+            </div>
+            <div id="hotkeys">
+                Hotkeys:
+                <code>Esc</code> clear
+                <code>F</code> focus
+                <code>R</code> relayout
+                <code>P</code> pin
+                <code>Shift+Click</code> multi-select
+            </div>
+        </aside>
     </div>
 
 <script>
@@ -108,59 +289,862 @@
         const searchInput = document.getElementById('search-input');
         const searchButton = document.getElementById('search-button');
         const searchPlusButton = document.getElementById('search-plus-button');
+        const resetViewButton = document.getElementById('reset-view-button');
         const graphWrapper = document.getElementById('graph-wrapper');
-        const graph = document.getElementById('graph');
+        const canvas = document.getElementById('graph-canvas');
+        const statusChip = document.getElementById('status-chip');
+        const inspectorHead = document.getElementById('inspector-head');
+        const inspectorBody = document.getElementById('inspector-body');
+        const expandNodeButton = document.getElementById('expand-node-button');
+        const pinNodeButton = document.getElementById('pin-node-button');
+        const focusNodeButton = document.getElementById('focus-node-button');
+        const openNodeButton = document.getElementById('open-node-button');
+        const searchPlusOutput = document.getElementById('search-plus-output');
 
-        let offsetX = 0, offsetY = 0;
-        let scale = 1;
-        let isPanning = false;
-        let startX = 0, startY = 0;
+        const ctx = canvas.getContext('2d');
+        const nodes = new Map();
+        const edges = new Map();
+        const selectedNodeIds = new Set();
+        const expandedNodeIds = new Set();
+        const dragState = {
+            mode: null,
+            nodeId: null,
+            pointerId: null,
+            startX: 0,
+            startY: 0
+        };
 
-        function setTransform() {
-            graph.style.transform = `translate(${offsetX}px, ${offsetY}px) scale(${scale})`;
+        const camera = {
+            x: 0,
+            y: 0,
+            k: 1
+        };
+
+        const constants = {
+            minZoom: 0.2,
+            maxZoom: 4,
+            nodeWidth: 260,
+            nodeHeight: 130,
+            queryWidth: 190,
+            queryHeight: 58
+        };
+
+        let queryCounter = 0;
+        let activePointerNode = null;
+
+        const simulation = d3.forceSimulation([])
+            .force('charge', d3.forceManyBody().strength(d => d.type === 'query' ? -1200 : -520))
+            .force('link', d3.forceLink([]).id(d => d.id).distance(link => link.type === 'similar_to' ? 170 : 220).strength(0.2))
+            .force('collide', d3.forceCollide().radius(d => (Math.max(d.width, d.height) / 2) + 20).strength(0.8))
+            .alphaDecay(0.06)
+            .on('tick', draw);
+
+        function api(path) {
+            const base = window.location.origin && window.location.origin.startsWith('http')
+                ? window.location.origin
+                : 'http://localhost:4567';
+            return `${base}${path}`;
         }
 
-        window.addEventListener('resize', function() {
-            scale = 1;
-            offsetX = graphWrapper.clientWidth / 2;
-            offsetY = graphWrapper.clientHeight / 2;
-            setTransform();
-        });
+        function setStatus(text) {
+            statusChip.textContent = text;
+        }
 
-        graphWrapper.addEventListener('mousedown', function(e) {
-            if (e.target !== graphWrapper) return;
-            isPanning = true;
-            startX = e.clientX;
-            startY = e.clientY;
-            graphWrapper.style.cursor = 'grabbing';
-        });
+        function hashText(text) {
+            let hash = 0;
+            for (let i = 0; i < text.length; i++) {
+                hash = ((hash << 5) - hash) + text.charCodeAt(i);
+                hash |= 0;
+            }
+            return Math.abs(hash).toString(36);
+        }
 
-        document.addEventListener('mousemove', function(e) {
-            if (!isPanning) return;
-            offsetX += e.clientX - startX;
-            offsetY += e.clientY - startY;
-            startX = e.clientX;
-            startY = e.clientY;
-            setTransform();
-        });
+        function noteNodeId(item) {
+            const key = `${item.path || item.url || item.id || ''}::${item.text || ''}`;
+            return `note:${hashText(key)}`;
+        }
 
-        document.addEventListener('mouseup', function() {
-            isPanning = false;
-            graphWrapper.style.cursor = 'grab';
-        });
+        function edgeId(type, source, target) {
+            return `${type}:${source}->${target}`;
+        }
 
-        const minScale = 0.5;
-        const maxScale = 3;
-        graphWrapper.addEventListener('wheel', function(e) {
-            e.preventDefault();
-            const delta = e.deltaY < 0 ? 1.1 : 0.9;
-            scale *= delta;
-            if (scale < minScale) scale = minScale;
-            if (scale > maxScale) scale = maxScale;
-            setTransform();
-        }, { passive: false });
+        function selectedPaths() {
+            return Array.from(pathsList.querySelectorAll('input[type="checkbox"]:checked')).map(c => c.name);
+        }
 
-        fetch('http://localhost:4567/paths')
+        function visibleNode(node) {
+            if (node.type !== 'note') return true;
+            const activePaths = selectedPaths();
+            if (activePaths.length === 0) return true;
+            return activePaths.includes(node.lookup);
+        }
+
+        function resolveNodeRef(ref) {
+            if (!ref) return null;
+            if (typeof ref === 'string') return nodes.get(ref) || null;
+            if (typeof ref === 'object' && ref.id) return nodes.get(ref.id) || ref;
+            return null;
+        }
+
+        function visibleEdge(edge) {
+            const source = resolveNodeRef(edge.source);
+            const target = resolveNodeRef(edge.target);
+            if (!source || !target) return false;
+            return visibleNode(source) && visibleNode(target);
+        }
+
+        function worldToScreen(x, y) {
+            return {
+                x: x * camera.k + camera.x,
+                y: y * camera.k + camera.y
+            };
+        }
+
+        function screenToWorld(x, y) {
+            return {
+                x: (x - camera.x) / camera.k,
+                y: (y - camera.y) / camera.k
+            };
+        }
+
+        function getViewportCenterWorld() {
+            return screenToWorld(graphWrapper.clientWidth / 2, graphWrapper.clientHeight / 2);
+        }
+
+        function randomAround(anchorX, anchorY, radius) {
+            const t = Math.random() * Math.PI * 2;
+            const r = Math.random() * radius;
+            return {
+                x: anchorX + Math.cos(t) * r,
+                y: anchorY + Math.sin(t) * r
+            };
+        }
+
+        function ensureNodePosition(node, anchor) {
+            if (Number.isFinite(node.x) && Number.isFinite(node.y)) return;
+            const center = anchor || getViewportCenterWorld();
+            const p = randomAround(center.x, center.y, 120);
+            node.x = p.x;
+            node.y = p.y;
+        }
+
+        function addQueryNode(query, payload) {
+            queryCounter += 1;
+            const id = `query:${queryCounter}`;
+            const center = getViewportCenterWorld();
+            const node = {
+                id,
+                type: 'query',
+                title: query,
+                lookup: null,
+                text: query,
+                url: null,
+                score: 1,
+                width: constants.queryWidth,
+                height: constants.queryHeight,
+                details: payload || {},
+                pinned: false
+            };
+            const p = randomAround(center.x, center.y, 60);
+            node.x = p.x;
+            node.y = p.y;
+            nodes.set(id, node);
+            return node;
+        }
+
+        function addNoteNode(item, anchorNode) {
+            const id = noteNodeId(item);
+            const existing = nodes.get(id);
+            if (existing) {
+                existing.score = Math.max(existing.score || 0, item.score || 0);
+                return existing;
+            }
+
+            const node = {
+                id,
+                type: 'note',
+                title: item.id || item.path || 'Untitled note',
+                lookup: item.lookup,
+                text: item.text || '',
+                url: item.url,
+                path: item.path,
+                score: item.score || 0,
+                width: constants.nodeWidth,
+                height: constants.nodeHeight,
+                pinned: false
+            };
+
+            if (anchorNode) {
+                const p = randomAround(anchorNode.x, anchorNode.y, 180);
+                node.x = p.x;
+                node.y = p.y;
+            } else {
+                ensureNodePosition(node);
+            }
+            nodes.set(id, node);
+            return node;
+        }
+
+        function addEdge(type, sourceNodeId, targetNodeId, weight) {
+            if (sourceNodeId === targetNodeId) return;
+            const id = edgeId(type, sourceNodeId, targetNodeId);
+            const existing = edges.get(id);
+            if (existing) {
+                existing.weight = Math.max(existing.weight || 0, weight || 0);
+                return existing;
+            }
+
+            const edge = {
+                id,
+                type,
+                source: sourceNodeId,
+                target: targetNodeId,
+                weight: weight || 0
+            };
+            edges.set(id, edge);
+            return edge;
+        }
+
+        function updateSimulation(reheat = true) {
+            const nodeArr = Array.from(nodes.values());
+            const edgeArr = Array.from(edges.values());
+
+            simulation.nodes(nodeArr);
+            simulation.force('link').links(edgeArr);
+            if (reheat) {
+                simulation.alpha(0.9).restart();
+            }
+            draw();
+        }
+
+        function drawGrid() {
+            const step = 120;
+            const scaled = step * camera.k;
+            if (scaled < 28) return;
+
+            ctx.save();
+            ctx.strokeStyle = 'rgba(148, 163, 184, 0.22)';
+            ctx.lineWidth = 1;
+
+            const w = graphWrapper.clientWidth;
+            const h = graphWrapper.clientHeight;
+            const originWorld = screenToWorld(0, 0);
+            const endWorld = screenToWorld(w, h);
+            const startX = Math.floor(originWorld.x / step) * step;
+            const startY = Math.floor(originWorld.y / step) * step;
+
+            for (let x = startX; x <= endWorld.x + step; x += step) {
+                const p0 = worldToScreen(x, originWorld.y - step);
+                const p1 = worldToScreen(x, endWorld.y + step);
+                ctx.beginPath();
+                ctx.moveTo(p0.x, p0.y);
+                ctx.lineTo(p1.x, p1.y);
+                ctx.stroke();
+            }
+
+            for (let y = startY; y <= endWorld.y + step; y += step) {
+                const p0 = worldToScreen(originWorld.x - step, y);
+                const p1 = worldToScreen(endWorld.x + step, y);
+                ctx.beginPath();
+                ctx.moveTo(p0.x, p0.y);
+                ctx.lineTo(p1.x, p1.y);
+                ctx.stroke();
+            }
+            ctx.restore();
+        }
+
+        function edgeColor(edge) {
+            if (edge.type === 'similar_to') return '#0ea5e9';
+            return '#64748b';
+        }
+
+        function nodeIdFromRef(ref) {
+            if (!ref) return null;
+            if (typeof ref === 'string') return ref;
+            if (typeof ref === 'object' && ref.id) return ref.id;
+            return null;
+        }
+
+        function connectedNodeIdsForSelection() {
+            const connected = new Set();
+            if (selectedNodeIds.size === 0) return connected;
+
+            Array.from(edges.values()).forEach(edge => {
+                const sourceId = nodeIdFromRef(edge.source);
+                const targetId = nodeIdFromRef(edge.target);
+                if (!sourceId || !targetId) return;
+
+                if (selectedNodeIds.has(sourceId) && !selectedNodeIds.has(targetId)) {
+                    connected.add(targetId);
+                }
+                if (selectedNodeIds.has(targetId) && !selectedNodeIds.has(sourceId)) {
+                    connected.add(sourceId);
+                }
+            });
+            return connected;
+        }
+
+        function roundRectPath(x, y, width, height, radius) {
+            const r = Math.min(radius, width / 2, height / 2);
+            ctx.beginPath();
+            ctx.moveTo(x + r, y);
+            ctx.lineTo(x + width - r, y);
+            ctx.quadraticCurveTo(x + width, y, x + width, y + r);
+            ctx.lineTo(x + width, y + height - r);
+            ctx.quadraticCurveTo(x + width, y + height, x + width - r, y + height);
+            ctx.lineTo(x + r, y + height);
+            ctx.quadraticCurveTo(x, y + height, x, y + height - r);
+            ctx.lineTo(x, y + r);
+            ctx.quadraticCurveTo(x, y, x + r, y);
+            ctx.closePath();
+        }
+
+        function trimToWidth(text, maxWidth) {
+            if (ctx.measureText(text).width <= maxWidth) return text;
+            let out = text;
+            while (out.length > 0 && ctx.measureText(`${out}...`).width > maxWidth) {
+                out = out.slice(0, -1);
+            }
+            return `${out}...`;
+        }
+
+        function textLines(text, maxWidth, maxLines) {
+            const raw = String(text || '').replace(/\s+/g, ' ').trim();
+            if (!raw) return ['(empty)'];
+            const words = raw.split(' ');
+            const lines = [];
+            let current = '';
+
+            for (let i = 0; i < words.length; i++) {
+                const w = words[i];
+
+                if (!current && ctx.measureText(w).width > maxWidth) {
+                    lines.push(trimToWidth(w, maxWidth));
+                    if (lines.length >= maxLines) break;
+                    continue;
+                }
+
+                const next = current ? `${current} ${w}` : w;
+                if (ctx.measureText(next).width <= maxWidth) {
+                    current = next;
+                    continue;
+                }
+
+                if (current) lines.push(current);
+                current = w;
+                if (lines.length === maxLines - 1) break;
+            }
+
+            if (current && lines.length < maxLines) lines.push(current);
+            if (lines.length > maxLines) lines.length = maxLines;
+            lines.forEach((line, idx) => {
+                lines[idx] = trimToWidth(line, maxWidth);
+            });
+            if (lines.length === maxLines && words.length > 0) {
+                lines[maxLines - 1] = trimToWidth(lines[maxLines - 1], maxWidth);
+            }
+            return lines;
+        }
+
+        function drawEdge(edge) {
+            const source = resolveNodeRef(edge.source);
+            const target = resolveNodeRef(edge.target);
+            if (!source || !target || !visibleEdge(edge)) return;
+
+            const ps = worldToScreen(source.x, source.y);
+            const pt = worldToScreen(target.x, target.y);
+            const score = Math.max(0.1, Math.min(edge.weight || 0.1, 1.2));
+            const sourceId = nodeIdFromRef(edge.source);
+            const targetId = nodeIdFromRef(edge.target);
+            const touchesSelection = selectedNodeIds.has(sourceId) || selectedNodeIds.has(targetId);
+            ctx.save();
+            ctx.strokeStyle = edgeColor(edge);
+            ctx.globalAlpha = touchesSelection
+                ? 0.85
+                : (0.22 + Math.min(0.45, score * 0.35));
+            ctx.lineWidth = (edge.type === 'similar_to' ? 1.8 : 1.4) * Math.max(0.75, Math.min(2, camera.k * 0.9));
+            if (touchesSelection) {
+                ctx.lineWidth *= 1.6;
+            }
+            ctx.beginPath();
+            ctx.moveTo(ps.x, ps.y);
+            ctx.lineTo(pt.x, pt.y);
+            ctx.stroke();
+            ctx.restore();
+        }
+
+        function drawNode(node, connectedNodeIds) {
+            if (!visibleNode(node)) return;
+
+            const screen = worldToScreen(node.x, node.y);
+            const width = node.width * camera.k;
+            const height = node.height * camera.k;
+            const x = screen.x - (width / 2);
+            const y = screen.y - (height / 2);
+            const selected = selectedNodeIds.has(node.id);
+            const hovered = activePointerNode && activePointerNode.id === node.id;
+            const connected = connectedNodeIds.has(node.id);
+            const radius = Math.max(6, 11 * camera.k);
+
+            ctx.save();
+            let fill = node.type === 'query' ? '#dbeafe' : textToLightColor(node.lookup || 'note');
+            roundRectPath(x, y, width, height, radius);
+            ctx.fillStyle = fill;
+            ctx.fill();
+
+            ctx.lineWidth = selected ? 2.4 : (connected ? 2.1 : (hovered ? 1.8 : 1));
+            ctx.strokeStyle = selected ? '#2563eb' : (connected ? '#f59e0b' : (hovered ? '#475569' : '#94a3b8'));
+            ctx.stroke();
+
+            if (node.pinned) {
+                ctx.fillStyle = '#0f172a';
+                ctx.beginPath();
+                ctx.arc(x + width - 12, y + 12, 4, 0, Math.PI * 2);
+                ctx.fill();
+            }
+
+            const horizontalPad = 10 * camera.k;
+            const topPad = 10 * camera.k;
+            const bottomPad = 8 * camera.k;
+            let textY = y + topPad + (8 * camera.k);
+            const maxWidth = width - (horizontalPad * 2);
+
+            roundRectPath(x, y, width, height, radius);
+            ctx.clip();
+
+            ctx.fillStyle = '#0f172a';
+            ctx.font = `${Math.max(10, 12 * camera.k)}px Helvetica`;
+            const header = node.type === 'query'
+                ? trimToWidth(`Q: ${node.title}`, maxWidth)
+                : trimToWidth(`${node.title}`, maxWidth);
+            ctx.fillText(header, x + horizontalPad, textY);
+
+            textY += 14 * camera.k;
+            ctx.fillStyle = '#1e293b';
+            ctx.font = `${Math.max(9, 10 * camera.k)}px Helvetica`;
+
+            if (node.type === 'note') {
+                const lineHeight = 12 * camera.k;
+                const chipHeight = 12 * camera.k;
+                const availableTextHeight = Math.max(0, height - (topPad + bottomPad + 14 * camera.k + chipHeight + 2));
+                const maxBodyLines = Math.max(1, Math.floor(availableTextHeight / lineHeight));
+                const lines = textLines(node.text, maxWidth, maxBodyLines);
+                for (let i = 0; i < lines.length; i++) {
+                    textY += lineHeight;
+                    if (textY > (y + height - (chipHeight + bottomPad))) break;
+                    ctx.fillText(lines[i], x + horizontalPad, textY);
+                }
+
+                const chipText = `${node.lookup || 'unknown'} | ${Number(node.score || 0).toFixed(3)}`;
+                ctx.font = `${Math.max(8, 9 * camera.k)}px Helvetica`;
+                ctx.fillStyle = '#334155';
+                ctx.fillText(trimToWidth(chipText, maxWidth), x + horizontalPad, y + height - bottomPad);
+            } else {
+                const lineHeight = 12 * camera.k;
+                const availableTextHeight = Math.max(0, height - (topPad + bottomPad + 14 * camera.k));
+                const maxLines = Math.max(1, Math.floor(availableTextHeight / lineHeight));
+                const lines = textLines(node.text, maxWidth, maxLines);
+                for (let i = 0; i < lines.length; i++) {
+                    textY += lineHeight;
+                    ctx.fillText(lines[i], x + horizontalPad, textY);
+                }
+            }
+
+            ctx.restore();
+        }
+
+        function draw() {
+            const ratio = window.devicePixelRatio || 1;
+            const width = graphWrapper.clientWidth;
+            const height = graphWrapper.clientHeight;
+            if (canvas.width !== Math.floor(width * ratio) || canvas.height !== Math.floor(height * ratio)) {
+                canvas.width = Math.floor(width * ratio);
+                canvas.height = Math.floor(height * ratio);
+                ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+            } else {
+                ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+            }
+
+            ctx.clearRect(0, 0, width, height);
+            drawGrid();
+
+            const connectedNodeIds = connectedNodeIdsForSelection();
+            Array.from(edges.values()).forEach(drawEdge);
+            Array.from(nodes.values()).forEach(node => drawNode(node, connectedNodeIds));
+        }
+
+        function nodeAtScreenPoint(screenX, screenY) {
+            const world = screenToWorld(screenX, screenY);
+            const list = Array.from(nodes.values());
+            for (let i = list.length - 1; i >= 0; i--) {
+                const n = list[i];
+                if (!visibleNode(n)) continue;
+                const left = n.x - (n.width / 2);
+                const right = n.x + (n.width / 2);
+                const top = n.y - (n.height / 2);
+                const bottom = n.y + (n.height / 2);
+                if (world.x >= left && world.x <= right && world.y >= top && world.y <= bottom) {
+                    return n;
+                }
+            }
+            return null;
+        }
+
+        function setSelection(node, additive) {
+            if (!additive) {
+                selectedNodeIds.clear();
+            }
+            if (node) {
+                if (additive && selectedNodeIds.has(node.id)) {
+                    selectedNodeIds.delete(node.id);
+                } else {
+                    selectedNodeIds.add(node.id);
+                }
+            }
+            refreshInspector();
+            draw();
+        }
+
+        function selectedNodes() {
+            return Array.from(selectedNodeIds).map(id => nodes.get(id)).filter(Boolean);
+        }
+
+        function refreshInspector() {
+            const selected = selectedNodes();
+            inspectorHead.textContent = `Selection: ${selected.length} node${selected.length === 1 ? '' : 's'}`;
+
+            if (selected.length === 0) {
+                inspectorBody.innerHTML = '<div class="empty">Select a note node to inspect details.</div>';
+                return;
+            }
+
+            if (selected.length > 1) {
+                const lines = selected.slice(0, 12).map(n => `<li>${n.title}</li>`).join('');
+                inspectorBody.innerHTML = `
+                    <div class="meta">
+                        ${selected.length} nodes selected.
+                    </div>
+                    <ul>${lines}</ul>
+                `;
+                return;
+            }
+
+            const node = selected[0];
+            if (node.type === 'query') {
+                const extra = node.details && node.details.expanded
+                    ? `<div><strong>Expanded:</strong> ${node.details.expanded}</div>`
+                    : '';
+                const variants = node.details && node.details.variants && node.details.variants.length > 0
+                    ? `<div><strong>Variants:</strong> ${node.details.variants.join(', ')}</div>`
+                    : '';
+                inspectorBody.innerHTML = `
+                    <div class="meta">
+                        <div><strong>Type:</strong> Query</div>
+                        <div><strong>Text:</strong> ${node.text}</div>
+                        ${extra}
+                        ${variants}
+                    </div>
+                `;
+                return;
+            }
+
+            inspectorBody.innerHTML = `
+                <div class="meta">
+                    <div><strong>Path:</strong> ${node.lookup || '-'}</div>
+                    <div><strong>Score:</strong> ${Number(node.score || 0).toFixed(3)}</div>
+                    <div><strong>ID:</strong> ${node.title}</div>
+                    <div><strong>URL:</strong> ${node.url ? `<a href="${node.url}" target="_blank" rel="noopener noreferrer">${node.url}</a>` : '-'}</div>
+                    <div><strong>Pinned:</strong> ${node.pinned ? 'Yes' : 'No'}</div>
+                </div>
+                <div class="markdown-content">${marked.parse(node.text || '')}</div>
+            `;
+        }
+
+        function zoomAroundPoint(screenX, screenY, factor) {
+            const oldK = camera.k;
+            const newK = Math.min(constants.maxZoom, Math.max(constants.minZoom, oldK * factor));
+            if (newK === oldK) return;
+
+            const worldX = (screenX - camera.x) / oldK;
+            const worldY = (screenY - camera.y) / oldK;
+            camera.k = newK;
+            camera.x = screenX - (worldX * newK);
+            camera.y = screenY - (worldY * newK);
+            draw();
+        }
+
+        function resetView() {
+            camera.k = 0.95;
+            camera.x = graphWrapper.clientWidth / 2;
+            camera.y = graphWrapper.clientHeight / 2;
+            draw();
+        }
+
+        function focusSelection() {
+            const selected = selectedNodes().filter(visibleNode);
+            if (selected.length === 0) return;
+
+            let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+            selected.forEach(n => {
+                minX = Math.min(minX, n.x - (n.width / 2));
+                maxX = Math.max(maxX, n.x + (n.width / 2));
+                minY = Math.min(minY, n.y - (n.height / 2));
+                maxY = Math.max(maxY, n.y + (n.height / 2));
+            });
+
+            const worldWidth = Math.max(20, maxX - minX);
+            const worldHeight = Math.max(20, maxY - minY);
+            const viewWidth = graphWrapper.clientWidth;
+            const viewHeight = graphWrapper.clientHeight;
+            const kx = (viewWidth * 0.8) / worldWidth;
+            const ky = (viewHeight * 0.8) / worldHeight;
+            camera.k = Math.max(constants.minZoom, Math.min(constants.maxZoom, Math.min(kx, ky)));
+
+            const centerWorldX = (minX + maxX) / 2;
+            const centerWorldY = (minY + maxY) / 2;
+            camera.x = viewWidth / 2 - (centerWorldX * camera.k);
+            camera.y = viewHeight / 2 - (centerWorldY * camera.k);
+            draw();
+        }
+
+        function togglePinSelected() {
+            selectedNodes().forEach(node => {
+                node.pinned = !node.pinned;
+                if (node.pinned) {
+                    node.fx = node.x;
+                    node.fy = node.y;
+                } else {
+                    node.fx = null;
+                    node.fy = null;
+                }
+            });
+            refreshInspector();
+            updateSimulation(false);
+        }
+
+        function openSelected() {
+            const selected = selectedNodes();
+            if (selected.length !== 1) return;
+            const node = selected[0];
+            if (node.url) {
+                window.open(node.url, '_blank', 'noopener,noreferrer');
+            }
+        }
+
+        function processSearchResponse(queryNode, data, edgeType) {
+            const items = Array.isArray(data.data) ? data.data : [];
+            items.forEach(item => {
+                const noteNode = addNoteNode(item, queryNode);
+                addEdge(edgeType, queryNode.id, noteNode.id, item.score || 0);
+            });
+            updateSimulation(true);
+            setSelection(queryNode, false);
+            setStatus(`Loaded ${items.length} results`);
+        }
+
+        function performSearch(url, edgeType) {
+            const query = searchInput.value.trim();
+            if (!query) return;
+
+            const body = {
+                q: query,
+                paths: selectedPaths(),
+                topN: 20
+            };
+
+            setStatus('Searching...');
+            searchPlusOutput.classList.remove('show');
+            searchPlusOutput.textContent = '';
+
+            fetch(url, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(body)
+            }).then(resp => resp.json())
+              .then(resp => {
+                  const details = {
+                      expanded: resp.expanded || '',
+                      variants: Array.isArray(resp.variants) ? resp.variants : []
+                  };
+                  const queryNode = addQueryNode(query, details);
+                  processSearchResponse(queryNode, resp, edgeType);
+                  if (details.expanded || details.variants.length > 0) {
+                      const variantsText = details.variants.length > 0 ? ` | variants: ${details.variants.join(', ')}` : '';
+                      searchPlusOutput.textContent = `expanded: ${details.expanded || '(none)'}${variantsText}`;
+                      searchPlusOutput.classList.add('show');
+                  }
+              })
+              .catch(err => {
+                  console.error(err);
+                  setStatus('Search failed');
+              });
+        }
+
+        function expandNode(node) {
+            if (!node || node.type !== 'note' || expandedNodeIds.has(node.id)) return;
+
+            expandedNodeIds.add(node.id);
+            setStatus(`Expanding: ${node.title}`);
+            fetch(api('/similar'), {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    paths: selectedPaths(),
+                    note: node.text || '',
+                    topN: 8
+                })
+            }).then(resp => resp.json())
+              .then(resp => {
+                  const items = Array.isArray(resp.data) ? resp.data : [];
+                  items.forEach(item => {
+                      const child = addNoteNode(item, node);
+                      addEdge('similar_to', node.id, child.id, item.score || 0);
+                  });
+                  updateSimulation(true);
+                  setStatus(`Expanded ${items.length} similar notes`);
+              })
+              .catch(err => {
+                  expandedNodeIds.delete(node.id);
+                  console.error(err);
+                  setStatus('Expand failed');
+              });
+        }
+
+        function pointerPosition(evt) {
+            const rect = canvas.getBoundingClientRect();
+            return {
+                x: evt.clientX - rect.left,
+                y: evt.clientY - rect.top
+            };
+        }
+
+        function onPointerDown(evt) {
+            canvas.setPointerCapture(evt.pointerId);
+            const pos = pointerPosition(evt);
+            const hit = nodeAtScreenPoint(pos.x, pos.y);
+            activePointerNode = hit;
+            dragState.pointerId = evt.pointerId;
+            dragState.startX = pos.x;
+            dragState.startY = pos.y;
+
+            if (hit) {
+                setSelection(hit, evt.shiftKey);
+                dragState.mode = 'node';
+                dragState.nodeId = hit.id;
+                if (!hit.pinned) {
+                    hit.fx = hit.x;
+                    hit.fy = hit.y;
+                }
+                simulation.alphaTarget(0.35).restart();
+            } else {
+                dragState.mode = 'pan';
+                dragState.nodeId = null;
+                graphWrapper.classList.add('panning');
+                if (!evt.shiftKey) {
+                    setSelection(null, false);
+                }
+            }
+            draw();
+        }
+
+        function onPointerMove(evt) {
+            const pos = pointerPosition(evt);
+            const hit = nodeAtScreenPoint(pos.x, pos.y);
+            activePointerNode = hit;
+
+            if (dragState.pointerId === evt.pointerId && dragState.mode) {
+                if (dragState.mode === 'pan') {
+                    const dx = pos.x - dragState.startX;
+                    const dy = pos.y - dragState.startY;
+                    camera.x += dx;
+                    camera.y += dy;
+                    dragState.startX = pos.x;
+                    dragState.startY = pos.y;
+                } else if (dragState.mode === 'node') {
+                    const node = nodes.get(dragState.nodeId);
+                    if (node) {
+                        const world = screenToWorld(pos.x, pos.y);
+                        node.fx = world.x;
+                        node.fy = world.y;
+                        node.x = world.x;
+                        node.y = world.y;
+                    }
+                }
+                draw();
+                return;
+            }
+
+            canvas.style.cursor = hit ? 'pointer' : (graphWrapper.classList.contains('panning') ? 'grabbing' : 'grab');
+            draw();
+        }
+
+        function onPointerUp(evt) {
+            if (dragState.pointerId !== evt.pointerId) return;
+
+            if (dragState.mode === 'node') {
+                const node = nodes.get(dragState.nodeId);
+                if (node && !node.pinned) {
+                    node.fx = null;
+                    node.fy = null;
+                }
+                simulation.alphaTarget(0);
+            }
+
+            dragState.mode = null;
+            dragState.nodeId = null;
+            dragState.pointerId = null;
+            graphWrapper.classList.remove('panning');
+            canvas.style.cursor = 'grab';
+            draw();
+        }
+
+        function onWheel(evt) {
+            evt.preventDefault();
+            const pos = pointerPosition(evt);
+            const factor = evt.deltaY < 0 ? 1.08 : 0.92;
+            zoomAroundPoint(pos.x, pos.y, factor);
+        }
+
+        function onDoubleClick(evt) {
+            const pos = pointerPosition(evt);
+            const hit = nodeAtScreenPoint(pos.x, pos.y);
+            if (!hit || hit.type !== 'note') return;
+            setSelection(hit, false);
+            expandNode(hit);
+        }
+
+        function onKeyDown(evt) {
+            if (evt.key === 'Escape') {
+                selectedNodeIds.clear();
+                refreshInspector();
+                draw();
+                return;
+            }
+            if (evt.key === 'f' || evt.key === 'F') {
+                focusSelection();
+                return;
+            }
+            if (evt.key === 'r' || evt.key === 'R') {
+                simulation.alpha(1).restart();
+                setStatus('Relayout');
+                return;
+            }
+            if (evt.key === 'p' || evt.key === 'P') {
+                togglePinSelected();
+                return;
+            }
+        }
+
+        window.addEventListener('resize', draw);
+        canvas.addEventListener('pointerdown', onPointerDown);
+        canvas.addEventListener('pointermove', onPointerMove);
+        canvas.addEventListener('pointerup', onPointerUp);
+        canvas.addEventListener('pointercancel', onPointerUp);
+        canvas.addEventListener('wheel', onWheel, { passive: false });
+        canvas.addEventListener('dblclick', onDoubleClick);
+        window.addEventListener('keydown', onKeyDown);
+
+        fetch(api('/paths'))
             .then(resp => resp.json())
             .then(data => {
                 data.forEach(item => {
@@ -178,112 +1162,33 @@
                     li.appendChild(label);
                     pathsList.appendChild(li);
                 });
+                draw();
             });
 
-        function selectedPaths() {
-            return Array.from(pathsList.querySelectorAll('input[type="checkbox"]:checked')).map(c => c.name);
-        }
+        pathsList.addEventListener('change', draw);
 
-        let rootNode = null;
-        const nodeMap = new Map();
-        const MIN_VALUE = 0.1;
+        searchButton.addEventListener('click', () => performSearch(api('/q'), 'query_hit'));
+        searchPlusButton.addEventListener('click', () => performSearch(api('/q_plus'), 'query_hit'));
+        resetViewButton.addEventListener('click', resetView);
+        expandNodeButton.addEventListener('click', () => {
+            const single = selectedNodes();
+            if (single.length === 1) {
+                expandNode(single[0]);
+            }
+        });
+        pinNodeButton.addEventListener('click', togglePinSelected);
+        focusNodeButton.addEventListener('click', focusSelection);
+        openNodeButton.addEventListener('click', openSelected);
 
-        function addChild(parent, item) {
-            if (nodeMap.has(item.url)) return;
-            const child = { id: item.url, item: item, children: [] };
-            parent.children.push(child);
-            nodeMap.set(child.id, child);
-        }
-
-        function buildTree(items) {
-            graph.innerHTML = '';
-            if (!items || items.length === 0) { rootNode = null; return; }
-            nodeMap.clear();
-            rootNode = { id: 'root', item: null, children: [] };
-            nodeMap.set(rootNode.id, rootNode);
-            items.forEach(it => addChild(rootNode, it));
-            renderIcicle();
-        }
-
-        function fetchSimilar(node) {
-            fetch('http://localhost:4567/similar', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ paths: selectedPaths(), note: node.item.text, topN: 3 })
-            }).then(resp => resp.json())
-              .then(resp => {
-                  resp.data.forEach(it => addChild(node, it));
-                  renderIcicle();
-              });
-        }
-
-        function renderIcicle() {
-            if (!rootNode) return;
-            graph.innerHTML = '';
-            const width = graphWrapper.clientWidth;
-            const height = graphWrapper.clientHeight;
-
-            const root = d3.hierarchy(rootNode)
-                .sum(d => Math.max(d.item ? d.item.score : 0, MIN_VALUE))
-                .sort((a, b) => b.value - a.value);
-
-            d3.partition()
-                .size([height, width])(root);
-
-            const sel = d3.select(graph)
-                .selectAll('div.node')
-                .data(root.descendants(), d => d.data.id);
-
-            sel.exit().remove();
-
-            const enter = sel.enter().append('div')
-                .attr('class', 'node')
-                .on('dblclick', (event, d) => {
-                    if (d.depth === 0) return;
-                    fetchSimilar(d.data);
-                });
-            enter.append('div').attr('class', 'content');
-
-            const merged = enter.merge(sel);
-            merged.each(function(d) {
-                if (d.data.item) {
-                    applyBackgroundColor(this, d.data.item.lookup);
-                }
-            });
-
-            merged.style('display', d => d.data.item ? 'block' : 'none');
-
-            merged.select('.content').html(d => {
-                if (!d.data.item) return `<strong>ROOT</strong>`;
-                return `
-                    <div><strong>Path:</strong> <a href="${d.data.item.url}">${d.data.item.id}</a></div>
-                    <div><strong>Score:</strong> ${d.data.item.score}</div>
-                    <div class="markdown-content">${marked.parse(d.data.item.text)}</div>
-                `;
-            });
-
-            merged.style('left', d => `${d.y0}px`)
-                .style('top', d => `${d.x0}px`)
-                .style('width', d => `${Math.max(20, d.y1 - d.y0)}px`)
-                .style('height', d => `${Math.max(20, d.x1 - d.x0)}px`);
-        }
-
-        function performSearch(url) {
-            const query = searchInput.value;
-            fetch(url, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ q: query, paths: selectedPaths() })
-            }).then(resp => resp.json())
-              .then(resp => { buildTree(resp.data); });
-        }
-
-        searchButton.addEventListener('click', () => performSearch('http://localhost:4567/q'));
-        searchPlusButton.addEventListener('click', () => performSearch('http://localhost:4567/q_plus'));
         searchInput.addEventListener('keypress', function(e) {
-            if (e.key === 'Enter') { performSearch('http://localhost:4567/q'); }
+            if (e.key === 'Enter') {
+                performSearch(api('/q'), 'query_hit');
+            }
         });
 
+        resetView();
+        refreshInspector();
+        draw();
     });
 </script>
 </body>
