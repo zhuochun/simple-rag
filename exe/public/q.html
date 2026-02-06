@@ -6,10 +6,26 @@
     <title>Search Page</title>
     <style>
         body {
-            display: flex;
             margin: 0;
             padding: 0;
             font-family: Arial, sans-serif;
+        }
+        .top-nav {
+            display: flex;
+            gap: 8px;
+            padding: 10px 16px;
+            background: #1f2937;
+            border-bottom: 1px solid #111827;
+        }
+        .top-nav a {
+            color: #e5e7eb;
+            text-decoration: none;
+            padding: 6px 10px;
+            border-radius: 4px;
+        }
+        .top-nav a.active, .top-nav a:hover {
+            background: #374151;
+            color: #ffffff;
         }
         #main-content {
             flex-grow: 1;
@@ -80,6 +96,13 @@
     <script src="utils.js"></script>
 </head>
 <body>
+    <nav class="top-nav">
+        <a href="q.html" class="active">Search</a>
+        <a href="graph.html">Graph</a>
+        <a href="reader.html">Reader</a>
+        <a href="duplicate.html">Duplicates</a>
+        <a href="random.html">Random</a>
+    </nav>
     <div id="main-content">
         <div id="search-container">
             <input type="text" id="search-input" placeholder="Enter your search query">

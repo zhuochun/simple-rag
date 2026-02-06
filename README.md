@@ -11,7 +11,7 @@ gem install simple-rag-zc
 ## Setup
 
 - Setup Config JSON
-  - Run `run-setup config.json` then edit the paths to absolute path.
+  - Copy `example_config.json` to `config.json`, then edit the paths to absolute path.
 - Run `run-index config.json` *Required
   - To generate embeddings for all files. It takes a while on the first time.
 - Optional migration from JSONL to SQLite tables

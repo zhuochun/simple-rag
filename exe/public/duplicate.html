@@ -7,8 +7,28 @@
     <style>
         body {
             margin: 0;
-            padding: 20px;
+            padding: 0;
             font-family: Arial, sans-serif;
+        }
+        .top-nav {
+            display: flex;
+            gap: 8px;
+            padding: 10px 16px;
+            background: #1f2937;
+            border-bottom: 1px solid #111827;
+        }
+        .top-nav a {
+            color: #e5e7eb;
+            text-decoration: none;
+            padding: 6px 10px;
+            border-radius: 4px;
+        }
+        .top-nav a.active, .top-nav a:hover {
+            background: #374151;
+            color: #ffffff;
+        }
+        #main-content {
+            padding: 20px;
         }
         #paths-list {
             list-style-type: none;
@@ -42,6 +62,14 @@
     <script src="utils.js"></script>
 </head>
 <body>
+    <nav class="top-nav">
+        <a href="q.html">Search</a>
+        <a href="graph.html">Graph</a>
+        <a href="reader.html">Reader</a>
+        <a href="duplicate.html" class="active">Duplicates</a>
+        <a href="random.html">Random</a>
+    </nav>
+    <div id="main-content">
     <div>
         <input type="number" id="threshold" value="0.9" step="0.05" min="0" max="1" />
         <button id="find-btn">Find Duplicates</button>
@@ -121,5 +149,6 @@
             });
         });
     </script>
+    </div>
 </body>
 </html>
