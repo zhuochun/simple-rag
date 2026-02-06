@@ -5,10 +5,33 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Random Notes</title>
     <style>
+        @import url('https://fonts.googleapis.com/css2?family=Manrope:wght@400;600;700&display=swap');
+
+        :root {
+            --bg: #f6f9ff;
+            --panel: #ffffffcc;
+            --text: #1f2a44;
+            --muted: #5f6b85;
+            --border: #dbe4f5;
+            --primary: #1f6feb;
+            --primary-hover: #165dc4;
+            --shadow: 0 14px 34px rgba(26, 49, 92, 0.12);
+        }
+
+        * {
+            box-sizing: border-box;
+        }
+
         body {
             margin: 0;
+            min-height: 100vh;
             padding: 0;
-            font-family: Arial, sans-serif;
+            color: var(--text);
+            font-family: 'Manrope', 'Segoe UI', sans-serif;
+            background:
+                radial-gradient(circle at 8% 8%, #d8e7ff 0%, #d8e7ff00 35%),
+                radial-gradient(circle at 90% 18%, #bdf2de 0%, #bdf2de00 36%),
+                linear-gradient(165deg, #f8faff 0%, #eef4ff 46%, #ecf9f2 100%);
         }
         .top-nav {
             display: flex;
@@ -28,10 +51,77 @@
             color: #ffffff;
         }
         #main-content {
-            padding: 20px;
+            padding: 26px 20px 38px;
+        }
+        .controls-panel {
+            border: 1px solid var(--border);
+            background: var(--panel);
+            backdrop-filter: blur(6px);
+            border-radius: 16px;
+            box-shadow: var(--shadow);
+            padding: 14px;
+            margin-bottom: 18px;
+        }
+        .controls {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            gap: 12px;
+        }
+        #random-button {
+            height: 40px;
+            min-width: 108px;
+            border: 0;
+            border-radius: 10px;
+            color: #fff;
+            background: var(--primary);
+            font: inherit;
+            font-weight: 700;
+            cursor: pointer;
+            transition: transform 0.14s ease, background 0.14s ease, box-shadow 0.14s ease;
+        }
+        #random-button:hover {
+            background: var(--primary-hover);
+            transform: translateY(-1px);
+            box-shadow: 0 8px 18px rgba(22, 93, 196, 0.28);
+        }
+        #random-button:disabled {
+            background: #8fa9d7;
+            cursor: not-allowed;
+            transform: none;
+            box-shadow: none;
+        }
+        .control-label {
+            color: var(--muted);
+            font-weight: 600;
+        }
+        #card-count {
+            width: 78px;
+            height: 36px;
+            padding: 6px 8px;
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            color: var(--text);
+            font: inherit;
+            font-weight: 600;
+            background: #fff;
+        }
+        #card-count:focus {
+            outline: 2px solid #b9d2ff;
+            outline-offset: 1px;
+        }
+        #status-message {
+            min-height: 20px;
+            margin-top: 10px;
+            color: var(--muted);
+            font-size: 0.93rem;
+        }
+        #status-message.error {
+            color: #a11a2d;
         }
         #paths-list {
-            list-style-type: none;
+            list-style: none;
+            margin: 0 0 20px;
             padding: 0;
             display: flex;
             flex-wrap: wrap;
@@ -40,26 +130,121 @@
         #paths-list li {
             display: flex;
             align-items: center;
+            gap: 8px;
+            padding: 7px 10px;
+            border: 1px solid var(--border);
+            border-radius: 999px;
+            background: #fff;
+        }
+        #paths-list input[type="checkbox"] {
+            accent-color: var(--primary);
         }
         #paths-list label {
-            margin-left: 5px;
-        }
-        #random-button {
-            height: 40px;
-            margin-bottom: 20px;
+            font-size: 0.93rem;
+            font-weight: 600;
         }
         #response-container {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 10px;
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 14px;
         }
         .card {
-            border: 1px solid #ccc;
-            padding: 10px;
-            border-radius: 5px;
-            width: calc(50% - 5px);
-            box-sizing: border-box;
+            border: 1px solid var(--border);
+            background: #fff;
+            padding: 14px;
+            border-radius: 14px;
             cursor: pointer;
+            box-shadow: 0 8px 20px rgba(26, 49, 92, 0.09);
+            transition: transform 0.14s ease, box-shadow 0.14s ease;
+            animation: cardIn 200ms ease both;
+        }
+        .card:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 14px 26px rgba(24, 50, 96, 0.16);
+        }
+        .card-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 10px;
+            margin-bottom: 10px;
+            font-size: 0.9rem;
+        }
+        .path-pill {
+            padding: 2px 10px;
+            border-radius: 999px;
+            border: 1px solid #d5e2fb;
+            font-weight: 700;
+        }
+        .card-link {
+            color: #124caa;
+            font-weight: 700;
+            text-decoration: none;
+        }
+        .card-link:hover {
+            text-decoration: underline;
+        }
+        .card .markdown {
+            line-height: 1.5;
+            word-break: break-word;
+        }
+        .card-actions {
+            margin-top: 12px;
+            display: flex;
+            justify-content: flex-end;
+        }
+        .similar-btn {
+            border: 1px solid #c8d8f5;
+            background: #f3f8ff;
+            color: #124caa;
+            border-radius: 8px;
+            padding: 6px 10px;
+            font: inherit;
+            font-weight: 700;
+            cursor: pointer;
+        }
+        .similar-btn:hover {
+            background: #e8f1ff;
+        }
+        .empty-state {
+            grid-column: 1 / -1;
+            border: 1px dashed #bfd0ef;
+            border-radius: 14px;
+            background: #fff;
+            color: var(--muted);
+            padding: 18px;
+            text-align: center;
+            font-weight: 600;
+        }
+        @keyframes cardIn {
+            from {
+                opacity: 0;
+                transform: translateY(6px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+        @media (max-width: 700px) {
+            #main-content {
+                padding: 18px 12px 30px;
+            }
+            .controls-panel {
+                padding: 12px;
+            }
+            .controls {
+                gap: 10px;
+            }
+            #random-button {
+                width: 100%;
+            }
+            #card-count {
+                width: 100%;
+            }
+            #response-container {
+                grid-template-columns: 1fr;
+            }
         }
     </style>
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
@@ -74,7 +259,14 @@
         <a href="random.html" class="active">Random</a>
     </nav>
     <div id="main-content">
-    <button id="random-button">Random</button>
+    <div class="controls-panel">
+        <div class="controls">
+            <button id="random-button">Random</button>
+            <label class="control-label" for="card-count">Cards</label>
+            <input id="card-count" type="number" min="1" value="4" />
+        </div>
+        <div id="status-message" aria-live="polite"></div>
+    </div>
     <ul id="paths-list"></ul>
     <div id="response-container"></div>
 
@@ -82,7 +274,14 @@
         document.addEventListener('DOMContentLoaded', function() {
             const pathsList = document.getElementById('paths-list');
             const randomButton = document.getElementById('random-button');
+            const cardCountInput = document.getElementById('card-count');
             const responseContainer = document.getElementById('response-container');
+            const statusMessage = document.getElementById('status-message');
+
+            function setStatus(message, isError = false) {
+                statusMessage.textContent = message;
+                statusMessage.className = isError ? 'error' : '';
+            }
 
             fetch('http://localhost:4567/paths')
                 .then(resp => resp.json())
@@ -102,47 +301,85 @@
                         li.appendChild(label);
                         pathsList.appendChild(li);
                     });
-                });
+                })
+                .catch(() => setStatus('Unable to load paths. Check if the API is running.', true));
 
             function selectedPaths() {
                 return Array.from(pathsList.querySelectorAll('input[type="checkbox"]:checked')).map(c => c.name);
             }
 
+            function getCardCount() {
+                return Math.max(1, parseInt(cardCountInput.value, 10) || 4);
+            }
+
             function renderCards(data) {
                 responseContainer.innerHTML = '';
+                if (!data || !Array.isArray(data.data) || data.data.length === 0) {
+                    responseContainer.innerHTML = '<div class="empty-state">No notes found for the current selection.</div>';
+                    return;
+                }
                 data.data.forEach(item => {
                     const div = document.createElement('div');
                     div.className = 'card';
-                    applyBackgroundColor(div, item.lookup);
                     div.dataset.note = item.text;
+                    const pathPill = document.createElement('span');
+                    pathPill.className = 'path-pill';
+                    pathPill.textContent = item.lookup || 'Unknown';
+                    applyBackgroundColor(pathPill, item.lookup);
                     div.innerHTML = `
-                        <div><strong>Path:</strong> <a href="${item.url}">${item.id}</a></div>
+                        <div class="card-header">
+                            <a class="card-link" href="${item.url}">${item.id}</a>
+                        </div>
                         <div class="markdown">${marked.parse(item.text)}</div>
+                        <div class="card-actions">
+                            <button type="button" class="similar-btn">Similar</button>
+                        </div>
                     `;
-                    div.addEventListener('click', () => fetchSimilar(div.dataset.note));
+                    div.querySelector('.card-link').addEventListener('click', event => event.stopPropagation());
+                    div.querySelector('.similar-btn').addEventListener('click', () => fetchSimilar(div.dataset.note));
+                    div.querySelector('.card-header').prepend(pathPill);
                     responseContainer.appendChild(div);
                 });
             }
 
             function fetchRandom() {
+                const count = getCardCount();
+                randomButton.disabled = true;
+                randomButton.textContent = 'Loading...';
+                setStatus(`Fetching ${count} random cards...`);
                 fetch('http://localhost:4567/random', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ paths: selectedPaths(), count: 3 })
+                    body: JSON.stringify({ paths: selectedPaths(), count })
                 }).then(resp => resp.json())
-                  .then(renderCards);
+                  .then(renderCards)
+                  .then(() => setStatus('Click any card to load similar notes.'))
+                  .catch(() => setStatus('Failed to fetch random cards.', true))
+                  .finally(() => {
+                      randomButton.disabled = false;
+                      randomButton.textContent = 'Random';
+                  });
             }
 
             function fetchSimilar(note) {
+                const count = getCardCount();
+                setStatus('Loading similar notes...');
                 fetch('http://localhost:4567/similar', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ paths: selectedPaths(), note: note, topN: 3 })
+                    body: JSON.stringify({ paths: selectedPaths(), note: note, topN: count })
                 }).then(resp => resp.json())
-                  .then(renderCards);
+                  .then(renderCards)
+                  .then(() => setStatus('Showing notes similar to your selected card.'))
+                  .catch(() => setStatus('Failed to fetch similar notes.', true));
             }
 
             randomButton.addEventListener('click', fetchRandom);
+            cardCountInput.addEventListener('keydown', event => {
+                if (event.key === 'Enter') {
+                    fetchRandom();
+                }
+            });
         });
     </script>
     </div>
