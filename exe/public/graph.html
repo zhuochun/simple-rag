@@ -942,6 +942,29 @@
             setStatus(`Loaded ${items.length} results`);
         }
 
+        function clearGraphForNewSearch() {
+            nodes.clear();
+            edges.clear();
+            selectedNodeIds.clear();
+            expandedNodeIds.clear();
+            queryCounter = 0;
+            activePointerNode = null;
+
+            dragState.mode = null;
+            dragState.nodeId = null;
+            dragState.pointerId = null;
+            graphWrapper.classList.remove('panning');
+            canvas.style.cursor = 'grab';
+
+            simulation.nodes([]);
+            simulation.force('link').links([]);
+            simulation.stop();
+
+            resetView();
+            refreshInspector();
+            draw();
+        }
+
         function performSearch(url, edgeType) {
             const query = searchInput.value.trim();
             if (!query) return;
@@ -955,6 +978,7 @@
             setStatus('Searching...');
             searchPlusOutput.classList.remove('show');
             searchPlusOutput.textContent = '';
+            clearGraphForNewSearch();
 
             fetch(url, {
                 method: 'POST',
