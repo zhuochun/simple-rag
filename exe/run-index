@@ -17,6 +17,7 @@ require_relative "../llm/llm"
 require_relative "../llm/embedding"
 require_relative "../readers/reader"
 require_relative "../lib/config_loader"
+require_relative "../lib/provider_env_validator"
 require_relative "../storage/sqlite_index"
 
 if ARGV.length != 1
@@ -35,21 +36,9 @@ OPENAI_KEY = ENV["DOT_OPENAI_KEY"] || ""
 GEMINI_KEY = ENV["DOT_GEMINI_KEY"] || ""
 OPENROUTER_KEY = ENV["DOT_OPENROUTER_KEY"] || ""
 
-chat_provider = CONFIG.dig(:chat, :provider) || CONFIG.dig("chat", "provider") || 'openai'
-embedding_provider = CONFIG.dig(:embedding, :provider) || CONFIG.dig("embedding", "provider") || 'openai'
-
-if (chat_provider.downcase == 'openai' || embedding_provider.downcase == 'openai') && OPENAI_KEY.empty?
-    STDOUT << "Remember to set env DOT_OPENAI_KEY\n"
-    exit 9
-end
-
-if (chat_provider.downcase == 'gemini' || embedding_provider.downcase == 'gemini') && GEMINI_KEY.empty?
-    STDOUT << "Remember to set env DOT_GEMINI_KEY\n"
-    exit 9
-end
-
-if (chat_provider.downcase == 'openrouter' || embedding_provider.downcase == 'openrouter') && OPENROUTER_KEY.empty?
-    STDOUT << "Remember to set env DOT_OPENROUTER_KEY\n"
+missing_key_msg = ProviderEnvValidator.missing_key_message(CONFIG)
+if missing_key_msg
+    STDOUT << "#{missing_key_msg}\n"
     exit 9
 end
 

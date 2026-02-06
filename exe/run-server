@@ -17,6 +17,7 @@ require_relative "../server/discuss"
 require_relative "../server/duplicate"
 require_relative "../server/article"
 require_relative "../lib/config_loader"
+require_relative "../lib/provider_env_validator"
 
 if ARGV.length != 1
     STDOUT << "Invalid arguments received, need a config file\n"
@@ -106,21 +107,9 @@ OPENAI_KEY = ENV["DOT_OPENAI_KEY"] || ""
 GEMINI_KEY = ENV["DOT_GEMINI_KEY"] || ""
 OPENROUTER_KEY = ENV["DOT_OPENROUTER_KEY"] || ""
 
-chat_provider = CONFIG.dig(:chat, :provider) || CONFIG.dig("chat", "provider") || "openai"
-embedding_provider = CONFIG.dig(:embedding, :provider) || CONFIG.dig("embedding", "provider") || "openai"
-
-if (chat_provider.downcase == "openai" || embedding_provider.downcase == "openai") && OPENAI_KEY.empty?
-    STDOUT << "Remember to set env DOT_OPENAI_KEY\n"
-    exit 9
-end
-
-if (chat_provider.downcase == "gemini" || embedding_provider.downcase == "gemini") && GEMINI_KEY.empty?
-    STDOUT << "Remember to set env DOT_GEMINI_KEY\n"
-    exit 9
-end
-
-if (chat_provider.downcase == "openrouter" || embedding_provider.downcase == "openrouter") && OPENROUTER_KEY.empty?
-    STDOUT << "Remember to set env DOT_OPENROUTER_KEY\n"
+missing_key_msg = ProviderEnvValidator.missing_key_message(CONFIG)
+if missing_key_msg
+    STDOUT << "#{missing_key_msg}\n"
     exit 9
 end
 
@@ -309,13 +298,13 @@ class SimpleRagServer < Sinatra::Application
         retrievals = []
         notes = []
         notes_seen = Set.new
+        reader_cache = {}
 
         store_cache = {}
         begin
             groups.each do |group|
                 entries = retrieve_by_embedding(lookup_paths, group, store_cache: store_cache)
                 ordered = top_n_by_score(entries, 5)
-                reader_cache = {}
 
                 retrievals << ordered.map do |item|
                     reader = reader_cache[item["path"]] ||= item["reader"].load
