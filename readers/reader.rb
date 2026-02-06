@@ -1,5 +1,3 @@
-READERS = %w[text note journal]
-
 module ChunkUtils
     DEFAULT_MAX_TOKENS = 1000
     DEFAULT_MIN_TOKENS = 10
@@ -103,8 +101,4 @@ def get_reader(name)
     else
         nil
     end
-end
-
-def available_readers
-    READERS
 end

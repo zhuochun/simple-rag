@@ -1,11 +1,3 @@
-
-def cosine_similarity(array1, array2)
-  prod = dot_product(array1, array2)
-  norm_a = Math.sqrt(array1.inject(0.0) { |s, v| s + v * v })
-  norm_b = Math.sqrt(array2.inject(0.0) { |s, v| s + v * v })
-  prod / (norm_a * norm_b)
-end
-
 # Calculate dot product on two equal length arrays
 def dot_product(a1, a2)
   sum = 0.0

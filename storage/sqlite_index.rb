@@ -111,22 +111,6 @@ class SqliteIndex
     end
   end
 
-  def hash_lookup
-    lookup = {}
-    @db.execute("SELECT hash, embedding, bucket, text FROM #{quoted_table}") do |row|
-      key = row["hash"]
-      next if key.nil?
-
-      lookup[key] = {
-        "hash" => key,
-        "embedding" => parse_embedding(row["embedding"]),
-        "bucket" => row["bucket"],
-        "text" => row["text"]
-      }
-    end
-    lookup
-  end
-
   def hash_set
     hashes = Set.new
     @db.execute("SELECT hash FROM #{quoted_table}") do |row|
@@ -155,13 +139,6 @@ class SqliteIndex
     parse_embedding(row["embedding"] || row[0])
   end
 
-  def random_chunks(count)
-    @db.execute(
-      "SELECT path, chunk, hash, embedding, bucket, text FROM #{quoted_table} ORDER BY RANDOM() LIMIT ?",
-      [count.to_i]
-    ).map { |row| decode_row(row) }
-  end
-
   def random_chunk_refs(count)
     @db.execute(
       "SELECT path, chunk FROM #{quoted_table} ORDER BY RANDOM() LIMIT ?",
@@ -172,10 +149,6 @@ class SqliteIndex
         "chunk" => row["chunk"].to_i
       }
     end
-  end
-
-  def text_search(query, limit = nil)
-    text_search_any([query], limit: limit)
   end
 
   def text_search_any(queries, limit: nil)
