@@ -1,3 +1,5 @@
+require "digest"
+
 class MemCache
     attr_accessor :data
 

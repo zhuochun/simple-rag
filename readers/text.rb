@@ -26,7 +26,7 @@ class TextReader
             words = 0
             in_frontmatter = false
 
-            File.foreach(@file) do |line|
+            File.foreach(@file).with_index do |line, idx|
                 stripped = line.strip
 
                 if in_frontmatter
@@ -34,7 +34,7 @@ class TextReader
                         in_frontmatter = false
                     end
                     next
-                elsif stripped == '---'
+                elsif idx.zero? && stripped == '---'
                     in_frontmatter = true
                     next
                 end
