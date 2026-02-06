@@ -127,6 +127,34 @@ class SqliteIndex
     lookup
   end
 
+  def hash_set
+    hashes = Set.new
+    @db.execute("SELECT hash FROM #{quoted_table}") do |row|
+      key = row["hash"]
+      hashes.add(key) unless key.nil?
+    end
+    hashes
+  end
+
+  def path_chunk_hash_lookup
+    lookup = {}
+    @db.execute("SELECT path, chunk, hash FROM #{quoted_table}") do |row|
+      path = row["path"]
+      next if path.nil?
+
+      chunk = row["chunk"].to_i
+      (lookup[path] ||= {})[chunk] = row["hash"]
+    end
+    lookup
+  end
+
+  def embedding_for_hash(hash)
+    row = @db.get_first_row("SELECT embedding FROM #{quoted_table} WHERE hash = ? LIMIT 1", [hash])
+    return nil if row.nil?
+
+    parse_embedding(row["embedding"] || row[0])
+  end
+
   def random_chunks(count)
     @db.execute(
       "SELECT path, chunk, hash, embedding, bucket, text FROM #{quoted_table} ORDER BY RANDOM() LIMIT ?",
@@ -166,9 +194,9 @@ class SqliteIndex
   end
 
   def delete_stale_chunks(path, valid_chunks)
-    valid = valid_chunks.map(&:to_i).uniq
+    valid = valid_chunks.each_with_object(Set.new) { |chunk, set| set.add(chunk.to_i) }
     existing = @db.execute("SELECT chunk FROM #{quoted_table} WHERE path = ?", [path]).map { |r| r["chunk"].to_i }
-    stale = existing.reject { |chunk| valid.include?(chunk) }
+    stale = existing.reject { |chunk| valid.include?(chunk.to_i) }
     delete_chunks(path, stale)
   end
 

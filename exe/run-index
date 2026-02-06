@@ -78,11 +78,20 @@ def index_path_jsonl(path, out, status_cb, log_cb)
     # Read existing index
     out << "Read existing index: #{path.out}, time: @#{Time.now}\n"
     index_db = {}
+    old_chunk_hashes = {}
     index_file = File.expand_path(path.out)
 
     File.foreach(index_file) do |line|
         item = JSON.parse(line)
-        index_db[item["hash"]] = item
+        hash = item["hash"]
+        next if hash.nil?
+
+        index_db[hash] = item
+        item_path = item["path"]
+        item_chunk = item["chunk"]
+        if item_path && !item_chunk.nil?
+            (old_chunk_hashes[item_path] ||= {})[item_chunk.to_i] = hash
+        end
     end if File.exist?(index_file)
     out << "Found index: #{index_db.length}\n"
     files = scan_files(path, out, status_cb)
@@ -95,6 +104,7 @@ def index_path_jsonl(path, out, status_cb, log_cb)
     status_cb.call("Indexing 0/#{files.length} files, created=0, skipped=0")
     skipped = 0
     created = 0
+    embedding_cache = {}
     File.open(index_file, "w") do |index_newdb|
         files.each_with_index do |file, file_idx|
             status_cb.call("Indexing #{file_idx}/#{files.length} files, created=#{created}, skipped=#{skipped}")
@@ -111,17 +121,32 @@ def index_path_jsonl(path, out, status_cb, log_cb)
                 begin
                     hash = Digest::SHA256.hexdigest(chunk)
 
-                    if index_db[hash] # found in old DB
-                        index_newdb.puts(index_db[hash].to_json)
+                    old_item = index_db[hash]
+                    emb = nil
+                    unchanged = old_chunk_hashes.dig(file, chunk_idx) == hash
 
+                    if unchanged
+                        emb = old_item && old_item["embedding"]
+                        emb ||= embedding_cache[hash]
                         skipped += 1
-                        next
+                    elsif old_item
+                        emb = old_item["embedding"]
+                        emb ||= embedding_cache[hash]
+                        skipped += 1
+                    else
+                        emb = embedding_cache[hash]
+                        if emb
+                            skipped += 1
+                        else
+                            emb = embedding(chunk)
+                            created += 1
+                        end
                     end
 
-                    created += 1
-                    embedding = embedding(chunk)
+                    raise "Embedding missing for hash=#{hash}" if emb.nil?
 
-                    line = { path: file, hash: hash, chunk: chunk_idx, embedding: embedding }
+                    embedding_cache[hash] = emb
+                    line = { path: file, hash: hash, chunk: chunk_idx, embedding: emb }
                     index_newdb.puts(line.to_json)
                 rescue => e
                     out << "\nError indexing file=#{file}, chunk=#{chunk_idx}: #{e.class}: #{e.message}\n"
@@ -151,8 +176,9 @@ def index_path_sqlite(path, out, status_cb, log_cb)
 
     out << "Read existing sqlite index: #{path.db_file}@#{path.db_table}, time: @#{Time.now}\n"
     store = SqliteIndex.new(path.db_file, path.db_table)
-    index_db = store.hash_lookup
-    out << "Found index: #{index_db.length}\n"
+    hash_index = store.hash_set
+    chunk_hash_lookup = store.path_chunk_hash_lookup
+    out << "Found index hashes: #{hash_index.length}\n"
 
     files = scan_files(path, out, status_cb)
     reader_class = reader_class_or_exit(path, out)
@@ -162,65 +188,85 @@ def index_path_sqlite(path, out, status_cb, log_cb)
     skipped = 0
     created = 0
     scanned_files = Set.new
+    embedding_cache = {}
 
     begin
-        store.transaction do
-            files.each_with_index do |file, file_idx|
-                status_cb.call("Indexing #{file_idx}/#{files.length} files, created=#{created}, skipped=#{skipped}")
+        files.each_with_index do |file, file_idx|
+            status_cb.call("Indexing #{file_idx}/#{files.length} files, created=#{created}, skipped=#{skipped}")
+            begin
+                chunks = reader_class.new(file).load.chunks
+            rescue => e
+                out << "\nError reading #{file}: #{e.class}: #{e.message}\n"
+                out << "Backtrace: #{e.backtrace&.first}\n"
+                log_cb.call("[#{path.name}] Error reading #{file}: #{e.class}: #{e.message}")
+                next
+            end
+
+            valid_chunks = Set.new
+            pending_rows = []
+            file_chunk_hashes = (chunk_hash_lookup[file] ||= {})
+
+            chunks.each_with_index do |chunk, chunk_idx|
                 begin
-                    chunks = reader_class.new(file).load.chunks
-                rescue => e
-                    out << "\nError reading #{file}: #{e.class}: #{e.message}\n"
-                    out << "Backtrace: #{e.backtrace&.first}\n"
-                    log_cb.call("[#{path.name}] Error reading #{file}: #{e.class}: #{e.message}")
-                    next
-                end
+                    hash = Digest::SHA256.hexdigest(chunk)
+                    valid_chunks.add(chunk_idx)
 
-                valid_chunks = []
-                chunks.each_with_index do |chunk, chunk_idx|
-                    begin
-                        hash = Digest::SHA256.hexdigest(chunk)
-                        old = index_db[hash]
-
-                        if old
-                            emb = old["embedding"]
-                            skipped += 1
-                        else
-                            emb = embedding(chunk)
-                            created += 1
-                        end
-
-                        normalized = normalize_embedding(emb)
-                        bucket = bucket_key(normalized)
-
-                        store.upsert_chunk(
-                            path: file,
-                            chunk: chunk_idx,
-                            hash: hash,
-                            embedding: emb,
-                            bucket: bucket,
-                            text: chunk
-                        )
-                        valid_chunks << chunk_idx
-                    rescue => e
-                        out << "\nError indexing file=#{file}, chunk=#{chunk_idx}: #{e.class}: #{e.message}\n"
-                        out << "Hash: #{hash}\n" if defined?(hash)
-                        out << "Backtrace: #{e.backtrace&.first}\n"
-                        log_cb.call("[#{path.name}] Error indexing #{file} chunk #{chunk_idx}: #{e.class}: #{e.message}")
+                    if file_chunk_hashes[chunk_idx] == hash
+                        skipped += 1
                         next
                     end
-                end
 
-                store.delete_stale_chunks(file, valid_chunks)
-                scanned_files.add(file)
+                    emb = embedding_cache[hash]
+                    if emb.nil?
+                        if hash_index.include?(hash)
+                            emb = store.embedding_for_hash(hash)
+                        else
+                            emb = embedding(chunk)
+                            hash_index.add(hash)
+                            created += 1
+                        end
+                        embedding_cache[hash] = emb if emb
+                    end
 
-                if file_idx % 50 == 0
-                    out << file_idx
-                else
-                    out << "."
+                    raise "Embedding missing for hash=#{hash}" if emb.nil?
+
+                    normalized = normalize_embedding(emb)
+                    bucket = bucket_key(normalized)
+
+                    pending_rows << {
+                        path: file,
+                        chunk: chunk_idx,
+                        hash: hash,
+                        embedding: emb,
+                        bucket: bucket,
+                        text: chunk
+                    }
+                    file_chunk_hashes[chunk_idx] = hash
+                rescue => e
+                    out << "\nError indexing file=#{file}, chunk=#{chunk_idx}: #{e.class}: #{e.message}\n"
+                    out << "Hash: #{hash}\n" if defined?(hash)
+                    out << "Backtrace: #{e.backtrace&.first}\n"
+                    log_cb.call("[#{path.name}] Error indexing #{file} chunk #{chunk_idx}: #{e.class}: #{e.message}")
+                    next
                 end
             end
 
+            store.transaction do
+                pending_rows.each { |row| store.upsert_chunk(row) }
+                store.delete_stale_chunks(file, valid_chunks)
+            end
+
+            file_chunk_hashes.delete_if { |chunk_idx, _| !valid_chunks.include?(chunk_idx.to_i) }
+            scanned_files.add(file)
+
+            if file_idx % 50 == 0
+                out << file_idx
+            else
+                out << "."
+            end
+        end
+
+        store.transaction do
             store.delete_stale_paths(scanned_files.to_a)
         end
     ensure
