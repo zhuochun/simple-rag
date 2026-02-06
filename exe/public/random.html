@@ -366,7 +366,7 @@
                 }
                 const key = `graphExploreNote:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`;
                 localStorage.setItem(key, JSON.stringify({ note: safeNote, createdAt: Date.now() }));
-                window.location.href = `graph.html?exploreKey=${encodeURIComponent(key)}`;
+                window.open(`graph.html?exploreKey=${encodeURIComponent(key)}`, '_blank', 'noopener,noreferrer');
             }
 
             function fetchRandom() {

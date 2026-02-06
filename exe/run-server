@@ -186,7 +186,7 @@ class SimpleRagServer < Sinatra::Application
         content_type :json
 
         data = JSON.parse(request.body.read)
-        discussion = discuss_note(data["note"])
+        discussion = discuss_note(data["note"], data["query"])
 
         { discussion: discussion }.to_json
     end

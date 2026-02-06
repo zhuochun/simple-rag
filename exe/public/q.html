@@ -5,10 +5,34 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Search Page</title>
     <style>
+        @import url('https://fonts.googleapis.com/css2?family=Manrope:wght@400;600;700&display=swap');
+
+        :root {
+            --bg: #f6f9ff;
+            --panel: #ffffffcc;
+            --text: #1f2a44;
+            --muted: #5f6b85;
+            --border: #dbe4f5;
+            --primary: #1f6feb;
+            --primary-hover: #165dc4;
+            --secondary: #0f766e;
+            --secondary-hover: #0c5f59;
+            --shadow: 0 14px 34px rgba(26, 49, 92, 0.12);
+        }
+
+        * {
+            box-sizing: border-box;
+        }
+
         body {
             margin: 0;
-            padding: 0;
-            font-family: Arial, sans-serif;
+            min-height: 100vh;
+            color: var(--text);
+            font-family: 'Manrope', 'Segoe UI', sans-serif;
+            background:
+                radial-gradient(circle at 8% 8%, #d8e7ff 0%, #d8e7ff00 35%),
+                radial-gradient(circle at 90% 18%, #bdf2de 0%, #bdf2de00 36%),
+                linear-gradient(165deg, #f8faff 0%, #eef4ff 46%, #ecf9f2 100%);
         }
         .top-nav {
             display: flex;
@@ -28,14 +52,94 @@
             color: #ffffff;
         }
         #main-content {
-            flex-grow: 1;
-            padding: 20px;
+            padding: 26px 20px 38px;
         }
-        #paths-container {
-            margin-bottom: 20px;
+        .controls-panel {
+            border: 1px solid var(--border);
+            background: var(--panel);
+            backdrop-filter: blur(6px);
+            border-radius: 16px;
+            box-shadow: var(--shadow);
+            padding: 14px;
+            margin-bottom: 18px;
+            position: sticky;
+            top: 10px;
+            z-index: 20;
+        }
+        #search-container {
+            display: grid;
+            grid-template-columns: 1fr auto auto auto;
+            gap: 10px;
+            align-items: center;
+        }
+        #search-input {
+            height: 44px;
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            padding: 0 12px;
+            color: var(--text);
+            font: inherit;
+            font-weight: 600;
+            background: #fff;
+        }
+        #search-input:focus {
+            outline: 2px solid #b9d2ff;
+            outline-offset: 1px;
+        }
+        .btn {
+            height: 42px;
+            border: 0;
+            border-radius: 10px;
+            color: #fff;
+            font: inherit;
+            font-weight: 700;
+            cursor: pointer;
+            transition: transform 0.14s ease, background 0.14s ease, box-shadow 0.14s ease;
+            padding: 0 14px;
+            white-space: nowrap;
+        }
+        .btn:hover {
+            transform: translateY(-1px);
+        }
+        .btn:disabled {
+            cursor: not-allowed;
+            transform: none;
+            box-shadow: none;
+            opacity: 0.75;
+        }
+        #search-button {
+            background: var(--primary);
+        }
+        #search-button:hover {
+            background: var(--primary-hover);
+            box-shadow: 0 8px 18px rgba(22, 93, 196, 0.28);
+        }
+        #search-plus-button {
+            background: var(--secondary);
+        }
+        #search-plus-button:hover {
+            background: var(--secondary-hover);
+            box-shadow: 0 8px 18px rgba(12, 95, 89, 0.28);
+        }
+        #synthesize-button {
+            background: #475569;
+        }
+        #synthesize-button:hover {
+            background: #334155;
+            box-shadow: 0 8px 18px rgba(51, 65, 85, 0.24);
+        }
+        #status-message {
+            min-height: 20px;
+            margin-top: 10px;
+            color: var(--muted);
+            font-size: 0.93rem;
+        }
+        #status-message.error {
+            color: #a11a2d;
         }
         #paths-list {
-            list-style-type: none;
+            list-style: none;
+            margin: 0 0 20px;
             padding: 0;
             display: flex;
             flex-wrap: wrap;
@@ -44,52 +148,153 @@
         #paths-list li {
             display: flex;
             align-items: center;
+            gap: 8px;
+            padding: 7px 10px;
+            border: 1px solid var(--border);
+            border-radius: 999px;
+            background: #fff;
+        }
+        #paths-list input[type="checkbox"] {
+            accent-color: var(--primary);
         }
         #paths-list label {
-            margin-left: 5px;
-        }
-        #search-container {
-            display: flex;
-            margin-bottom: 20px;
-        }
-        #search-input {
-            flex-grow: 1;
-            height: 60px;
-            font-size: 16px;
-            padding: 0 10px;
-        }
-        #search-button {
-            width: 100px;
-            height: 66px;
-            font-size: 16px;
-            margin-left: 10px;
-        }
-        #search-plus-button {
-            width: 100px;
-            height: 66px;
-            font-size: 16px;
-            margin-left: 10px;
-        }
-        #synthesize-button {
-            width: 120px;
-            height: 66px;
-            font-size: 16px;
-            margin-left: 10px;
+            font-size: 0.93rem;
+            font-weight: 600;
         }
         #response-container {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 10px;
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 14px;
         }
-        .response-item {
-            border: 1px solid #ccc;
-            padding: 10px;
-            border-radius: 5px;
-            width: calc(50% - 5px);
-            box-sizing: border-box;
+        .card {
+            border: 1px solid var(--border);
+            background: #fff;
+            padding: 14px;
+            border-radius: 14px;
+            box-shadow: 0 8px 20px rgba(26, 49, 92, 0.09);
+            transition: transform 0.14s ease, box-shadow 0.14s ease;
+            animation: cardIn 200ms ease both;
+        }
+        .card:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 14px 26px rgba(24, 50, 96, 0.16);
+        }
+        .card-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 10px;
+            margin-bottom: 10px;
+            font-size: 0.9rem;
+        }
+        .path-pill {
+            padding: 2px 10px;
+            border-radius: 999px;
+            border: 1px solid #d5e2fb;
+            font-weight: 700;
+        }
+        .card-link {
+            color: #124caa;
+            font-weight: 700;
+            text-decoration: none;
+            word-break: break-all;
+        }
+        .card-link:hover {
+            text-decoration: underline;
+        }
+        .score-pill {
+            border: 1px solid #e2e8f0;
+            color: #475569;
+            border-radius: 999px;
+            padding: 2px 8px;
+            font-size: 0.82rem;
+            font-weight: 700;
+            background: #f8fafc;
+        }
+        .markdown-content {
+            line-height: 1.5;
+            word-break: break-word;
+        }
+        .card-actions {
+            margin-top: 12px;
+            display: flex;
+            gap: 8px;
+            justify-content: flex-end;
+        }
+        .explore-button {
+            border: 1px solid #ced7e7;
+            background: #f8fafc;
+            color: #334155;
+            border-radius: 8px;
+            padding: 6px 10px;
+            font: inherit;
+            font-weight: 700;
+            cursor: pointer;
+        }
+        .explore-button:hover {
+            background: #eef2f7;
         }
         .discuss-button {
-            margin-top: 10px;
+            border: 1px solid #c8d8f5;
+            background: #f3f8ff;
+            color: #124caa;
+            border-radius: 8px;
+            padding: 6px 10px;
+            font: inherit;
+            font-weight: 700;
+            cursor: pointer;
+        }
+        .discuss-button:hover {
+            background: #e8f1ff;
+        }
+        .meta-card {
+            border-style: dashed;
+            background: #fbfdff;
+        }
+        .empty-state {
+            grid-column: 1 / -1;
+            border: 1px dashed #bfd0ef;
+            border-radius: 14px;
+            background: #fff;
+            color: var(--muted);
+            padding: 18px;
+            text-align: center;
+            font-weight: 600;
+        }
+        @keyframes cardIn {
+            from {
+                opacity: 0;
+                transform: translateY(6px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+        @media (max-width: 920px) {
+            #search-container {
+                grid-template-columns: 1fr 1fr;
+            }
+            #search-input {
+                grid-column: 1 / -1;
+            }
+        }
+        @media (max-width: 700px) {
+            #main-content {
+                padding: 18px 12px 30px;
+            }
+            .controls-panel {
+                padding: 12px;
+            }
+            #search-container {
+                grid-template-columns: 1fr;
+            }
+            .btn {
+                width: 100%;
+            }
+            #response-container {
+                grid-template-columns: 1fr;
+            }
         }
     </style>
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
@@ -104,15 +309,16 @@
         <a href="random.html">Random</a>
     </nav>
     <div id="main-content">
-        <div id="search-container">
-            <input type="text" id="search-input" placeholder="Enter your search query">
-            <button id="search-button">Search</button>
-            <button id="search-plus-button">Search+</button>
-            <button id="synthesize-button">Synthesize</button>
+        <div class="controls-panel">
+            <div id="search-container">
+                <input type="text" id="search-input" placeholder="Enter your search query">
+                <button id="search-button" class="btn">Search</button>
+                <button id="search-plus-button" class="btn">Search+</button>
+                <button id="synthesize-button" class="btn">Synthesize</button>
+            </div>
+            <div id="status-message" aria-live="polite"></div>
         </div>
-        <div id="paths-container">
-            <ul id="paths-list"></ul>
-        </div>
+        <ul id="paths-list"></ul>
         <div id="response-container"></div>
     </div>
 
@@ -124,9 +330,99 @@
             const searchPlusButton = document.getElementById('search-plus-button');
             const synthesizeButton = document.getElementById('synthesize-button');
             const responseContainer = document.getElementById('response-container');
+            const statusMessage = document.getElementById('status-message');
             let retrievedNotes = [];
+            let activeQuery = '';
 
-            // Fetch paths and render sidebar
+            function setStatus(message, isError = false) {
+                statusMessage.textContent = message;
+                statusMessage.className = isError ? 'error' : '';
+            }
+
+            function selectedPaths() {
+                return Array.from(pathsList.querySelectorAll('input[type="checkbox"]:checked')).map(checkbox => checkbox.name);
+            }
+
+            function setSearchButtonsDisabled(disabled) {
+                searchButton.disabled = disabled;
+                searchPlusButton.disabled = disabled;
+            }
+
+            function renderEmpty(message) {
+                responseContainer.innerHTML = `<div class="empty-state">${message}</div>`;
+            }
+
+            function createMetaCard(title, content, lookup) {
+                const card = document.createElement('div');
+                card.className = 'card meta-card';
+                applyBackgroundColor(card, lookup);
+                card.innerHTML = `<div><strong>${title}</strong> ${content}</div>`;
+                return card;
+            }
+
+            function createResultCard(item) {
+                const card = document.createElement('div');
+                card.className = 'card';
+                card.dataset.note = item.text;
+
+                const pathPill = document.createElement('span');
+                pathPill.className = 'path-pill';
+                pathPill.textContent = item.lookup || 'Unknown';
+                applyBackgroundColor(pathPill, item.lookup);
+
+                card.innerHTML = `
+                    <div class="card-header">
+                        <a class="card-link" href="${item.url}">${item.id}</a>
+                        <span class="score-pill">Score: ${item.score}</span>
+                    </div>
+                    <div class="markdown-content">${marked.parse(item.text)}</div>
+                    <div class="card-actions">
+                        <button type="button" class="explore-button">Explore</button>
+                        <button type="button" class="discuss-button">Discuss</button>
+                    </div>
+                `;
+
+                const header = card.querySelector('.card-header');
+                header.prepend(pathPill);
+                card.querySelector('.card-link').addEventListener('click', event => event.stopPropagation());
+                card.querySelector('.explore-button').addEventListener('click', () => openInGraph(item.text));
+                card.querySelector('.discuss-button').addEventListener('click', () => discussCard(card));
+                return card;
+            }
+
+            function openInGraph(note) {
+                const safeNote = typeof note === 'string' ? note.trim() : '';
+                if (!safeNote) {
+                    setStatus('Cannot explore an empty note.', true);
+                    return;
+                }
+                const key = `graphExploreNote:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`;
+                localStorage.setItem(key, JSON.stringify({ note: safeNote, createdAt: Date.now() }));
+                window.open(`graph.html?exploreKey=${encodeURIComponent(key)}`, '_blank', 'noopener,noreferrer');
+            }
+
+            function renderResults(items, extras = {}) {
+                responseContainer.innerHTML = '';
+                retrievedNotes = [];
+
+                if (extras.expanded) {
+                    responseContainer.appendChild(createMetaCard('Expanded Query:', extras.expanded, 'expanded'));
+                }
+                if (extras.variants && extras.variants.length > 0) {
+                    responseContainer.appendChild(createMetaCard('Variants:', extras.variants.join(', '), 'variants'));
+                }
+
+                if (!Array.isArray(items) || items.length === 0) {
+                    renderEmpty('No notes found for the current query and selected paths.');
+                    return;
+                }
+
+                items.forEach(item => {
+                    responseContainer.appendChild(createResultCard(item));
+                    retrievedNotes.push(item.text);
+                });
+            }
+
             fetch('http://localhost:4567/paths')
                 .then(response => response.json())
                 .then(data => {
@@ -142,21 +438,27 @@
 
                         const label = document.createElement('label');
                         label.htmlFor = item.name;
-                        label.appendChild(document.createTextNode(item.name));
+                        label.textContent = item.name;
 
                         li.appendChild(checkbox);
                         li.appendChild(label);
                         pathsList.appendChild(li);
                     });
+                    setStatus('Ready. Enter a query and run Search or Search+.');
                 })
-                .catch(error => console.error('Error fetching paths:', error));
+                .catch(() => setStatus('Unable to load paths. Check if the API is running.', true));
 
-            // Search function
             function performSearch() {
-                const query = searchInput.value;
-                const checkedPaths = Array.from(pathsList.querySelectorAll('input[type="checkbox"]:checked'))
-                    .map(checkbox => checkbox.name);
+                const query = searchInput.value.trim();
+                if (!query) {
+                    setStatus('Enter a query before searching.', true);
+                    return;
+                }
 
+                setSearchButtonsDisabled(true);
+                searchButton.textContent = 'Searching...';
+                setStatus('Running search...');
+                activeQuery = query;
                 fetch('http://localhost:4567/q', {
                     method: 'POST',
                     headers: {
@@ -164,41 +466,35 @@
                     },
                     body: JSON.stringify({
                         q: query,
-                        paths: checkedPaths,
+                        paths: selectedPaths(),
                     })
                 })
                 .then(response => response.json())
                 .then(resp => {
-                    responseContainer.innerHTML = '';
-                    retrievedNotes = [];
-
-                    resp.data.forEach(item => {
-                        const div = document.createElement('div');
-                        div.className = 'response-item';
-                        applyBackgroundColor(div, item.lookup);
-                        div.dataset.note = item.text;
-                        div.innerHTML = `
-                            <div><strong>Path:</strong> <a href="${item.url}">${item.id}</a></div>
-                            <div><strong>Score:</strong> ${item.score}</div>
-                            <div class="markdown-content">${marked.parse(item.text)}</div>
-                        `;
-                        const btn = document.createElement('button');
-                        btn.className = 'discuss-button';
-                        btn.textContent = 'Discuss';
-                        btn.addEventListener('click', () => discussCard(div));
-                        div.appendChild(btn);
-                        responseContainer.appendChild(div);
-                        retrievedNotes.push(item.text);
-                    });
+                    renderResults(resp.data || []);
+                    setStatus('Search complete. You can discuss any card or synthesize all results.');
                 })
-                .catch(error => console.error('Error performing search:', error));
+                .catch(() => {
+                    setStatus('Failed to perform search.', true);
+                    renderEmpty('Search failed. Check API availability and try again.');
+                })
+                .finally(() => {
+                    setSearchButtonsDisabled(false);
+                    searchButton.textContent = 'Search';
+                });
             }
 
             function performAgentSearch() {
-                const query = searchInput.value;
-                const checkedPaths = Array.from(pathsList.querySelectorAll('input[type="checkbox"]:checked'))
-                    .map(checkbox => checkbox.name);
+                const query = searchInput.value.trim();
+                if (!query) {
+                    setStatus('Enter a query before running Search+.', true);
+                    return;
+                }
 
+                setSearchButtonsDisabled(true);
+                searchPlusButton.textContent = 'Searching...';
+                setStatus('Running expanded search...');
+                activeQuery = query;
                 fetch('http://localhost:4567/q_plus', {
                     method: 'POST',
                     headers: {
@@ -206,59 +502,33 @@
                     },
                     body: JSON.stringify({
                         q: query,
-                        paths: checkedPaths,
+                        paths: selectedPaths(),
                     })
                 })
                 .then(response => response.json())
                 .then(resp => {
-                    responseContainer.innerHTML = '';
-                    retrievedNotes = [];
-
-                    if (!!resp.expanded) {
-                        const div = document.createElement('div');
-                        div.className = 'response-item';
-                        applyBackgroundColor(div, 'expanded');
-                        div.innerHTML = `<div><strong>Expanded Query:</strong> ${resp.expanded}</div>`;
-                        responseContainer.appendChild(div);
-                    }
-
-                    if (resp.variants && resp.variants.length > 0) {
-                        const div = document.createElement('div');
-                        div.className = 'response-item';
-                        applyBackgroundColor(div, 'variants');
-                        div.innerHTML = `<div><strong>Variants:</strong> ${resp.variants.join(', ')}</div>`;
-                        responseContainer.appendChild(div);
-                    }
-
-                    resp.data.forEach(item => {
-                        const div = document.createElement('div');
-                        div.className = 'response-item';
-                        applyBackgroundColor(div, item.lookup);
-                        div.dataset.note = item.text;
-                        div.innerHTML = `
-                            <div><strong>Path:</strong> <a href="${item.url}">${item.id}</a></div>
-                            <div><strong>Score:</strong> ${item.score}</div>
-                            <div class="markdown-content">${marked.parse(item.text)}</div>
-                        `;
-                        const btn = document.createElement('button');
-                        btn.className = 'discuss-button';
-                        btn.textContent = 'Discuss';
-                        btn.addEventListener('click', () => discussCard(div));
-                        div.appendChild(btn);
-                        responseContainer.appendChild(div);
-                        retrievedNotes.push(item.text);
-                    });
+                    renderResults(resp.data || [], { expanded: resp.expanded, variants: resp.variants });
+                    setStatus('Search+ complete with expanded query context.');
                 })
-                .catch(error => console.error('Error performing agent search:', error));
+                .catch(() => {
+                    setStatus('Failed to perform Search+.', true);
+                    renderEmpty('Search+ failed. Check API availability and try again.');
+                })
+                .finally(() => {
+                    setSearchButtonsDisabled(false);
+                    searchPlusButton.textContent = 'Search+';
+                });
             }
-
-
 
             function synthesizeNotes() {
                 if (retrievedNotes.length === 0) {
+                    setStatus('Run a search first to synthesize notes.', true);
                     return;
                 }
 
+                synthesizeButton.disabled = true;
+                synthesizeButton.textContent = 'Synthesizing...';
+                setStatus('Synthesizing retrieved notes...');
                 fetch('http://localhost:4567/synthesize', {
                     method: 'POST',
                     headers: {
@@ -270,23 +540,30 @@
                 })
                 .then(response => response.json())
                 .then(resp => {
-                    const div = document.createElement('div');
-                    div.className = 'response-item';
-                    applyBackgroundColor(div, 'synthesize');
-                    div.innerHTML = `
-                        <div class="markdown-content">${marked.parse(resp.note)}</div>
-                    `;
-                    responseContainer.prepend(div);
+                    const card = document.createElement('div');
+                    card.className = 'card meta-card';
+                    applyBackgroundColor(card, 'synthesize');
+                    card.innerHTML = `<div class="markdown-content">${marked.parse(resp.note)}</div>`;
+                    responseContainer.prepend(card);
+                    setStatus('Synthesis added at the top of the results.');
                 })
-                .catch(error => console.error('Error synthesizing notes:', error));
+                .catch(() => setStatus('Error synthesizing notes.', true))
+                .finally(() => {
+                    synthesizeButton.disabled = false;
+                    synthesizeButton.textContent = 'Synthesize';
+                });
             }
 
-            function discussCard(div) {
-                const note = div.dataset.note;
+            function discussCard(card) {
+                const note = card.dataset.note;
                 if (!note) {
                     return;
                 }
 
+                const button = card.querySelector('.discuss-button');
+                button.disabled = true;
+                button.textContent = 'Discussing...';
+                setStatus('Generating discussion for selected card...');
                 fetch('http://localhost:4567/discuss', {
                     method: 'POST',
                     headers: {
@@ -294,27 +571,31 @@
                     },
                     body: JSON.stringify({
                         note: note,
+                        query: activeQuery,
                     })
                 })
                 .then(response => response.json())
                 .then(resp => {
-                    const mdDiv = div.querySelector('.markdown-content');
+                    const mdDiv = card.querySelector('.markdown-content');
                     mdDiv.innerHTML += marked.parse(resp.discussion);
+                    setStatus('Discussion appended to the selected card.');
                 })
-                .catch(error => console.error('Error discussing note:', error));
+                .catch(() => setStatus('Error discussing note.', true))
+                .finally(() => {
+                    button.disabled = false;
+                    button.textContent = 'Discuss';
+                });
             }
 
-            // Event listeners
             searchButton.addEventListener('click', performSearch);
             searchPlusButton.addEventListener('click', performAgentSearch);
             synthesizeButton.addEventListener('click', synthesizeNotes);
 
-            searchInput.addEventListener('keypress', function(e) {
+            searchInput.addEventListener('keydown', function(e) {
                 if (e.key === 'Enter') {
                     performSearch();
                 }
             });
-
         });
     </script>
 </body>
