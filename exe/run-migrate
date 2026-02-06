@@ -1,0 +1,157 @@
+#!/usr/bin/env ruby
+# encoding: utf-8
+
+# Migrate JSONL out files into configured SQLite tables.
+#
+# Usage: run-migrate config.json
+
+require "json"
+require "set"
+
+require_relative "../lib/config_loader"
+require_relative "../llm/embedding"
+require_relative "../readers/reader"
+require_relative "../storage/sqlite_index"
+
+if ARGV.length != 1
+  STDOUT << "Invalid arguments received, need a config file\n"
+  exit 1
+end
+
+begin
+  CONFIG = ConfigLoader.load_config(ARGV[0])
+rescue => e
+  STDOUT << "Config error: #{e.message}\n"
+  exit 1
+end
+
+def migrate_path(path)
+  summary = {
+    name: path.name,
+    skipped_path: false,
+    line_count: 0,
+    unique_count: 0,
+    migrated: 0,
+    skipped: 0,
+    errors: 0,
+    db_rows: 0,
+    ok: true,
+  }
+
+  index_file = File.expand_path(path.out)
+  unless File.exist?(index_file)
+    summary[:skipped_path] = true
+    return summary
+  end
+
+  reader_cls = get_reader(path.reader)
+  if reader_cls.nil?
+    summary[:errors] += 1
+    summary[:ok] = false
+    STDOUT << %(Path "#{path.name}" has unknown reader "#{path.reader}"\n)
+    return summary
+  end
+
+  rows = []
+  seen_keys = Set.new
+  file_cache = {}
+
+  File.foreach(index_file).with_index do |line, idx|
+    summary[:line_count] += 1
+
+    begin
+      item = JSON.parse(line)
+      chunk_idx = item["chunk"].to_i
+      key = "#{item["path"]}\t#{chunk_idx}"
+      if seen_keys.include?(key)
+        summary[:skipped] += 1
+        next
+      end
+
+      seen_keys.add(key)
+      emb = item["embedding"]
+      bucket = item["bucket"] || bucket_key(normalize_embedding(emb))
+
+      reader = file_cache[item["path"]] ||= reader_cls.new(item["path"]).load
+      text = item["text"] || reader.get_chunk(chunk_idx)
+
+      rows << {
+        "path" => item["path"],
+        "chunk" => chunk_idx,
+        "hash" => item["hash"],
+        "embedding" => emb,
+        "bucket" => bucket,
+        "text" => text,
+      }
+    rescue => e
+      summary[:errors] += 1
+      STDOUT << "[#{path.name}] line #{idx + 1} error: #{e.class}: #{e.message}\n"
+    end
+  end
+
+  summary[:unique_count] = seen_keys.length
+
+  store = SqliteIndex.new(path.db_file, path.db_table)
+  begin
+    store.transaction do
+      rows.each do |row|
+        store.upsert_chunk(row)
+        summary[:migrated] += 1
+      end
+
+      valid_paths = rows.map { |r| r["path"] }.uniq
+      rows.group_by { |r| r["path"] }.each do |row_path, grouped|
+        store.delete_stale_chunks(row_path, grouped.map { |r| r["chunk"] })
+      end
+      store.delete_stale_paths(valid_paths)
+    end
+
+    summary[:db_rows] = store.row_count
+  rescue => e
+    summary[:errors] += 1
+    summary[:ok] = false
+    STDOUT << "[#{path.name}] migration error: #{e.class}: #{e.message}\n"
+  ensure
+    store.close
+  end
+
+  if summary[:db_rows] != summary[:unique_count]
+    summary[:errors] += 1
+    summary[:ok] = false
+    STDOUT << "[#{path.name}] validation failed: unique=#{summary[:unique_count]}, sqlite_rows=#{summary[:db_rows]}\n"
+  end
+
+  summary[:ok] = false if summary[:errors] > 0
+  summary
+end
+
+targets = CONFIG.paths.select do |p|
+  out_set = !p.out.nil? && !p.out.to_s.strip.empty?
+  db_set = p.db_file && p.db_table
+  out_set && db_set
+end
+
+if targets.empty?
+  STDOUT << "No paths with both out and db configured.\n"
+  exit 0
+end
+
+all_ok = true
+totals = { migrated: 0, skipped: 0, errors: 0, paths: 0, skipped_paths: 0 }
+
+targets.each do |path|
+  summary = migrate_path(path)
+  totals[:paths] += 1
+  totals[:migrated] += summary[:migrated]
+  totals[:skipped] += summary[:skipped]
+  totals[:errors] += summary[:errors]
+  totals[:skipped_paths] += 1 if summary[:skipped_path]
+  all_ok &&= summary[:ok]
+
+  STDOUT << "[#{summary[:name]}] lines=#{summary[:line_count]} unique=#{summary[:unique_count]} migrated=#{summary[:migrated]} skipped=#{summary[:skipped]} errors=#{summary[:errors]} sqlite_rows=#{summary[:db_rows]}"
+  STDOUT << " (skipped: JSONL out not found)" if summary[:skipped_path]
+  STDOUT << "\n"
+end
+
+STDOUT << "Totals: paths=#{totals[:paths]} migrated=#{totals[:migrated]} skipped=#{totals[:skipped]} errors=#{totals[:errors]} skipped_paths=#{totals[:skipped_paths]}\n"
+exit(all_ok ? 0 : 1)

@@ -21,6 +21,7 @@
             "threshold": 0.3,
             "dir": "D:\\Studies\\tmp\\learning",
             "out": "D:\\Studies\\tmp\\learning\\learning.dt",
+            "db": "D:\\Studies\\tmp\\learning\\learning.sqlite@learning_index",
             "nameMatch": "talks-*.md",
             "url": "",
             "searchDefault": false

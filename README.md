@@ -14,6 +14,9 @@ gem install simple-rag-zc
   - Run `run-setup config.json` then edit the paths to absolute path.
 - Run `run-index config.json` *Required
   - To generate embeddings for all files. It takes a while on the first time.
+- Optional migration from JSONL to SQLite tables
+  - Set per-path `db` as `sqlite_file_path@table_name`
+  - Run `run-migrate config.json` to migrate every path that has both `out` and `db`
 - Run `run-server config.json`
   - Open `http://localhost:4567/q.html` to search/ask from your knowledge bases
     - Use **Search** for standard retrieval

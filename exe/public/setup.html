@@ -47,6 +47,7 @@
             <label>Reader: <select class="preader"></select></label>
             <label>Threshold: <input type="text" class="pthreshold" value="${p?.threshold||0.3}"></label>
             <label>Out: <input type="text" class="pout" value="${p?.out||''}"></label>
+            <label>DB (sqlite_file@table): <input type="text" class="pdb" value="${p?.db||''}"></label>
             <label>NameMatch: <input type="text" class="pnamematch" value="${p?.nameMatch||''}"></label>
             <label>URL: <input type="text" class="purl" value="${p?.url||''}"></label>
             <label>Search Default: <input type="checkbox" class="psearchdefault" ${p?.searchDefault?'checked':''}></label>
@@ -114,6 +115,7 @@
                 reader: div.querySelector('.preader').value,
                 threshold: parseFloat(div.querySelector('.pthreshold').value)||0,
                 out: div.querySelector('.pout').value,
+                db: div.querySelector('.pdb').value,
                 nameMatch: div.querySelector('.pnamematch').value,
                 url: div.querySelector('.purl').value,
                 searchDefault: div.querySelector('.psearchdefault').checked

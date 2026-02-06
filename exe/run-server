@@ -8,7 +8,6 @@
 # Requires OpenAI API Key stored in DOT_OPENAI_KEY
 
 require "json"
-require "ostruct"
 require 'sinatra/base'
 
 require_relative "../server/retriever"
@@ -16,18 +15,19 @@ require_relative "../server/synthesizer"
 require_relative "../server/discuss"
 require_relative "../server/duplicate"
 require_relative "../server/article"
+require_relative "../lib/config_loader"
 
 if ARGV.length != 1
     STDOUT << "Invalid arguments received, need a config file\n"
     exit 1
 end
 
-config = JSON.parse(File.read(ARGV[0]))
-CONFIG = OpenStruct.new(config)
-CONFIG.paths = CONFIG.paths.map { |p| OpenStruct.new(p) }
-CONFIG.paths.each { |p| p.searchDefault = !!p.searchDefault }
-CONFIG.path_map = {}
-CONFIG.paths.each { |p| CONFIG.path_map[p.name] = p }
+begin
+    CONFIG = ConfigLoader.load_config(ARGV[0], with_path_map: true)
+rescue => e
+    STDOUT << "Config error: #{e.message}\n"
+    exit 1
+end
 require 'set'
 DISMISSED_FILE = CONFIG.dismissedDuplicatesFile
 DISMISSED_CLUSTERS = if DISMISSED_FILE && File.exist?(DISMISSED_FILE)

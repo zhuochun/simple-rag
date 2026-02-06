@@ -5,6 +5,7 @@ require_relative "../llm/llm"
 require_relative "../llm/embedding"
 require_relative "../readers/reader"
 require_relative "../storage/index_cache"
+require_relative "../storage/sqlite_index"
 
 AGENT_PROMPT = <<~PROMPT
 Expand the user input to a better search query so it is easier to retrieve related markdown
@@ -24,8 +25,13 @@ def expand_query(q)
 end
 
 def retrieve_by_embedding(lookup_paths, q)
-    qe = CACHE.get_or_set(q, method(:embedding).to_proc)
-    qn = normalize_embedding(qe)
+    begin
+        qe = CACHE.get_or_set(q, method(:embedding).to_proc)
+        qn = normalize_embedding(qe)
+    rescue => e
+        STDOUT << "Embedding retrieval skipped: #{e.class}: #{e.message}\n"
+        return []
+    end
 
     entries = []
     lookup_paths.each do |p|
@@ -98,13 +104,38 @@ def retrieve_by_text(lookup_paths, q)
     lookup_paths.each do |p|
         STDOUT << "Reading text index: #{p.name}\n"
 
-        index_file = File.expand_path(p.out)
-        next unless File.exist?(index_file)
-
         reader_cls = get_reader(p.reader)
         next if reader_cls.nil?
 
         file_cache = {}
+        if p.db_file && p.db_table
+            store = SqliteIndex.new(p.db_file, p.db_table)
+            begin
+                store.text_search(q).each do |item|
+                    reader = file_cache[item["path"]] ||= reader_cls.new(item["path"])
+                    if item["text"].nil?
+                        text = reader.load.get_chunk(item["chunk"])
+                        next unless text&.include?(q)
+                    end
+
+                    item["score"] = 1.0
+                    item["lookup"] = p.name
+                    item["id"] = extract_id(item["path"])
+                    item["url"] = extract_url(item["path"], p.url)
+                    item["reader"] = reader
+
+                    entries << item
+                end
+            ensure
+                store.close
+            end
+            STDOUT << "Matched num: #{entries.length}\n"
+            next
+        end
+
+        index_file = File.expand_path(p.out)
+        next unless File.exist?(index_file)
+
         File.foreach(index_file) do |line|
             item = JSON.parse(line)
             reader = file_cache[item["path"]] ||= reader_cls.new(item["path"]).load

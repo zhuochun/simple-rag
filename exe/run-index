@@ -8,22 +8,28 @@
 # Requires OpenAI API Key stored in DOT_OPENAI_KEY
 
 require "json"
-require "ostruct"
 require "digest"
 require "stringio"
 require "thread"
+require "set"
 
 require_relative "../llm/llm"
+require_relative "../llm/embedding"
 require_relative "../readers/reader"
+require_relative "../lib/config_loader"
+require_relative "../storage/sqlite_index"
 
 if ARGV.length != 1
     STDOUT << "Invalid arguments received, need a config file\n"
     exit 1
 end
 
-config = JSON.parse(File.read(ARGV[0]))
-CONFIG = OpenStruct.new(config)
-CONFIG.paths = CONFIG.paths.map { |p| OpenStruct.new(p) }
+begin
+    CONFIG = ConfigLoader.load_config(ARGV[0])
+rescue => e
+    STDOUT << "Config error: #{e.message}\n"
+    exit 1
+end
 
 OPENAI_KEY = ENV["DOT_OPENAI_KEY"] || ""
 GEMINI_KEY = ENV["DOT_GEMINI_KEY"] || ""
@@ -47,7 +53,25 @@ if (chat_provider.downcase == 'openrouter' || embedding_provider.downcase == 'op
     exit 9
 end
 
-def index_path(path, out, status_cb, log_cb)
+def scan_files(path, out, status_cb)
+    status_cb.call("Scanning dir")
+    name_match = path.nameMatch || "*.{md,markdown}"
+    dir_blob = File.join(File.expand_path(path.dir), "**", name_match)
+    files = Dir[dir_blob]
+    out << "Scan dir: #{dir_blob}, Found: #{files.length}\n"
+    files
+end
+
+def reader_class_or_exit(path, out)
+    reader_class = get_reader(path.reader)
+    if reader_class.nil?
+        out << "Reader undefinied: #{path.reader}\n"
+        exit 9
+    end
+    reader_class
+end
+
+def index_path_jsonl(path, out, status_cb, log_cb)
     out << "Read path name: #{path.name}, reader: #{path.reader}\n"
     status_cb.call("Reading index")
 
@@ -61,20 +85,10 @@ def index_path(path, out, status_cb, log_cb)
         index_db[item["hash"]] = item
     end if File.exist?(index_file)
     out << "Found index: #{index_db.length}\n"
-    status_cb.call("Scanning dir")
-
-    # Scan directory
-    name_match = path.nameMatch || "*.{md,markdown}"
-    dir_blob = File.join(File.expand_path(path.dir), "**", name_match)
-    files = Dir[dir_blob]
-    out << "Scan dir: #{dir_blob}, Found: #{files.length}\n"
+    files = scan_files(path, out, status_cb)
 
     # Get reader class
-    reader_class = get_reader(path.reader)
-    if reader_class.nil?
-        out << "Reader undefinied: #{path.reader}\n"
-        exit 9
-    end
+    reader_class = reader_class_or_exit(path, out)
 
     # Build index
     out << "Building index @#{Time.now}\n["
@@ -129,6 +143,100 @@ def index_path(path, out, status_cb, log_cb)
 
     out << "]\nDone @#{Time.now}, Created: #{created}, Skipped: #{skipped}\n"
     status_cb.call("Done. created=#{created}, skipped=#{skipped}")
+end
+
+def index_path_sqlite(path, out, status_cb, log_cb)
+    out << "Read path name: #{path.name}, reader: #{path.reader}\n"
+    status_cb.call("Reading index")
+
+    out << "Read existing sqlite index: #{path.db_file}@#{path.db_table}, time: @#{Time.now}\n"
+    store = SqliteIndex.new(path.db_file, path.db_table)
+    index_db = store.hash_lookup
+    out << "Found index: #{index_db.length}\n"
+
+    files = scan_files(path, out, status_cb)
+    reader_class = reader_class_or_exit(path, out)
+
+    out << "Building index @#{Time.now}\n["
+    status_cb.call("Indexing 0/#{files.length} files, created=0, skipped=0")
+    skipped = 0
+    created = 0
+    scanned_files = Set.new
+
+    begin
+        store.transaction do
+            files.each_with_index do |file, file_idx|
+                status_cb.call("Indexing #{file_idx}/#{files.length} files, created=#{created}, skipped=#{skipped}")
+                begin
+                    chunks = reader_class.new(file).load.chunks
+                rescue => e
+                    out << "\nError reading #{file}: #{e.class}: #{e.message}\n"
+                    out << "Backtrace: #{e.backtrace&.first}\n"
+                    log_cb.call("[#{path.name}] Error reading #{file}: #{e.class}: #{e.message}")
+                    next
+                end
+
+                valid_chunks = []
+                chunks.each_with_index do |chunk, chunk_idx|
+                    begin
+                        hash = Digest::SHA256.hexdigest(chunk)
+                        old = index_db[hash]
+
+                        if old
+                            emb = old["embedding"]
+                            skipped += 1
+                        else
+                            emb = embedding(chunk)
+                            created += 1
+                        end
+
+                        normalized = normalize_embedding(emb)
+                        bucket = bucket_key(normalized)
+
+                        store.upsert_chunk(
+                            path: file,
+                            chunk: chunk_idx,
+                            hash: hash,
+                            embedding: emb,
+                            bucket: bucket,
+                            text: chunk
+                        )
+                        valid_chunks << chunk_idx
+                    rescue => e
+                        out << "\nError indexing file=#{file}, chunk=#{chunk_idx}: #{e.class}: #{e.message}\n"
+                        out << "Hash: #{hash}\n" if defined?(hash)
+                        out << "Backtrace: #{e.backtrace&.first}\n"
+                        log_cb.call("[#{path.name}] Error indexing #{file} chunk #{chunk_idx}: #{e.class}: #{e.message}")
+                        next
+                    end
+                end
+
+                store.delete_stale_chunks(file, valid_chunks)
+                scanned_files.add(file)
+
+                if file_idx % 50 == 0
+                    out << file_idx
+                else
+                    out << "."
+                end
+            end
+
+            store.delete_stale_paths(scanned_files.to_a)
+        end
+    ensure
+        store.close
+    end
+
+    out << "]\nDone @#{Time.now}, Created: #{created}, Skipped: #{skipped}\n"
+    status_cb.call("Done. created=#{created}, skipped=#{skipped}")
+end
+
+def index_path(path, out, status_cb, log_cb)
+    if path.db_file && path.db_table
+        index_path_sqlite(path, out, status_cb, log_cb)
+    else
+        index_path_jsonl(path, out, status_cb, log_cb)
+    end
 end
 
 status_mutex = Mutex.new

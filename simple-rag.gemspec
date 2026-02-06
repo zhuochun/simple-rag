@@ -26,12 +26,13 @@ Gem::Specification.new do |spec|
   ]
 
   spec.bindir        = "exe"
-  spec.executables   = ["run-index", "run-server", "run-setup"]
+  spec.executables   = ["run-index", "run-server", "run-setup", "run-migrate"]
   spec.require_paths = ["lib"]
 
   spec.add_runtime_dependency "sinatra", "~> 4.1"
   spec.add_runtime_dependency "rackup", "~> 2.2"
   spec.add_runtime_dependency "puma", "~> 6.5"
+  spec.add_runtime_dependency "sqlite3", "~> 1.6"
 
   spec.required_ruby_version = ">= 3.0"
 end
