@@ -4,13 +4,15 @@ require_relative "cache"
 require_relative "../llm/llm"
 require_relative "../llm/embedding"
 require_relative "../readers/reader"
-require_relative "../storage/index_cache"
+require_relative "../storage/file_index"
 require_relative "../storage/sqlite_index"
 
 AGENT_PROMPT = <<~PROMPT
 Expand the user input to a better search query so it is easier to retrieve related markdown
 documents using embedding. Return only the expanded query in a single line.
 PROMPT
+
+VECTOR_SEARCH_K = 512
 
 def expand_query(q)
     msgs = [
@@ -36,28 +38,92 @@ def retrieve_by_embedding(lookup_paths, q)
     entries = []
     lookup_paths.each do |p|
         STDOUT << "Reading index: #{p.name}\n"
+        reader_cls = get_reader(p.reader)
+        next if reader_cls.nil?
 
-        index = load_index_cache(p)
-        next unless index
-        reader_cls = index.reader_cls
-        next unless reader_cls
+        if p.db_file && p.db_table
+            store = SqliteIndex.new(p.db_file, p.db_table)
+            begin
+                file_cache = {}
+                matched_candidates = 0
 
-        bucket_ids = neighbor_keys(bucket_key(qn)).flat_map { |k| index.buckets[k] }.uniq
-        bucket_ids.each do |idx|
-            item = index.items[idx]
+                store.vector_search(qn, VECTOR_SEARCH_K).each do |item|
+                    matched_candidates += 1
+                    score = dot_product(qn, normalize_embedding(item["embedding"]))
+                    next if score < p.threshold
 
-            score = dot_product(qn, item[:embedding])
-            next if score < p.threshold
+                    entries << {
+                        "path" => item["path"],
+                        "chunk" => item["chunk"],
+                        "score" => score,
+                        "lookup" => p.name,
+                        "id" => extract_id(item["path"]),
+                        "url" => extract_url(item["path"], p.url),
+                        "reader" => (file_cache[item["path"]] ||= reader_cls.new(item["path"]))
+                    }
+                end
 
-            entries << {
-                "path" => item[:path],
-                "chunk" => item[:chunk],
-                "score" => score,
-                "lookup" => p.name,
-                "id" => extract_id(item[:path]),
-                "url" => extract_url(item[:path], p.url),
-                "reader" => reader_cls.new(item[:path])
-            }
+                # Fallback path when vector extension/index is unavailable.
+                if matched_candidates.zero?
+                    neighbor_buckets = neighbor_keys(bucket_key(qn)).uniq
+                    store.each_item_by_buckets(neighbor_buckets) do |item|
+                        matched_candidates += 1
+                        score = dot_product(qn, normalize_embedding(item["embedding"]))
+                        next if score < p.threshold
+
+                        entries << {
+                            "path" => item["path"],
+                            "chunk" => item["chunk"],
+                            "score" => score,
+                            "lookup" => p.name,
+                            "id" => extract_id(item["path"]),
+                            "url" => extract_url(item["path"], p.url),
+                            "reader" => (file_cache[item["path"]] ||= reader_cls.new(item["path"]))
+                        }
+                    end
+
+                    # Backward compatibility for legacy rows that do not have bucket populated.
+                    if matched_candidates.zero?
+                        store.each_item_without_bucket do |item|
+                            score = dot_product(qn, normalize_embedding(item["embedding"]))
+                            next if score < p.threshold
+
+                            entries << {
+                                "path" => item["path"],
+                                "chunk" => item["chunk"],
+                                "score" => score,
+                                "lookup" => p.name,
+                                "id" => extract_id(item["path"]),
+                                "url" => extract_url(item["path"], p.url),
+                                "reader" => (file_cache[item["path"]] ||= reader_cls.new(item["path"]))
+                            }
+                        end
+                    end
+                end
+            ensure
+                store.close
+            end
+        else
+            index = load_index_cache(p)
+            next unless index
+
+            bucket_ids = neighbor_keys(bucket_key(qn)).flat_map { |k| index.buckets[k] }.uniq
+            bucket_ids.each do |idx|
+                item = index.items[idx]
+
+                score = dot_product(qn, item[:embedding])
+                next if score < p.threshold
+
+                entries << {
+                    "path" => item[:path],
+                    "chunk" => item[:chunk],
+                    "score" => score,
+                    "lookup" => p.name,
+                    "id" => extract_id(item[:path]),
+                    "url" => extract_url(item[:path], p.url),
+                    "reader" => reader_cls.new(item[:path])
+                }
+            end
         end
 
         STDOUT << "Matched num: #{entries.length}\n"

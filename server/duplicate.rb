@@ -2,7 +2,8 @@ require "json"
 require_relative "../llm/embedding"
 require_relative "../readers/reader"
 require_relative "retriever" # for extract_id and extract_url
-require_relative "../storage/index_cache"
+require_relative "../storage/file_index"
+require_relative "../storage/sqlite_index"
 
 def cluster_key(cluster)
   cluster.map { |it| "#{it[:path]}/#{it[:id]}" }.sort.join('|')
@@ -15,13 +16,35 @@ def find_duplicates(lookup_paths, threshold = 0.9)
   items = []
 
   lookup_paths.each do |p|
-    index = load_index_cache(p)
-    next unless index
-
-    reader_cls = index.reader_cls
+    reader_cls = get_reader(p.reader)
     next unless reader_cls
     file_cache = {}
 
+    if p.db_file && p.db_table
+      store = SqliteIndex.new(p.db_file, p.db_table)
+      begin
+        store.each_item do |it|
+          embedding = normalize_embedding(it["embedding"])
+          bucket = it["bucket"] || bucket_key(embedding)
+          reader = file_cache[it["path"]] ||= reader_cls.new(it["path"]).load
+          text = reader.get_chunk(it["chunk"])
+          items << {
+            path: p.name,
+            id: extract_id(it["path"]),
+            url: extract_url(it["path"], p.url),
+            embedding: embedding,
+            bucket: bucket,
+            text: text
+          }
+        end
+      ensure
+        store.close
+      end
+      next
+    end
+
+    index = load_index_cache(p)
+    next unless index
     index.items.each do |it|
       reader = file_cache[it[:path]] ||= reader_cls.new(it[:path]).load
       text = reader.get_chunk(it[:chunk])

@@ -255,11 +255,30 @@ class SimpleRagServer < Sinatra::Application
 
         samples = []
         lookup_paths.each do |p|
-            index = load_index_cache(p)
-            next unless index
-            reader_cls = index.reader_cls
+            reader_cls = get_reader(p.reader)
             next unless reader_cls
 
+            if p.db_file && p.db_table
+                store = SqliteIndex.new(p.db_file, p.db_table)
+                begin
+                    store.random_chunks(count).each do |it|
+                        samples << {
+                            path: p.name,
+                            lookup: p.name,
+                            id: extract_id(it["path"]),
+                            url: extract_url(it["path"], p.url),
+                            text: reader_cls.new(it["path"]).load.get_chunk(it["chunk"]),
+                            score: 0,
+                        }
+                    end
+                ensure
+                    store.close
+                end
+                next
+            end
+
+            index = load_index_cache(p)
+            next unless index
             index.items.sample(count).each do |it|
                 samples << {
                     path: p.name,
