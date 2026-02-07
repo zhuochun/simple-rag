@@ -16,6 +16,7 @@ class SqliteIndex
 
     @db = SQLite3::Database.new(@db_file)
     @db.results_as_hash = true
+    @vector_error = nil
     @vector_dim_cache = nil
     @vector_dim_loaded = false
     @vector_available = setup_vector_extension
@@ -32,7 +33,7 @@ class SqliteIndex
     @db.commit
   rescue => e
     @db.rollback rescue nil
-    raise e
+    raise
   end
 
   def upsert_chunk(item)
@@ -48,12 +49,6 @@ class SqliteIndex
     SQL
 
     sync_vector_row(row)
-  end
-
-  def list_items
-    @db.execute("SELECT path, chunk, hash, embedding, bucket, text FROM #{quoted_table}").map do |row|
-      decode_row(row)
-    end
   end
 
   def each_item
@@ -88,9 +83,15 @@ class SqliteIndex
   end
 
   def vector_search(query_embedding, k = VECTOR_K_DEFAULT)
-    return [] unless @vector_available
+    unless @vector_available
+      log_vector_unavailable_once
+      return []
+    end
     ensure_vector_index_from_existing!
-    return [] unless vector_enabled?
+    unless vector_enabled?
+      log_vector_unavailable_once
+      return []
+    end
 
     query = parse_embedding(query_embedding)
     return [] if query.empty?
@@ -109,6 +110,22 @@ class SqliteIndex
       item["distance"] = row["distance"]
       item
     end
+  end
+
+  def warm_vector_index!
+    unless @vector_available
+      log_vector_unavailable_once
+      return false
+    end
+
+    ensure_vector_index_from_existing!
+    enabled = vector_enabled?
+    log_vector_unavailable_once unless enabled
+    enabled
+  rescue
+    @vector_available = false
+    log_vector_unavailable_once
+    false
   end
 
   def hash_set
@@ -324,19 +341,35 @@ class SqliteIndex
       # ignore: some sqlite3 builds disallow extension loading
     end
 
-    ext_path = ENV["DOT_SQLITE_VEC_EXTENSION"]
-    if ext_path && !ext_path.to_s.strip.empty?
+    begin
+      require "sqlite_vec"
+      SqliteVec.load(@db)
+    rescue LoadError
+      ext_path = ENV["DOT_SQLITE_VEC_EXTENSION"].to_s.strip
+      if !ext_path.empty?
+        begin
+          @db.load_extension(ext_path)
+        rescue => e
+          @vector_error = "load_extension failed (#{e.class}: #{e.message})"
+          return false
+        end
+      end
+    rescue => e
+      @vector_error = "sqlite-vec load failed (#{e.class}: #{e.message})"
+      return false
+    ensure
       begin
-        @db.load_extension(ext_path)
+        @db.enable_load_extension(false)
       rescue
-        return false
+        # ignore
       end
     end
 
     begin
       @db.get_first_value("SELECT vec_version()")
       true
-    rescue
+    rescue => e
+      @vector_error = "vec_version() check failed (#{e.class}: #{e.message})"
       false
     end
   end
@@ -468,5 +501,13 @@ class SqliteIndex
 
   def quoted_identifier(identifier)
     %("#{identifier}")
+  end
+
+  def log_vector_unavailable_once
+    return if @vector_unavailable_logged
+
+    @vector_unavailable_logged = true
+    details = @vector_error ? " Cause: #{@vector_error}." : ""
+    warn "sqlite vector search is unavailable for #{@db_file}. Install the sqlite-vec Ruby gem, run via `bundle exec`, or set DOT_SQLITE_VEC_EXTENSION as a fallback, then restart.#{details}"
   end
 end
