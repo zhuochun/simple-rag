@@ -20,11 +20,14 @@ def ollama_chat(messages, model, url, opts = {})
   data = {
     "model" => model,
     "messages" => messages,
-    "stream" => false
+    "stream" => false,
+    "think" => false
   }.merge(opts)
 
   # Always request a single final response payload from Ollama.
   data["stream"] = false
+  # Disable thinking/reasoning traces in models that support the toggle.
+  data["think"] = false
 
   response = http_post(url, nil, data)
 
