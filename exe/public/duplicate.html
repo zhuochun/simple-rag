@@ -5,11 +5,35 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Duplicate Finder</title>
     <style>
+        @import url('https://fonts.googleapis.com/css2?family=Manrope:wght@400;600;700&display=swap');
+
+        :root {
+            --bg: #f6f9ff;
+            --panel: #ffffffcc;
+            --text: #1f2a44;
+            --muted: #5f6b85;
+            --border: #dbe4f5;
+            --primary: #1f6feb;
+            --primary-hover: #165dc4;
+            --danger: #a11a2d;
+            --shadow: 0 14px 34px rgba(26, 49, 92, 0.12);
+        }
+
+        * {
+            box-sizing: border-box;
+        }
+
         body {
             margin: 0;
-            padding: 0;
-            font-family: Arial, sans-serif;
+            min-height: 100vh;
+            color: var(--text);
+            font-family: 'Manrope', 'Segoe UI', sans-serif;
+            background:
+                radial-gradient(circle at 8% 8%, #d8e7ff 0%, #d8e7ff00 35%),
+                radial-gradient(circle at 90% 18%, #bdf2de 0%, #bdf2de00 36%),
+                linear-gradient(165deg, #f8faff 0%, #eef4ff 46%, #ecf9f2 100%);
         }
+
         .top-nav {
             display: flex;
             gap: 8px;
@@ -17,45 +41,287 @@
             background: #1f2937;
             border-bottom: 1px solid #111827;
         }
+
         .top-nav a {
             color: #e5e7eb;
             text-decoration: none;
             padding: 6px 10px;
             border-radius: 4px;
         }
-        .top-nav a.active, .top-nav a:hover {
+
+        .top-nav a.active,
+        .top-nav a:hover {
             background: #374151;
             color: #ffffff;
         }
+
         #main-content {
-            padding: 20px;
+            padding: 26px 20px 38px;
         }
+
+        .controls-panel {
+            border: 1px solid var(--border);
+            background: var(--panel);
+            backdrop-filter: blur(6px);
+            border-radius: 16px;
+            box-shadow: var(--shadow);
+            padding: 14px;
+            margin-bottom: 18px;
+            position: sticky;
+            top: 10px;
+            z-index: 20;
+        }
+
+        #controls-row {
+            display: grid;
+            grid-template-columns: auto 1fr auto;
+            gap: 10px;
+            align-items: center;
+        }
+
+        #threshold {
+            width: 92px;
+            height: 42px;
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            padding: 0 10px;
+            color: var(--text);
+            font: inherit;
+            font-weight: 600;
+            background: #fff;
+        }
+
+        #threshold:focus {
+            outline: 2px solid #b9d2ff;
+            outline-offset: 1px;
+        }
+
+        .threshold-label {
+            font-size: 0.86rem;
+            font-weight: 700;
+            color: var(--muted);
+        }
+
+        .btn {
+            height: 42px;
+            border: 0;
+            border-radius: 10px;
+            color: #fff;
+            font: inherit;
+            font-weight: 700;
+            cursor: pointer;
+            transition: transform 0.14s ease, background 0.14s ease, box-shadow 0.14s ease;
+            padding: 0 14px;
+            white-space: nowrap;
+        }
+
+        .btn:hover {
+            transform: translateY(-1px);
+        }
+
+        .btn:disabled {
+            cursor: not-allowed;
+            transform: none;
+            box-shadow: none;
+            opacity: 0.75;
+        }
+
+        #find-btn {
+            background: var(--primary);
+        }
+
+        #find-btn:hover {
+            background: var(--primary-hover);
+            box-shadow: 0 8px 18px rgba(22, 93, 196, 0.28);
+        }
+
+        #status-message {
+            min-height: 20px;
+            margin-top: 10px;
+            color: var(--muted);
+            font-size: 0.9rem;
+        }
+
+        #status-message.error {
+            color: var(--danger);
+        }
+
         #paths-list {
-            list-style-type: none;
+            list-style: none;
+            margin: 0 0 20px;
             padding: 0;
-            display: flex;
-            flex-wrap: wrap;
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
             gap: 10px;
         }
+
         #paths-list li {
             display: flex;
             align-items: center;
+            gap: 8px;
+            padding: 7px 10px;
+            border: 1px solid var(--border);
+            border-radius: 999px;
+            background: #fff;
+            min-width: 0;
         }
+
+        #paths-list input[type="checkbox"] {
+            accent-color: var(--primary);
+        }
+
         #paths-list label {
-            margin-left: 5px;
+            font-size: 0.85rem;
+            font-weight: 600;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
         }
-        #threshold {
-            width: 60px;
+
+        #clusters {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 12px;
         }
+
         .cluster {
-            border: 1px solid #ccc;
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            background: #fff;
             padding: 10px;
-            margin-bottom: 20px;
+            box-shadow: 0 8px 20px rgba(26, 49, 92, 0.09);
+            animation: cardIn 200ms ease both;
+            font-size: 0.86rem;
         }
+
+        .cluster-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 8px;
+            margin-bottom: 8px;
+        }
+
+        .cluster-title {
+            font-size: 0.84rem;
+            font-weight: 700;
+            color: var(--muted);
+        }
+
+        .cluster-actions {
+            display: flex;
+            gap: 6px;
+        }
+
+        .cluster-btn {
+            border: 1px solid #cdd8ea;
+            background: #f8fafc;
+            color: #334155;
+            border-radius: 8px;
+            padding: 4px 8px;
+            font: inherit;
+            font-size: 0.78rem;
+            font-weight: 700;
+            cursor: pointer;
+        }
+
+        .cluster-btn:hover {
+            background: #eef2f7;
+        }
+
+        .items-grid {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 8px;
+        }
+
         .card {
-            border: 1px solid #ddd;
-            padding: 10px;
-            margin: 5px;
+            border: 1px solid #d5e1f5;
+            border-radius: 10px;
+            padding: 8px;
+            background: #fbfdff;
+            font-size: 0.82rem;
+            min-width: 0;
+        }
+
+        .card-meta {
+            margin-bottom: 6px;
+            line-height: 1.35;
+        }
+
+        .card-link {
+            color: #124caa;
+            font-weight: 700;
+            text-decoration: none;
+            word-break: break-all;
+        }
+
+        .card-link:hover {
+            text-decoration: underline;
+        }
+
+        .markdown {
+            line-height: 1.42;
+            word-break: break-word;
+        }
+
+        .empty-state {
+            grid-column: 1 / -1;
+            border: 1px dashed #bfd0ef;
+            border-radius: 14px;
+            background: #fff;
+            color: var(--muted);
+            padding: 18px;
+            text-align: center;
+            font-size: 0.9rem;
+            font-weight: 600;
+        }
+
+        @keyframes cardIn {
+            from {
+                opacity: 0;
+                transform: translateY(6px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        @media (max-width: 920px) {
+            #clusters {
+                grid-template-columns: 1fr;
+            }
+
+            #paths-list {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        @media (max-width: 700px) {
+            #main-content {
+                padding: 18px 12px 30px;
+            }
+
+            .controls-panel {
+                padding: 12px;
+            }
+
+            #controls-row {
+                grid-template-columns: 1fr;
+            }
+
+            #threshold {
+                width: 100%;
+            }
+
+            .btn {
+                width: 100%;
+            }
+
+            .items-grid {
+                grid-template-columns: 1fr;
+            }
         }
     </style>
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
@@ -70,12 +336,16 @@
         <a href="random.html">Random</a>
     </nav>
     <div id="main-content">
-    <div>
-        <input type="number" id="threshold" value="0.9" step="0.05" min="0" max="1" />
-        <button id="find-btn">Find Duplicates</button>
-    </div>
-    <ul id="paths-list"></ul>
-    <div id="clusters"></div>
+        <div class="controls-panel">
+            <div id="controls-row">
+                <input type="number" id="threshold" value="0.9" step="0.05" min="0" max="1" />
+                <span class="threshold-label">Similarity Threshold</span>
+                <button id="find-btn" class="btn">Find Duplicates</button>
+            </div>
+            <div id="status-message" aria-live="polite"></div>
+        </div>
+        <ul id="paths-list"></ul>
+        <div id="clusters"></div>
 
     <script>
         document.addEventListener('DOMContentLoaded', function() {
@@ -83,6 +353,20 @@
             const findBtn = document.getElementById('find-btn');
             const clustersDiv = document.getElementById('clusters');
             const thresholdInput = document.getElementById('threshold');
+            const statusMessage = document.getElementById('status-message');
+
+            function setStatus(message, isError) {
+                statusMessage.textContent = message;
+                statusMessage.className = isError ? 'error' : '';
+            }
+
+            function selectedPaths() {
+                return Array.from(pathsList.querySelectorAll('input[type="checkbox"]:checked')).map(c => c.name);
+            }
+
+            function renderEmpty(message) {
+                clustersDiv.innerHTML = `<div class="empty-state">${message}</div>`;
+            }
 
             fetch('http://localhost:4567/paths')
                 .then(resp => resp.json())
@@ -102,53 +386,102 @@
                         li.appendChild(label);
                         pathsList.appendChild(li);
                     });
-                });
+                    setStatus('Ready. Adjust threshold and find duplicate clusters.');
+                })
+                .catch(() => setStatus('Unable to load paths. Check if the API is running.', true));
 
             function renderClusters(clusters) {
                 clustersDiv.innerHTML = '';
+                if (!Array.isArray(clusters) || clusters.length === 0) {
+                    renderEmpty('No duplicate clusters found for selected paths and threshold.');
+                    return;
+                }
+
                 clusters.forEach(cluster => {
-                    const div = document.createElement('div');
-                    div.className = 'cluster';
+                    const clusterEl = document.createElement('section');
+                    clusterEl.className = 'cluster';
+
+                    const header = document.createElement('div');
+                    header.className = 'cluster-header';
+
+                    const title = document.createElement('div');
+                    title.className = 'cluster-title';
+                    title.textContent = `${cluster.items.length} notes`;
+
+                    const actions = document.createElement('div');
+                    actions.className = 'cluster-actions';
+
                     const mergeBtn = document.createElement('button');
+                    mergeBtn.className = 'cluster-btn';
                     mergeBtn.textContent = 'Merge All';
                     mergeBtn.addEventListener('click', () => {
                         alert('Merge placeholder');
                     });
+
                     const dismissBtn = document.createElement('button');
+                    dismissBtn.className = 'cluster-btn';
                     dismissBtn.textContent = 'Hide';
                     dismissBtn.addEventListener('click', () => {
                         fetch('http://localhost:4567/dismiss', {
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json' },
                             body: JSON.stringify({ id: cluster.id })
-                        }).then(() => { div.remove(); });
+                        }).then(() => {
+                            clusterEl.remove();
+                            if (!clustersDiv.children.length) {
+                                renderEmpty('All visible clusters are hidden.');
+                            }
+                        });
                     });
-                    div.appendChild(mergeBtn);
-                    div.appendChild(dismissBtn);
+
+                    actions.appendChild(mergeBtn);
+                    actions.appendChild(dismissBtn);
+                    header.appendChild(title);
+                    header.appendChild(actions);
+                    clusterEl.appendChild(header);
+
+                    const itemsGrid = document.createElement('div');
+                    itemsGrid.className = 'items-grid';
+
                     cluster.items.forEach(item => {
                         const card = document.createElement('div');
                         card.className = 'card';
                         applyBackgroundColor(card, item.path);
-                        card.innerHTML = `<div><strong>${item.path}:</strong> <a href="${item.url}">${item.id}</a></div>` +
-                                         `<div class="markdown">${marked.parse(item.text)}</div>`;
-                        div.appendChild(card);
+                        card.innerHTML = `<div class="card-meta"><strong>${item.path}:</strong> <a class="card-link" href="${item.url}">${item.id}</a></div>` +
+                                         `<div class="markdown">${marked.parse(item.text || '')}</div>`;
+                        itemsGrid.appendChild(card);
                     });
-                    clustersDiv.appendChild(div);
+
+                    clusterEl.appendChild(itemsGrid);
+                    clustersDiv.appendChild(clusterEl);
                 });
             }
 
             findBtn.addEventListener('click', () => {
-                const checkedPaths = Array.from(pathsList.querySelectorAll('input[type="checkbox"]:checked')).map(c => c.name);
                 const threshold = parseFloat(thresholdInput.value) || 0.9;
+                findBtn.disabled = true;
+                findBtn.textContent = 'Finding...';
+                setStatus('Searching for duplicate clusters...');
                 fetch('http://localhost:4567/duplicates', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ paths: checkedPaths, threshold: threshold })
+                    body: JSON.stringify({ paths: selectedPaths(), threshold: threshold })
                 }).then(resp => resp.json())
-                  .then(data => { renderClusters(data.clusters); });
+                  .then(data => {
+                      renderClusters(data.clusters);
+                      setStatus(`Found ${Array.isArray(data.clusters) ? data.clusters.length : 0} clusters.`);
+                  })
+                  .catch(() => {
+                      setStatus('Failed to find duplicates.', true);
+                      renderEmpty('Duplicate search failed. Check API availability and try again.');
+                  })
+                  .finally(() => {
+                      findBtn.disabled = false;
+                      findBtn.textContent = 'Find Duplicates';
+                  });
             });
         });
     </script>
-    </div>
+</div>
 </body>
 </html>

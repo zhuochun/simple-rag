@@ -5,11 +5,34 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>URL Reader</title>
     <style>
+        @import url('https://fonts.googleapis.com/css2?family=Manrope:wght@400;600;700&display=swap');
+
+        :root {
+            --bg: #f6f9ff;
+            --panel: #ffffffcc;
+            --text: #1f2a44;
+            --muted: #5f6b85;
+            --border: #dbe4f5;
+            --primary: #1f6feb;
+            --primary-hover: #165dc4;
+            --shadow: 0 14px 34px rgba(26, 49, 92, 0.12);
+        }
+
+        * {
+            box-sizing: border-box;
+        }
+
         body {
             margin: 0;
-            padding: 0;
-            font-family: Arial, sans-serif;
+            min-height: 100vh;
+            color: var(--text);
+            font-family: 'Manrope', 'Segoe UI', sans-serif;
+            background:
+                radial-gradient(circle at 8% 8%, #d8e7ff 0%, #d8e7ff00 35%),
+                radial-gradient(circle at 90% 18%, #bdf2de 0%, #bdf2de00 36%),
+                linear-gradient(165deg, #f8faff 0%, #eef4ff 46%, #ecf9f2 100%);
         }
+
         .top-nav {
             display: flex;
             gap: 8px;
@@ -17,62 +40,240 @@
             background: #1f2937;
             border-bottom: 1px solid #111827;
         }
+
         .top-nav a {
             color: #e5e7eb;
             text-decoration: none;
             padding: 6px 10px;
             border-radius: 4px;
         }
-        .top-nav a.active, .top-nav a:hover {
+
+        .top-nav a.active,
+        .top-nav a:hover {
             background: #374151;
             color: #ffffff;
         }
+
         #main-content {
-            flex-grow: 1;
-            padding: 20px;
+            padding: 26px 20px 38px;
         }
-        #paths-container {
-            margin-bottom: 20px;
+
+        .controls-panel {
+            border: 1px solid var(--border);
+            background: var(--panel);
+            backdrop-filter: blur(6px);
+            border-radius: 16px;
+            box-shadow: var(--shadow);
+            padding: 14px;
+            margin-bottom: 18px;
+            position: sticky;
+            top: 10px;
+            z-index: 20;
         }
+
+        #input-container {
+            display: grid;
+            grid-template-columns: 1fr auto;
+            gap: 10px;
+            align-items: center;
+        }
+
+        #url-input {
+            height: 44px;
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            padding: 0 12px;
+            color: var(--text);
+            font: inherit;
+            font-weight: 600;
+            background: #fff;
+        }
+
+        #url-input:focus {
+            outline: 2px solid #b9d2ff;
+            outline-offset: 1px;
+        }
+
+        .btn {
+            height: 42px;
+            border: 0;
+            border-radius: 10px;
+            color: #fff;
+            font: inherit;
+            font-weight: 700;
+            cursor: pointer;
+            transition: transform 0.14s ease, background 0.14s ease, box-shadow 0.14s ease;
+            padding: 0 14px;
+            white-space: nowrap;
+        }
+
+        .btn:hover {
+            transform: translateY(-1px);
+        }
+
+        .btn:disabled {
+            cursor: not-allowed;
+            transform: none;
+            box-shadow: none;
+            opacity: 0.75;
+        }
+
+        #read-button {
+            background: var(--primary);
+        }
+
+        #read-button:hover {
+            background: var(--primary-hover);
+            box-shadow: 0 8px 18px rgba(22, 93, 196, 0.28);
+        }
+
+        #status-message {
+            min-height: 20px;
+            margin-top: 10px;
+            color: var(--muted);
+            font-size: 0.93rem;
+        }
+
+        #status-message.error {
+            color: #a11a2d;
+        }
+
         #paths-list {
-            list-style-type: none;
+            list-style: none;
+            margin: 0 0 20px;
             padding: 0;
             display: flex;
             flex-wrap: wrap;
             gap: 10px;
         }
+
         #paths-list li {
             display: flex;
             align-items: center;
+            gap: 8px;
+            padding: 7px 10px;
+            border: 1px solid var(--border);
+            border-radius: 999px;
+            background: #fff;
         }
+
+        #paths-list input[type="checkbox"] {
+            accent-color: var(--primary);
+        }
+
         #paths-list label {
-            margin-left: 5px;
+            font-size: 0.93rem;
+            font-weight: 600;
         }
-        #input-container {
-            display: flex;
-            margin-bottom: 20px;
-        }
-        #url-input {
-            flex-grow: 1;
-            height: 40px;
-            font-size: 16px;
-            padding: 0 10px;
-        }
-        #read-button {
-            width: 100px;
-            height: 44px;
-            font-size: 16px;
-            margin-left: 10px;
-        }
+
         #response-container {
-            display: flex;
-            flex-direction: column;
-            gap: 10px;
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 14px;
         }
-        .response-item {
-            border: 1px solid #ccc;
-            padding: 10px;
-            border-radius: 5px;
+
+        .card {
+            border: 1px solid var(--border);
+            background: #fff;
+            padding: 14px;
+            border-radius: 14px;
+            box-shadow: 0 8px 20px rgba(26, 49, 92, 0.09);
+            transition: transform 0.14s ease, box-shadow 0.14s ease;
+            animation: cardIn 200ms ease both;
+        }
+
+        .card:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 14px 26px rgba(24, 50, 96, 0.16);
+        }
+
+        .card h3 {
+            margin: 0 0 10px;
+        }
+
+        .card-group {
+            border-top: 1px dashed #d8e2f2;
+            padding-top: 10px;
+            margin-top: 10px;
+        }
+
+        .card-group:first-of-type {
+            border-top: 0;
+            padding-top: 0;
+            margin-top: 0;
+        }
+
+        .retrieval-meta {
+            font-size: 0.9rem;
+            margin-bottom: 6px;
+            line-height: 1.4;
+        }
+
+        .card-link {
+            color: #124caa;
+            font-weight: 700;
+            text-decoration: none;
+            word-break: break-all;
+        }
+
+        .card-link:hover {
+            text-decoration: underline;
+        }
+
+        .markdown-content {
+            line-height: 1.5;
+            word-break: break-word;
+        }
+
+        .meta-card {
+            border-style: dashed;
+            background: #fbfdff;
+        }
+
+        .empty-state {
+            grid-column: 1 / -1;
+            border: 1px dashed #bfd0ef;
+            border-radius: 14px;
+            background: #fff;
+            color: var(--muted);
+            padding: 18px;
+            text-align: center;
+            font-weight: 600;
+        }
+
+        @keyframes cardIn {
+            from {
+                opacity: 0;
+                transform: translateY(6px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        @media (max-width: 920px) {
+            #response-container {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        @media (max-width: 700px) {
+            #main-content {
+                padding: 18px 12px 30px;
+            }
+
+            .controls-panel {
+                padding: 12px;
+            }
+
+            #input-container {
+                grid-template-columns: 1fr;
+            }
+
+            .btn {
+                width: 100%;
+            }
         }
     </style>
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
@@ -87,13 +288,14 @@
         <a href="random.html">Random</a>
     </nav>
     <div id="main-content">
-        <div id="input-container">
-            <input type="text" id="url-input" placeholder="Enter URL">
-            <button id="read-button">Read</button>
+        <div class="controls-panel">
+            <div id="input-container">
+                <input type="text" id="url-input" placeholder="Enter URL">
+                <button id="read-button" class="btn">Read</button>
+            </div>
+            <div id="status-message" aria-live="polite"></div>
         </div>
-        <div id="paths-container">
-            <ul id="paths-list"></ul>
-        </div>
+        <ul id="paths-list"></ul>
         <div id="response-container"></div>
     </div>
 
@@ -103,8 +305,29 @@
         const urlInput = document.getElementById('url-input');
         const readButton = document.getElementById('read-button');
         const responseContainer = document.getElementById('response-container');
+        const statusMessage = document.getElementById('status-message');
 
-        // load paths
+        function setStatus(message, isError) {
+            statusMessage.textContent = message;
+            statusMessage.className = isError ? 'error' : '';
+        }
+
+        function selectedPaths() {
+            return Array.from(pathsList.querySelectorAll('input[type="checkbox"]:checked')).map(checkbox => checkbox.name);
+        }
+
+        function renderEmpty(message) {
+            responseContainer.innerHTML = `<div class="empty-state">${message}</div>`;
+        }
+
+        function createCard(title, html, lookup, extraClass) {
+            const card = document.createElement('div');
+            card.className = `card ${extraClass || ''}`.trim();
+            applyBackgroundColor(card, lookup);
+            card.innerHTML = `<h3>${title}</h3><div>${html}</div>`;
+            return card;
+        }
+
         fetch('http://localhost:4567/paths')
             .then(resp => resp.json())
             .then(data => {
@@ -126,12 +349,20 @@
                     li.appendChild(label);
                     pathsList.appendChild(li);
                 });
-            });
+                setStatus('Ready. Enter a URL and click Read.');
+            })
+            .catch(() => setStatus('Unable to load paths. Check if the API is running.', true));
 
         function performRead() {
             const url = urlInput.value.trim();
-            if (!url) { return; }
-            const checkedPaths = Array.from(pathsList.querySelectorAll('input[type="checkbox"]:checked')).map(c => c.name);
+            if (!url) {
+                setStatus('Enter a URL before reading.', true);
+                return;
+            }
+
+            readButton.disabled = true;
+            readButton.textContent = 'Reading...';
+            setStatus('Reading URL and generating retrieval context...');
 
             fetch('http://localhost:4567/read_url', {
                 method: 'POST',
@@ -140,50 +371,71 @@
                 },
                 body: JSON.stringify({
                     url: url,
-                    paths: checkedPaths,
+                    paths: selectedPaths(),
                 })
             })
             .then(resp => resp.json())
             .then(data => {
                 responseContainer.innerHTML = '';
 
-                const extDiv = document.createElement('div');
-                extDiv.className = 'response-item';
-                applyBackgroundColor(extDiv, 'extraction');
-                extDiv.innerHTML = '<h3>Extraction</h3>' +
-                                   '<div class="markdown-content">' + marked.parse(data.extraction) + '</div>';
-                responseContainer.appendChild(extDiv);
+                const extraction = data.extraction || '';
+                const extractionCard = createCard(
+                    'Extraction',
+                    `<div class="markdown-content">${marked.parse(extraction)}</div>`,
+                    'extraction',
+                    'meta-card'
+                );
+                responseContainer.appendChild(extractionCard);
 
-                if (data.retrievals && data.retrievals.length > 0) {
-                    const retDiv = document.createElement('div');
-                    retDiv.className = 'response-item';
-                    applyBackgroundColor(retDiv, 'retrieval');
+                if (Array.isArray(data.retrievals) && data.retrievals.length > 0) {
+                    const retCard = document.createElement('div');
+                    retCard.className = 'card';
+                    applyBackgroundColor(retCard, 'retrieval');
+
                     let html = '<h3>Retrievals</h3>';
-                    data.retrievals.forEach((grp, idx) => {
-                        html += `<div><strong>Group ${idx + 1}</strong></div>`;
-                        grp.forEach(item => {
+                    data.retrievals.forEach((group, index) => {
+                        html += `<div class="card-group"><div class="retrieval-meta"><strong>Group ${index + 1}</strong></div>`;
+                        group.forEach(item => {
+                            const safeScore = Number.isFinite(item.score) ? item.score.toFixed(3) : item.score;
                             html += `
-                                <div><strong>Path:</strong> <a href="${item.url}">${item.id}</a> (${item.score.toFixed(3)})</div>
-                                <div class="markdown-content">${marked.parse(item.text)}</div>
+                                <div class="retrieval-meta">
+                                    <strong>Path:</strong> ${item.lookup || '-'}<br>
+                                    <a class="card-link" href="${item.url}">${item.id}</a>
+                                    <span> (score: ${safeScore})</span>
+                                </div>
+                                <div class="markdown-content">${marked.parse(item.text || '')}</div>
                             `;
                         });
+                        html += '</div>';
                     });
-                    retDiv.innerHTML = html;
-                    responseContainer.appendChild(retDiv);
+
+                    retCard.innerHTML = html;
+                    responseContainer.appendChild(retCard);
                 }
 
-                const argDiv = document.createElement('div');
-                argDiv.className = 'response-item';
-                applyBackgroundColor(argDiv, 'argument');
-                argDiv.innerHTML = '<h3>New Content</h3>' +
-                                   '<div class="markdown-content">' + marked.parse(data.argument) + '</div>';
-                responseContainer.appendChild(argDiv);
+                const argument = data.argument || '';
+                const argumentCard = createCard(
+                    'New Content',
+                    `<div class="markdown-content">${marked.parse(argument)}</div>`,
+                    'argument',
+                    'meta-card'
+                );
+                responseContainer.appendChild(argumentCard);
+
+                setStatus('Read complete. Review extraction, retrievals, and generated content.');
             })
-            .catch(error => console.error('Error reading url:', error));
+            .catch(() => {
+                setStatus('Error reading URL.', true);
+                renderEmpty('Read failed. Check API availability and try again.');
+            })
+            .finally(() => {
+                readButton.disabled = false;
+                readButton.textContent = 'Read';
+            });
         }
 
         readButton.addEventListener('click', performRead);
-        urlInput.addEventListener('keypress', function(e) {
+        urlInput.addEventListener('keydown', function(e) {
             if (e.key === 'Enter') {
                 performRead();
             }
