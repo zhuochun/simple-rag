@@ -231,7 +231,6 @@
         }
     </style>
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
-    <script src="https://d3js.org/d3.v7.min.js"></script>
     <script src="utils.js"></script>
 </head>
 <body>
@@ -326,18 +325,14 @@
             nodeWidth: 260,
             nodeHeight: 130,
             queryWidth: 190,
-            queryHeight: 58
+            queryHeight: 58,
+            treeColumnGap: 320,
+            treeRowGap: 180,
+            treeRootGapSlots: 1.4
         };
 
         let queryCounter = 0;
         let activePointerNode = null;
-
-        const simulation = d3.forceSimulation([])
-            .force('charge', d3.forceManyBody().strength(d => d.type === 'query' ? -1200 : -520))
-            .force('link', d3.forceLink([]).id(d => d.id).distance(link => link.type === 'similar_to' ? 170 : 220).strength(0.2))
-            .force('collide', d3.forceCollide().radius(d => (Math.max(d.width, d.height) / 2) + 20).strength(0.8))
-            .alphaDecay(0.06)
-            .on('tick', draw);
 
         function api(path) {
             const base = window.location.origin && window.location.origin.startsWith('http')
@@ -505,15 +500,170 @@
             return edge;
         }
 
-        function updateSimulation(reheat = true) {
-            const nodeArr = Array.from(nodes.values());
-            const edgeArr = Array.from(edges.values());
+        function compareNodeIds(aId, bId) {
+            const a = nodes.get(aId);
+            const b = nodes.get(bId);
+            if (!a || !b) return String(aId).localeCompare(String(bId));
 
-            simulation.nodes(nodeArr);
-            simulation.force('link').links(edgeArr);
-            if (reheat) {
-                simulation.alpha(0.9).restart();
+            const typeKeyA = a.type === 'query' ? 0 : 1;
+            const typeKeyB = b.type === 'query' ? 0 : 1;
+            if (typeKeyA !== typeKeyB) return typeKeyA - typeKeyB;
+
+            const titleA = String(a.title || '').toLowerCase();
+            const titleB = String(b.title || '').toLowerCase();
+            if (titleA !== titleB) return titleA.localeCompare(titleB);
+
+            return String(aId).localeCompare(String(bId));
+        }
+
+        function relayoutTree() {
+            const nodeArr = Array.from(nodes.values());
+            if (nodeArr.length === 0) {
+                draw();
+                return;
             }
+
+            const adjacency = new Map();
+            const inDegree = new Map();
+            nodeArr.forEach(node => {
+                adjacency.set(node.id, []);
+                inDegree.set(node.id, 0);
+            });
+
+            Array.from(edges.values()).forEach(edge => {
+                const sourceId = nodeIdFromRef(edge.source);
+                const targetId = nodeIdFromRef(edge.target);
+                if (!adjacency.has(sourceId) || !adjacency.has(targetId)) return;
+                adjacency.get(sourceId).push(targetId);
+                inDegree.set(targetId, (inDegree.get(targetId) || 0) + 1);
+            });
+            adjacency.forEach(children => children.sort(compareNodeIds));
+
+            const roots = [];
+            const rootSet = new Set();
+            function pushRoot(id) {
+                if (!id || rootSet.has(id) || !nodes.has(id)) return;
+                rootSet.add(id);
+                roots.push(id);
+            }
+
+            nodeArr
+                .filter(node => node.type === 'query')
+                .sort((a, b) => compareNodeIds(a.id, b.id))
+                .forEach(node => pushRoot(node.id));
+
+            if (roots.length === 0) {
+                nodeArr
+                    .filter(node => (inDegree.get(node.id) || 0) === 0)
+                    .sort((a, b) => compareNodeIds(a.id, b.id))
+                    .forEach(node => pushRoot(node.id));
+            }
+
+            if (roots.length === 0) {
+                pushRoot(nodeArr[0].id);
+            }
+
+            const depthById = new Map();
+            const parentById = new Map();
+
+            function bfsFrom(rootId) {
+                if (!depthById.has(rootId)) depthById.set(rootId, 0);
+                const queue = [rootId];
+                let head = 0;
+
+                while (head < queue.length) {
+                    const id = queue[head++];
+                    const depth = depthById.get(id) || 0;
+                    const children = adjacency.get(id) || [];
+
+                    children.forEach(childId => {
+                        const nextDepth = depth + 1;
+                        if (!depthById.has(childId) || nextDepth < depthById.get(childId)) {
+                            depthById.set(childId, nextDepth);
+                            parentById.set(childId, id);
+                            queue.push(childId);
+                        }
+                    });
+                }
+            }
+
+            roots.forEach(rootId => bfsFrom(rootId));
+            nodeArr
+                .slice()
+                .sort((a, b) => compareNodeIds(a.id, b.id))
+                .forEach(node => {
+                    if (depthById.has(node.id)) return;
+                    pushRoot(node.id);
+                    depthById.set(node.id, 0);
+                    bfsFrom(node.id);
+                });
+
+            const childrenByParent = new Map();
+            nodeArr.forEach(node => childrenByParent.set(node.id, []));
+            parentById.forEach((parentId, childId) => {
+                if (!childrenByParent.has(parentId)) childrenByParent.set(parentId, []);
+                childrenByParent.get(parentId).push(childId);
+            });
+            childrenByParent.forEach(children => children.sort(compareNodeIds));
+
+            const ySlotById = new Map();
+            const placed = new Set();
+            let nextSlot = 0;
+
+            function assignSlot(nodeId) {
+                if (placed.has(nodeId)) return ySlotById.get(nodeId);
+                placed.add(nodeId);
+
+                const children = (childrenByParent.get(nodeId) || [])
+                    .filter(childId => parentById.get(childId) === nodeId);
+                if (children.length === 0) {
+                    ySlotById.set(nodeId, nextSlot);
+                    nextSlot += 1;
+                    return ySlotById.get(nodeId);
+                }
+
+                const childSlots = children.map(assignSlot);
+                const centerSlot = childSlots.reduce((sum, value) => sum + value, 0) / childSlots.length;
+                ySlotById.set(nodeId, centerSlot);
+                return centerSlot;
+            }
+
+            roots.forEach((rootId, index) => {
+                assignSlot(rootId);
+                if (index < roots.length - 1) {
+                    nextSlot += constants.treeRootGapSlots;
+                }
+            });
+
+            nodeArr.forEach(node => {
+                if (!ySlotById.has(node.id)) {
+                    ySlotById.set(node.id, nextSlot);
+                    nextSlot += 1;
+                }
+            });
+
+            const slots = Array.from(ySlotById.values());
+            const minSlot = Math.min(...slots);
+            const maxSlot = Math.max(...slots);
+            const centerSlot = (minSlot + maxSlot) / 2;
+
+            nodeArr.forEach(node => {
+                if (node.pinned && Number.isFinite(node.fx) && Number.isFinite(node.fy)) {
+                    node.x = node.fx;
+                    node.y = node.fy;
+                    return;
+                }
+
+                const depth = depthById.get(node.id) || 0;
+                const slot = ySlotById.get(node.id) || 0;
+                node.x = depth * constants.treeColumnGap;
+                node.y = (slot - centerSlot) * constants.treeRowGap;
+                if (!node.pinned) {
+                    node.fx = null;
+                    node.fy = null;
+                }
+            });
+
             draw();
         }
 
@@ -657,6 +807,7 @@
             const sourceId = nodeIdFromRef(edge.source);
             const targetId = nodeIdFromRef(edge.target);
             const touchesSelection = selectedNodeIds.has(sourceId) || selectedNodeIds.has(targetId);
+            const midX = ps.x + ((pt.x - ps.x) * 0.52);
             ctx.save();
             ctx.strokeStyle = edgeColor(edge);
             ctx.globalAlpha = touchesSelection
@@ -668,7 +819,7 @@
             }
             ctx.beginPath();
             ctx.moveTo(ps.x, ps.y);
-            ctx.lineTo(pt.x, pt.y);
+            ctx.bezierCurveTo(midX, ps.y, midX, pt.y, pt.x, pt.y);
             ctx.stroke();
             ctx.restore();
         }
@@ -875,7 +1026,7 @@
 
         function resetView() {
             camera.k = 0.95;
-            camera.x = graphWrapper.clientWidth / 2;
+            camera.x = graphWrapper.clientWidth * 0.26;
             camera.y = graphWrapper.clientHeight / 2;
             draw();
         }
@@ -919,7 +1070,7 @@
                 }
             });
             refreshInspector();
-            updateSimulation(false);
+            relayoutTree();
         }
 
         function openSelected() {
@@ -937,7 +1088,7 @@
                 const noteNode = addNoteNode(item, queryNode);
                 addEdge(edgeType, queryNode.id, noteNode.id, item.score || 0);
             });
-            updateSimulation(true);
+            relayoutTree();
             setSelection(queryNode, false);
             setStatus(`Loaded ${items.length} results`);
         }
@@ -955,10 +1106,6 @@
             dragState.pointerId = null;
             graphWrapper.classList.remove('panning');
             canvas.style.cursor = 'grab';
-
-            simulation.nodes([]);
-            simulation.force('link').links([]);
-            simulation.stop();
 
             resetView();
             refreshInspector();
@@ -1054,7 +1201,7 @@
                       const child = addNoteNode(item, node);
                       addEdge('similar_to', node.id, child.id, item.score || 0);
                   });
-                  updateSimulation(true);
+                  relayoutTree();
                   setStatus(`Expanded ${items.length} similar notes`);
               })
               .catch(err => {
@@ -1089,7 +1236,6 @@
                     hit.fx = hit.x;
                     hit.fy = hit.y;
                 }
-                simulation.alphaTarget(0.35).restart();
             } else {
                 dragState.mode = 'pan';
                 dragState.nodeId = null;
@@ -1141,7 +1287,6 @@
                     node.fx = null;
                     node.fy = null;
                 }
-                simulation.alphaTarget(0);
             }
 
             dragState.mode = null;
@@ -1179,7 +1324,7 @@
                 return;
             }
             if (evt.key === 'r' || evt.key === 'R') {
-                simulation.alpha(1).restart();
+                relayoutTree();
                 setStatus('Relayout');
                 return;
             }
