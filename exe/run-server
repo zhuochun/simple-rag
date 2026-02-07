@@ -269,9 +269,10 @@ class SimpleRagServer < Sinatra::Application
 
         data = JSON.parse(request.body.read)
         threshold = (data["threshold"] || 0.9).to_f
+        cross_document_only = data.key?("cross_document_only") ? !!data["cross_document_only"] : true
         lookup_paths = resolve_lookup_paths(data["paths"])
 
-        clusters = find_duplicates(lookup_paths, threshold)
+        clusters = find_duplicates(lookup_paths, threshold, cross_document_only: cross_document_only)
         clusters = clusters.map { |c| { id: cluster_key(c), items: c } }
         clusters.reject! { |c| DISMISSED_CLUSTERS.include?(c[:id]) }
 

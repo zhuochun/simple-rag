@@ -1,25 +1,262 @@
 require "json"
+require "set"
 require_relative "../llm/embedding"
 require_relative "../readers/reader"
 require_relative "retriever" # for extract_id, extract_url, with_sqlite_store
 require_relative "../storage/file_index"
 require_relative "../storage/sqlite_index"
 
+DUP_VECTOR_SEARCH_K = 64
+DUP_BUCKET_CANDIDATE_LIMIT = 400
+
 def cluster_key(cluster)
-  cluster.map { |it| "#{it[:path]}/#{it[:id]}" }.sort.join('|')
+  cluster.map { |it| "#{it[:source_path]}##{it[:chunk]}" }.sort.join('|')
 end
 
 # Find duplicate chunks across lookup paths using embedding similarity
-# Returns array of clusters, each an array of items with :path, :id, :url, :text
+# Returns array of clusters, each an array of duplicate items.
 
-def find_duplicates(lookup_paths, threshold = 0.9)
+def pre_dedup_duplicate_items(items)
+  dedup = {}
+  items.each do |it|
+    key = it[:source_path]
+    existing = dedup[key]
+    if existing
+      existing[:lookup_paths] |= [it[:path]]
+      existing[:all_chunks] |= [it[:chunk]]
+      # Prefer the earliest chunk as canonical representative for stable output.
+      if it[:chunk] < existing[:chunk]
+        existing[:path] = it[:path]
+        existing[:id] = it[:id]
+        existing[:url] = it[:url]
+        existing[:chunk] = it[:chunk]
+        existing[:embedding] = it[:embedding]
+        existing[:bucket] = it[:bucket]
+        existing[:text] = it[:text]
+        existing[:db_key] = it[:db_key]
+      end
+      next
+    end
+
+    it[:lookup_paths] = [it[:path]]
+    it[:all_chunks] = [it[:chunk]]
+    dedup[key] = it
+  end
+
+  dedup.values
+end
+
+def collect_bucket_candidates(items, buckets, idx, limit = DUP_BUCKET_CANDIDATE_LIMIT)
+  item = items[idx]
+  candidates = []
+  seen = Set.new
+
+  neighbor_keys(item[:bucket]).each do |key|
+    bucket = buckets[key]
+    next if bucket.nil? || bucket.empty?
+
+    bucket.each do |j|
+      next if j == idx || seen.include?(j)
+      seen.add(j)
+      candidates << j
+      return candidates if candidates.length >= limit
+    end
+  end
+
+  candidates
+end
+
+def build_index_maps(items)
+  by_source_path = Hash.new { |h, k| h[k] = [] }
+  by_source_path_chunk = {}
+
+  items.each_with_index do |item, idx|
+    by_source_path[item[:source_path]] << idx
+    by_source_path_chunk[[item[:source_path], item[:chunk]]] = idx
+  end
+
+  [by_source_path, by_source_path_chunk]
+end
+
+def collect_sqlite_vector_candidates(items, idx, store, by_source_path, by_source_path_chunk)
+  item = items[idx]
+  results = store.vector_search(item[:embedding], DUP_VECTOR_SEARCH_K)
+  return [] if results.empty?
+
+  candidates = []
+  seen = Set.new
+  results.each do |row|
+    r_path = row["path"]
+    r_chunk = row["chunk"].to_i
+    candidate_idx = by_source_path_chunk[[r_path, r_chunk]]
+    candidate_idx ||= by_source_path[r_path]&.first
+    next if candidate_idx.nil? || candidate_idx == idx || seen.include?(candidate_idx)
+    seen.add(candidate_idx)
+    candidates << candidate_idx
+  end
+  candidates
+end
+
+def warm_sqlite_vector_indices(db_path_configs, store_cache)
+  db_path_configs.each_value do |config|
+    with_sqlite_store(config, store_cache) do |store|
+      store.warm_vector_index! if store.respond_to?(:warm_vector_index!)
+    end
+  end
+end
+
+def candidate_indices_for_item(items, buckets, idx, db_path_configs, store_cache, by_source_path, by_source_path_chunk)
+  item = items[idx]
+  db_key = item[:db_key]
+  return collect_bucket_candidates(items, buckets, idx) unless db_key
+
+  config = db_path_configs[db_key]
+  return collect_bucket_candidates(items, buckets, idx) unless config
+
+  vector_candidates = with_sqlite_store(config, store_cache) do |store|
+    collect_sqlite_vector_candidates(items, idx, store, by_source_path, by_source_path_chunk)
+  end
+  return vector_candidates unless vector_candidates.empty?
+
+  collect_bucket_candidates(items, buckets, idx)
+end
+
+def build_similarity_graph(items, buckets, threshold, cross_document_only, db_path_configs)
+  adjacency = Array.new(items.length) { Set.new }
+  sim_cache = {}
+  pair_seen = Set.new
+  store_cache = {}
+  by_source_path, by_source_path_chunk = build_index_maps(items)
+
+  begin
+    warm_sqlite_vector_indices(db_path_configs, store_cache)
+
+    items.each_with_index do |item, i|
+      neighbor_indices = candidate_indices_for_item(items, buckets, i, db_path_configs, store_cache, by_source_path, by_source_path_chunk)
+      neighbor_indices.each do |j|
+        a, b = i < j ? [i, j] : [j, i]
+        next if a == b
+        next if pair_seen.include?([a, b])
+        pair_seen.add([a, b])
+        next if cross_document_only && item[:source_path] == items[j][:source_path]
+
+        sim = dot_product(item[:embedding], items[j][:embedding])
+        next unless sim >= threshold
+
+        adjacency[i] << j
+        adjacency[j] << i
+        sim_cache[[i, j]] = sim
+        sim_cache[[j, i]] = sim
+      end
+    end
+  ensure
+    close_store_cache(store_cache)
+  end
+
+  [adjacency, sim_cache]
+end
+
+def connected_components(adjacency)
+  components = []
+  visited = Array.new(adjacency.length, false)
+
+  adjacency.each_index do |idx|
+    next if visited[idx]
+    next if adjacency[idx].empty?
+
+    stack = [idx]
+    visited[idx] = true
+    component = []
+
+    until stack.empty?
+      node = stack.pop
+      component << node
+      adjacency[node].each do |nbr|
+        next if visited[nbr]
+        visited[nbr] = true
+        stack << nbr
+      end
+    end
+
+    components << component if component.length > 1
+  end
+
+  components
+end
+
+def cluster_merge_score(left, right, adjacency, sim_cache)
+  min_sim = nil
+
+  left.each do |i|
+    right.each do |j|
+      return nil unless adjacency[i].include?(j)
+
+      sim = sim_cache[[i, j]]
+      min_sim = sim if min_sim.nil? || sim < min_sim
+    end
+  end
+
+  min_sim
+end
+
+def split_component_complete_link(component, adjacency, sim_cache)
+  return [component] if component.length == 2
+
+  if component.length == 3
+    a, b, c = component
+    ab = adjacency[a].include?(b)
+    ac = adjacency[a].include?(c)
+    bc = adjacency[b].include?(c)
+    return [component] if ab && ac && bc
+
+    pairs = []
+    pairs << [[a, b], sim_cache[[a, b]]] if ab
+    pairs << [[a, c], sim_cache[[a, c]]] if ac
+    pairs << [[b, c], sim_cache[[b, c]]] if bc
+    return [] if pairs.empty?
+    best_pair = pairs.max_by { |(_pair, sim)| sim.to_f }
+    return [best_pair[0]]
+  end
+
+  clusters = component.map { |idx| [idx] }
+
+  loop do
+    best_left = nil
+    best_right = nil
+    best_score = nil
+
+    0.upto(clusters.length - 2) do |li|
+      (li + 1).upto(clusters.length - 1) do |ri|
+        score = cluster_merge_score(clusters[li], clusters[ri], adjacency, sim_cache)
+        next if score.nil?
+        next if !best_score.nil? && score <= best_score
+
+        best_left = li
+        best_right = ri
+        best_score = score
+      end
+    end
+
+    break if best_left.nil?
+
+    clusters[best_left] = clusters[best_left] + clusters[best_right]
+    clusters.delete_at(best_right)
+  end
+
+  clusters.select { |c| c.length > 1 }
+end
+
+def find_duplicates(lookup_paths, threshold = 0.9, cross_document_only: false)
   items = []
+  db_path_configs = {}
 
   lookup_paths.each do |p|
     reader_cls = get_reader(p.reader)
     next unless reader_cls
 
     if p.db_file && p.db_table
+      db_key = "#{File.expand_path(p.db_file)}::#{p.db_table}"
+      db_path_configs[db_key] = p
       with_sqlite_store(p) do |store|
         store.each_item do |it|
           embedding = normalize_embedding(it["embedding"])
@@ -29,10 +266,12 @@ def find_duplicates(lookup_paths, threshold = 0.9)
             id: extract_id(it["path"]),
             url: extract_url(it["path"], p.url),
             source_path: it["path"],
-            chunk: it["chunk"],
+            chunk: it["chunk"].to_i,
             reader_cls: reader_cls,
             embedding: embedding,
             bucket: bucket,
+            text: it["text"],
+            db_key: db_key,
           }
         end
       end
@@ -47,13 +286,18 @@ def find_duplicates(lookup_paths, threshold = 0.9)
         id: extract_id(it[:path]),
         url: extract_url(it[:path], p.url),
         source_path: it[:path],
-        chunk: it[:chunk],
+        chunk: it[:chunk].to_i,
         reader_cls: reader_cls,
         embedding: it[:embedding],
         bucket: it[:bucket],
+        text: nil,
+        db_key: nil,
       }
     end
   end
+
+  items = pre_dedup_duplicate_items(items)
+  return [] if items.length < 2
 
   # build buckets for approximate search
   buckets = Hash.new { |h, k| h[k] = [] }
@@ -61,40 +305,48 @@ def find_duplicates(lookup_paths, threshold = 0.9)
     buckets[it[:bucket]] << i
   end
 
+  adjacency, sim_cache = build_similarity_graph(items, buckets, threshold, cross_document_only, db_path_configs)
+  components = connected_components(adjacency)
+
+  cluster_indices_list = components.flat_map do |component|
+    split_component_complete_link(component, adjacency, sim_cache)
+  end
+
   clusters = []
-  visited = Array.new(items.length, false)
   reader_cache = {}
-
-  items.each_with_index do |_item, idx|
-    next if visited[idx]
-    cluster_indices = []
-    queue = [idx]
-    visited[idx] = true
-
-    until queue.empty?
-      i = queue.pop
-      cluster_indices << i
-      neighbor_indices = neighbor_keys(items[i][:bucket]).flat_map { |k| buckets[k] }
-      neighbor_indices.each do |j|
-        next if visited[j] || j == i
-        sim = dot_product(items[i][:embedding], items[j][:embedding])
-        next unless sim >= threshold
-
-        visited[j] = true
-        queue << j
-      end
+  cluster_indices_list.each do |cluster_indices|
+    if cross_document_only
+      unique_sources = cluster_indices.map { |cidx| items[cidx][:source_path] }.uniq
+      next unless unique_sources.length > 1
     end
-
-    next unless cluster_indices.length > 1
 
     clusters << cluster_indices.map do |cidx|
       it = items[cidx]
-      reader = reader_cache[it[:source_path]] ||= it[:reader_cls].new(it[:source_path]).load
+      pair_sims = cluster_indices.filter_map do |oidx|
+        next if oidx == cidx
+        sim_cache[[cidx, oidx]] || dot_product(items[cidx][:embedding], items[oidx][:embedding])
+      end
+
+      text = it[:text]
+      if text.nil?
+        reader_key = [it[:reader_cls], it[:source_path]]
+        reader = reader_cache[reader_key] ||= it[:reader_cls].new(it[:source_path]).load
+        text = reader.get_chunk(it[:chunk])
+      end
+
       {
         path: it[:path],
         id: it[:id],
         url: it[:url],
-        text: reader.get_chunk(it[:chunk])
+        text: text,
+        source_path: it[:source_path],
+        chunk: it[:chunk],
+        bucket: it[:bucket],
+        embedding_dim: it[:embedding].length,
+        lookup_paths: it[:lookup_paths],
+        all_chunks: it[:all_chunks],
+        max_similarity: pair_sims.max,
+        avg_similarity: pair_sims.empty? ? nil : (pair_sims.sum(0.0) / pair_sims.length),
       }
     end
   end
