@@ -75,6 +75,67 @@ def merge_entries_by_chunk(entries)
     unique.values
 end
 
+def min_max_normalize_score(score, min_score, max_score)
+    value = score.to_f
+    if max_score > min_score
+        (value - min_score) / (max_score - min_score)
+    elsif value > 0
+        1.0
+    else
+        0.0
+    end
+end
+
+def fuse_entries_with_weighted_rrf(lists, component_weights: { weighted: 0.7, rrf: 0.3 }, rrf_k: 60)
+    merged = {}
+
+    lists.each do |list|
+        entries = Array(list[:entries])
+        next if entries.empty?
+
+        list_weight = list[:weight].to_f
+        ranked = entries.sort_by { |item| -(item["score"] || 0.0) }
+        scores = ranked.map { |item| item["score"].to_f }
+        min_score = scores.min || 0.0
+        max_score = scores.max || 0.0
+
+        ranked.each_with_index do |item, idx|
+            key = [item["path"], item["chunk"]]
+            row = merged[key]
+            unless row
+                row = item.dup
+                row["_weighted_score"] = 0.0
+                row["_rrf_score"] = 0.0
+                merged[key] = row
+            end
+
+            normalized = min_max_normalize_score(item["score"], min_score, max_score)
+            rank = idx + 1
+            row["_weighted_score"] += list_weight * normalized
+            row["_rrf_score"] += list_weight * (1.0 / (rrf_k + rank))
+        end
+    end
+
+    rows = merged.values
+    return rows if rows.empty?
+
+    max_weighted = rows.max_by { |r| r["_weighted_score"] }["_weighted_score"].to_f
+    max_rrf = rows.max_by { |r| r["_rrf_score"] }["_rrf_score"].to_f
+
+    weighted_ratio = component_weights[:weighted].to_f
+    rrf_ratio = component_weights[:rrf].to_f
+
+    rows.each do |row|
+        weighted_norm = max_weighted > 0 ? row["_weighted_score"].to_f / max_weighted : 0.0
+        rrf_norm = max_rrf > 0 ? row["_rrf_score"].to_f / max_rrf : 0.0
+        row["score"] = (weighted_ratio * weighted_norm) + (rrf_ratio * rrf_norm)
+        row.delete("_weighted_score")
+        row.delete("_rrf_score")
+    end
+
+    rows.sort_by { |item| -(item["score"] || 0.0) }
+end
+
 def top_n_by_score(entries, top_n)
     n = top_n.to_i
     return [] if n <= 0 || entries.empty?
@@ -153,16 +214,27 @@ class SimpleRagServer < Sinatra::Application
         variants = expand_variants(data["q"])
 
         store_cache = {}
-        entries = []
+        base_entries = []
+        expanded_entries = []
+        variant_entries = []
         begin
-            entries.concat(retrieve_by_embedding(lookup_paths, data["q"], store_cache: store_cache))
-            entries.concat(retrieve_by_embedding(lookup_paths, expanded_q, store_cache: store_cache))
-            entries.concat(retrieve_by_text(lookup_paths, variants, store_cache: store_cache)) unless variants.empty?
+            base_entries = retrieve_by_embedding(lookup_paths, data["q"], store_cache: store_cache)
+            expanded_entries = retrieve_by_embedding(lookup_paths, expanded_q, store_cache: store_cache)
+            variant_entries = retrieve_by_text(lookup_paths, variants, store_cache: store_cache) unless variants.empty?
         ensure
             close_store_cache(store_cache)
         end
 
-        ordered = top_n_by_score(merge_entries_by_chunk(entries), top_n)
+        fused = fuse_entries_with_weighted_rrf(
+            [
+                { name: "base", entries: base_entries, weight: 1.0 },
+                { name: "expanded", entries: expanded_entries, weight: 0.85 },
+                { name: "variants", entries: variant_entries, weight: 0.75 },
+            ],
+            component_weights: { weighted: 0.7, rrf: 0.3 },
+            rrf_k: 60
+        )
+        ordered = top_n_by_score(fused, top_n)
 
         {
             data: serialize_entries(ordered),
