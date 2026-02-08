@@ -191,14 +191,17 @@ def extract_url(file_path, url)
 end
 
 VARIANT_PROMPT = <<~PROMPT
-Generate 3 short search variants for exact keyword matching in markdown.
+Generate 6 short keyword variants for exact keyword matching in markdown.
 
 Rules:
 - Keep the same intent as the user input.
-- Each variant should be 1 to 5 words.
+- Output exactly 6 terms:
+  - 3 Chinese terms (简体中文), each 1 to 6 characters.
+  - 3 English terms, each 1 to 3 words.
 - Prefer concrete nouns, names, acronyms, and likely terms from docs.
-- Variants must be different from each other.
-- Output one CSV line only: term1, term2, term3
+- Terms must be distinct and useful for search.
+- Output one CSV line only in this order:
+  zh_term1, zh_term2, zh_term3, en_term1, en_term2, en_term3
 - No numbering, no bullets, no quotes, no extra text.
 PROMPT
 
@@ -208,7 +211,7 @@ def expand_variants(q)
         { role: ROLE_USER, content: q },
     ]
 
-    variants = chat(msgs).split(',').map(&:strip).reject(&:empty?).uniq
+    variants = chat(msgs).split(',').map(&:strip).reject(&:empty?).uniq.first(6)
     STDOUT << "Expand variants: #{variants}\n"
     variants
 end

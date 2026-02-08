@@ -202,7 +202,7 @@ class SimpleRagServer < Sinatra::Application
         { data: serialize_entries(ordered) }.to_json
     end
 
-    # agentic query - expand the query using LLM before searching
+    # agentic query - keyword variants for text retrieval
     post "/q_plus" do
         content_type :json
 
@@ -210,17 +210,14 @@ class SimpleRagServer < Sinatra::Application
         lookup_paths = resolve_lookup_paths(data["paths"], default_to_search_default: true)
         top_n = (data["topN"] || 20).to_i
 
-        expanded_q = expand_query(data["q"])
-        variants = expand_variants(data["q"])
+                variants = expand_variants(data["q"])
 
         store_cache = {}
         base_entries = []
-        expanded_entries = []
-        variant_entries = []
+                variant_entries = []
         begin
             base_entries = retrieve_by_embedding(lookup_paths, data["q"], store_cache: store_cache)
-            expanded_entries = retrieve_by_embedding(lookup_paths, expanded_q, store_cache: store_cache)
-            variant_entries = retrieve_by_text(lookup_paths, variants, store_cache: store_cache) unless variants.empty?
+                        variant_entries = retrieve_by_text(lookup_paths, variants, store_cache: store_cache) unless variants.empty?
         ensure
             close_store_cache(store_cache)
         end
@@ -228,8 +225,7 @@ class SimpleRagServer < Sinatra::Application
         fused = fuse_entries_with_weighted_rrf(
             [
                 { name: "base", entries: base_entries, weight: 1.0 },
-                { name: "expanded", entries: expanded_entries, weight: 0.85 },
-                { name: "variants", entries: variant_entries, weight: 0.75 },
+                                { name: "variants", entries: variant_entries, weight: 0.75 },
             ],
             component_weights: { weighted: 0.7, rrf: 0.3 },
             rrf_k: 60
@@ -238,8 +234,7 @@ class SimpleRagServer < Sinatra::Application
 
         {
             data: serialize_entries(ordered),
-            expanded: expanded_q,
-            variants: variants,
+                        variants: variants,
         }.to_json
     end
 
