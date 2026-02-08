@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>URL Reader</title>
+    <title>Reader Pipeline</title>
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Manrope:wght@400;600;700&display=swap');
 
@@ -15,6 +15,10 @@
             --border: #dbe4f5;
             --primary: #1f6feb;
             --primary-hover: #165dc4;
+            --secondary: #334155;
+            --secondary-hover: #1f2937;
+            --danger: #b42318;
+            --danger-hover: #901f15;
             --shadow: 0 14px 34px rgba(26, 49, 92, 0.12);
         }
 
@@ -55,7 +59,7 @@
         }
 
         #main-content {
-            padding: 26px 20px 38px;
+            padding: 20px;
         }
 
         .controls-panel {
@@ -65,82 +69,22 @@
             border-radius: 16px;
             box-shadow: var(--shadow);
             padding: 14px;
-            margin-bottom: 18px;
+            margin-bottom: 16px;
             position: sticky;
             top: 10px;
             z-index: 20;
         }
 
-        #input-container {
-            display: grid;
-            grid-template-columns: 1fr auto;
-            gap: 10px;
-            align-items: center;
-        }
-
-        #url-input {
-            height: 44px;
-            border: 1px solid var(--border);
-            border-radius: 10px;
-            padding: 0 12px;
-            color: var(--text);
-            font: inherit;
-            font-weight: 600;
-            background: #fff;
-        }
-
-        #url-input:focus {
-            outline: 2px solid #b9d2ff;
-            outline-offset: 1px;
-        }
-
-        .btn {
-            height: 42px;
-            border: 0;
-            border-radius: 10px;
-            color: #fff;
-            font: inherit;
-            font-weight: 700;
-            cursor: pointer;
-            transition: transform 0.14s ease, background 0.14s ease, box-shadow 0.14s ease;
-            padding: 0 14px;
-            white-space: nowrap;
-        }
-
-        .btn:hover {
-            transform: translateY(-1px);
-        }
-
-        .btn:disabled {
-            cursor: not-allowed;
-            transform: none;
-            box-shadow: none;
-            opacity: 0.75;
-        }
-
-        #read-button {
-            background: var(--primary);
-        }
-
-        #read-button:hover {
-            background: var(--primary-hover);
-            box-shadow: 0 8px 18px rgba(22, 93, 196, 0.28);
-        }
-
-        #status-message {
-            min-height: 20px;
-            margin-top: 10px;
+        .controls-title {
+            margin: 0 0 10px;
+            font-size: 0.95rem;
             color: var(--muted);
-            font-size: 0.93rem;
-        }
-
-        #status-message.error {
-            color: #a11a2d;
+            font-weight: 700;
         }
 
         #paths-list {
             list-style: none;
-            margin: 0 0 20px;
+            margin: 0;
             padding: 0;
             display: flex;
             flex-wrap: wrap;
@@ -162,51 +106,297 @@
         }
 
         #paths-list label {
-            font-size: 0.93rem;
+            font-size: 0.92rem;
             font-weight: 600;
         }
 
-        #response-container {
-            display: grid;
-            grid-template-columns: repeat(2, minmax(0, 1fr));
-            gap: 14px;
+        #status-message {
+            min-height: 20px;
+            margin-top: 10px;
+            color: var(--muted);
+            font-size: 0.92rem;
+            font-weight: 600;
         }
 
-        .card {
+        #status-message.error {
+            color: #a11a2d;
+        }
+
+        #pipeline {
+            display: grid;
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+            gap: 14px;
+            align-items: start;
+        }
+
+        .column {
             border: 1px solid var(--border);
             background: #fff;
-            padding: 14px;
             border-radius: 14px;
             box-shadow: 0 8px 20px rgba(26, 49, 92, 0.09);
-            transition: transform 0.14s ease, box-shadow 0.14s ease;
-            animation: cardIn 200ms ease both;
+            min-height: 520px;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
         }
 
-        .card:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 14px 26px rgba(24, 50, 96, 0.16);
+        .column-header {
+            padding: 12px 14px;
+            border-bottom: 1px solid #e5ecf8;
+            background: #f8fbff;
         }
 
-        .card h3 {
-            margin: 0 0 10px;
+        .column-header h2 {
+            margin: 0;
+            font-size: 1rem;
         }
 
-        .card-group {
-            border-top: 1px dashed #d8e2f2;
-            padding-top: 10px;
-            margin-top: 10px;
+        .column-header p {
+            margin: 4px 0 0;
+            color: var(--muted);
+            font-size: 0.85rem;
+            line-height: 1.35;
         }
 
-        .card-group:first-of-type {
-            border-top: 0;
-            padding-top: 0;
-            margin-top: 0;
+        .column-body {
+            padding: 12px;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            flex: 1;
+            min-height: 0;
         }
 
-        .retrieval-meta {
+        .row {
+            display: grid;
+            grid-template-columns: 1fr auto;
+            gap: 8px;
+            align-items: center;
+        }
+
+        .row.multi {
+            grid-template-columns: 1fr auto auto;
+        }
+
+        input[type="text"],
+        select,
+        textarea {
+            width: 100%;
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            padding: 10px 12px;
+            color: var(--text);
+            font: inherit;
+            background: #fff;
+        }
+
+        input[type="text"]:focus,
+        select:focus,
+        textarea:focus {
+            outline: 2px solid #b9d2ff;
+            outline-offset: 1px;
+        }
+
+        textarea {
+            resize: vertical;
+            min-height: 340px;
+            line-height: 1.45;
+        }
+
+        #article-input {
+            flex: 1;
+            min-height: 360px;
+        }
+
+        .btn {
+            height: 40px;
+            border: 0;
+            border-radius: 10px;
+            color: #fff;
+            font: inherit;
+            font-weight: 700;
+            cursor: pointer;
+            transition: transform 0.14s ease, background 0.14s ease, box-shadow 0.14s ease;
+            padding: 0 12px;
+            white-space: nowrap;
+        }
+
+        .btn:hover {
+            transform: translateY(-1px);
+        }
+
+        .btn:disabled {
+            cursor: not-allowed;
+            transform: none;
+            box-shadow: none;
+            opacity: 0.72;
+        }
+
+        .btn-primary {
+            background: var(--primary);
+        }
+
+        .btn-primary:hover {
+            background: var(--primary-hover);
+            box-shadow: 0 8px 18px rgba(22, 93, 196, 0.28);
+        }
+
+        .btn-secondary {
+            background: var(--secondary);
+        }
+
+        .btn-secondary:hover {
+            background: var(--secondary-hover);
+            box-shadow: 0 8px 18px rgba(31, 41, 55, 0.24);
+        }
+
+        .btn-danger {
+            background: var(--danger);
+        }
+
+        .btn-danger:hover {
+            background: var(--danger-hover);
+            box-shadow: 0 8px 18px rgba(176, 35, 24, 0.26);
+        }
+
+        .hint {
+            margin: 0;
+            color: var(--muted);
+            font-size: 0.83rem;
+            line-height: 1.35;
+        }
+
+        #notes-actions {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+        }
+
+        #notes-count,
+        #similar-meta {
+            font-size: 0.85rem;
+            color: var(--muted);
+            font-weight: 600;
+        }
+
+        .scroll-region {
+            overflow: auto;
+            min-height: 0;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            padding-right: 2px;
+        }
+
+        .empty-state {
+            border: 1px dashed #bfd0ef;
+            border-radius: 12px;
+            background: #fff;
+            color: var(--muted);
+            padding: 14px;
+            text-align: center;
+            font-weight: 600;
             font-size: 0.9rem;
-            margin-bottom: 6px;
-            line-height: 1.4;
+        }
+
+        .note-card {
+            border: 1px solid #dde6f6;
+            border-radius: 12px;
+            background: #fcfdff;
+            padding: 10px;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        .note-card.focused {
+            border-color: #92b7fb;
+            box-shadow: 0 0 0 2px #d4e4ff;
+            background: #f8fbff;
+        }
+
+        .note-head {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 8px;
+        }
+
+        .note-title {
+            font-size: 0.86rem;
+            font-weight: 700;
+            color: var(--muted);
+        }
+
+        .note-buttons {
+            display: flex;
+            gap: 6px;
+        }
+
+        .note-btn {
+            border: 1px solid #cad6eb;
+            border-radius: 8px;
+            background: #f7f9fc;
+            color: #334155;
+            font: inherit;
+            font-size: 0.8rem;
+            font-weight: 700;
+            padding: 5px 7px;
+            cursor: pointer;
+        }
+
+        .note-btn:hover {
+            background: #eef2f7;
+        }
+
+        .note-btn.delete {
+            border-color: #f3c9c4;
+            background: #fff5f3;
+            color: #9f1239;
+        }
+
+        .note-btn.delete:hover {
+            background: #ffe9e6;
+        }
+
+        .note-editor {
+            min-height: 118px;
+            resize: vertical;
+            margin: 0;
+            font-size: 0.9rem;
+        }
+
+        .similar-card {
+            border: 1px solid #dde6f6;
+            border-radius: 12px;
+            background: #fcfdff;
+            padding: 10px;
+        }
+
+        .similar-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 8px;
+        }
+
+        .path-pill {
+            padding: 2px 10px;
+            border-radius: 999px;
+            border: 1px solid #d5e2fb;
+            font-size: 0.8rem;
+            font-weight: 700;
+        }
+
+        .score-pill {
+            border: 1px solid #e2e8f0;
+            color: #475569;
+            border-radius: 999px;
+            padding: 2px 8px;
+            font-size: 0.8rem;
+            font-weight: 700;
+            background: #f8fafc;
         }
 
         .card-link {
@@ -221,53 +411,41 @@
         }
 
         .markdown-content {
-            line-height: 1.5;
+            line-height: 1.45;
+            font-size: 0.9rem;
             word-break: break-word;
         }
 
-        .meta-card {
-            border-style: dashed;
-            background: #fbfdff;
-        }
-
-        .empty-state {
-            grid-column: 1 / -1;
-            border: 1px dashed #bfd0ef;
-            border-radius: 14px;
-            background: #fff;
-            color: var(--muted);
-            padding: 18px;
-            text-align: center;
-            font-weight: 600;
-        }
-
-        @keyframes cardIn {
-            from {
-                opacity: 0;
-                transform: translateY(6px);
+        @media (max-width: 1240px) {
+            #pipeline {
+                grid-template-columns: repeat(2, minmax(0, 1fr));
             }
-            to {
-                opacity: 1;
-                transform: translateY(0);
+
+            #similar-column {
+                grid-column: 1 / -1;
+                min-height: 360px;
             }
         }
 
-        @media (max-width: 920px) {
-            #response-container {
+        @media (max-width: 860px) {
+            #main-content {
+                padding: 14px;
+            }
+
+            #pipeline {
                 grid-template-columns: 1fr;
             }
-        }
 
-        @media (max-width: 700px) {
-            #main-content {
-                padding: 18px 12px 30px;
+            .column {
+                min-height: 0;
             }
 
-            .controls-panel {
-                padding: 12px;
+            #article-input {
+                min-height: 220px;
             }
 
-            #input-container {
+            .row,
+            .row.multi {
                 grid-template-columns: 1fr;
             }
 
@@ -289,157 +467,562 @@
     </nav>
     <div id="main-content">
         <div class="controls-panel">
-            <div id="input-container">
-                <input type="text" id="url-input" placeholder="Enter URL">
-                <button id="read-button" class="btn">Read</button>
-            </div>
+            <p class="controls-title">Similar-note search paths</p>
+            <ul id="paths-list"></ul>
             <div id="status-message" aria-live="polite"></div>
         </div>
-        <ul id="paths-list"></ul>
-        <div id="response-container"></div>
+
+        <div id="pipeline">
+            <section class="column" id="inbox-column">
+                <div class="column-header">
+                    <h2>1) Inbox</h2>
+                    <p>Fetch URL, load cached article, or paste content directly.</p>
+                </div>
+                <div class="column-body">
+                    <div class="row">
+                        <input type="text" id="url-input" placeholder="Enter URL to fetch">
+                        <button id="fetch-url-button" class="btn btn-primary">Fetch URL</button>
+                    </div>
+
+                    <div class="row multi">
+                        <select id="cache-select"></select>
+                        <button id="load-cache-button" class="btn btn-secondary" disabled>Load Cached</button>
+                        <button id="refresh-cache-button" class="btn btn-secondary">Refresh</button>
+                    </div>
+
+                    <p class="hint">Shortcut: select text in article and press Ctrl+Enter (Cmd+Enter on macOS) to extract notes.</p>
+                    <textarea id="article-input" placeholder="Paste article markdown here, or fetch/load above."></textarea>
+                </div>
+            </section>
+
+            <section class="column" id="notes-column">
+                <div class="column-header">
+                    <h2>2) Extracted Notes</h2>
+                    <p>Extract notes from full article or selected section. Reorder and delete cards.</p>
+                </div>
+                <div class="column-body">
+                    <div id="notes-actions">
+                        <button id="extract-all-button" class="btn btn-primary">Extract All</button>
+                        <button id="extract-selection-button" class="btn btn-secondary">Extract Selection</button>
+                    </div>
+                    <div id="notes-count">0 notes</div>
+                    <div id="notes-list" class="scroll-region"></div>
+                </div>
+            </section>
+
+            <section class="column" id="similar-column">
+                <div class="column-header">
+                    <h2>3) Similar Notes</h2>
+                    <p>Shows nearest notes in existing KB for the currently focused extracted note.</p>
+                </div>
+                <div class="column-body">
+                    <button id="refresh-similar-button" class="btn btn-secondary">Refresh Similar</button>
+                    <div id="similar-meta">Focus a note in column 2 to run similarity search.</div>
+                    <div id="similar-list" class="scroll-region"></div>
+                </div>
+            </section>
+        </div>
     </div>
 
 <script>
     document.addEventListener('DOMContentLoaded', function() {
+        const API_BASE = 'http://localhost:4567';
+
         const pathsList = document.getElementById('paths-list');
-        const urlInput = document.getElementById('url-input');
-        const readButton = document.getElementById('read-button');
-        const responseContainer = document.getElementById('response-container');
         const statusMessage = document.getElementById('status-message');
 
-        function setStatus(message, isError) {
+        const urlInput = document.getElementById('url-input');
+        const fetchUrlButton = document.getElementById('fetch-url-button');
+        const cacheSelect = document.getElementById('cache-select');
+        const loadCacheButton = document.getElementById('load-cache-button');
+        const refreshCacheButton = document.getElementById('refresh-cache-button');
+        const articleInput = document.getElementById('article-input');
+
+        const extractAllButton = document.getElementById('extract-all-button');
+        const extractSelectionButton = document.getElementById('extract-selection-button');
+        const notesCount = document.getElementById('notes-count');
+        const notesList = document.getElementById('notes-list');
+
+        const refreshSimilarButton = document.getElementById('refresh-similar-button');
+        const similarMeta = document.getElementById('similar-meta');
+        const similarList = document.getElementById('similar-list');
+
+        const state = {
+            notes: [],
+            focusedNoteId: null,
+            noteSeq: 0,
+            similarReqSeq: 0,
+            similarTimer: null,
+        };
+
+        function setStatus(message, isError = false) {
             statusMessage.textContent = message;
             statusMessage.className = isError ? 'error' : '';
         }
 
         function selectedPaths() {
-            return Array.from(pathsList.querySelectorAll('input[type="checkbox"]:checked')).map(checkbox => checkbox.name);
+            return Array.from(pathsList.querySelectorAll('input[type="checkbox"]:checked')).map((checkbox) => checkbox.name);
         }
 
-        function renderEmpty(message) {
-            responseContainer.innerHTML = `<div class="empty-state">${message}</div>`;
+        function renderEmpty(container, message) {
+            container.innerHTML = `<div class="empty-state">${message}</div>`;
         }
 
-        function createCard(title, html, lookup, extraClass) {
-            const card = document.createElement('div');
-            card.className = `card ${extraClass || ''}`.trim();
-            applyBackgroundColor(card, lookup);
-            card.innerHTML = `<h3>${title}</h3><div>${html}</div>`;
-            return card;
-        }
-
-        fetch('http://localhost:4567/paths')
-            .then(resp => resp.json())
-            .then(data => {
-                data.forEach(item => {
-                    const li = document.createElement('li');
-                    applyBackgroundColor(li, item.name);
-
-                    const checkbox = document.createElement('input');
-                    checkbox.type = 'checkbox';
-                    checkbox.id = item.name;
-                    checkbox.name = item.name;
-                    checkbox.checked = !!item.searchDefault;
-
-                    const label = document.createElement('label');
-                    label.htmlFor = item.name;
-                    label.textContent = item.name;
-
-                    li.appendChild(checkbox);
-                    li.appendChild(label);
-                    pathsList.appendChild(li);
-                });
-                setStatus('Ready. Enter a URL and click Read.');
-            })
-            .catch(() => setStatus('Unable to load paths. Check if the API is running.', true));
-
-        function performRead() {
-            const url = urlInput.value.trim();
-            if (!url) {
-                setStatus('Enter a URL before reading.', true);
-                return;
+        function setBusy(button, busyText, busy) {
+            if (!button) return;
+            if (!button.dataset.defaultLabel) {
+                button.dataset.defaultLabel = button.textContent;
             }
+            button.disabled = busy;
+            button.textContent = busy ? busyText : button.dataset.defaultLabel;
+        }
 
-            readButton.disabled = true;
-            readButton.textContent = 'Reading...';
-            setStatus('Reading URL and generating retrieval context...');
-
-            fetch('http://localhost:4567/read_url', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify({
-                    url: url,
-                    paths: selectedPaths(),
-                })
-            })
-            .then(resp => resp.json())
-            .then(data => {
-                responseContainer.innerHTML = '';
-
-                const extraction = data.extraction || '';
-                const extractionCard = createCard(
-                    'Extraction',
-                    `<div class="markdown-content">${marked.parse(extraction)}</div>`,
-                    'extraction',
-                    'meta-card'
-                );
-                responseContainer.appendChild(extractionCard);
-
-                if (Array.isArray(data.retrievals) && data.retrievals.length > 0) {
-                    const retCard = document.createElement('div');
-                    retCard.className = 'card';
-                    applyBackgroundColor(retCard, 'retrieval');
-
-                    let html = '<h3>Retrievals</h3>';
-                    data.retrievals.forEach((group, index) => {
-                        html += `<div class="card-group"><div class="retrieval-meta"><strong>Group ${index + 1}</strong></div>`;
-                        group.forEach(item => {
-                            const safeScore = Number.isFinite(item.score) ? item.score.toFixed(3) : item.score;
-                            html += `
-                                <div class="retrieval-meta">
-                                    <strong>Path:</strong> ${item.lookup || '-'}<br>
-                                    <a class="card-link" href="${item.url}">${item.id}</a>
-                                    <span> (score: ${safeScore})</span>
-                                </div>
-                                <div class="markdown-content">${marked.parse(item.text || '')}</div>
-                            `;
-                        });
-                        html += '</div>';
-                    });
-
-                    retCard.innerHTML = html;
-                    responseContainer.appendChild(retCard);
+        function fetchJson(url, options = {}) {
+            return fetch(url, options).then(async (resp) => {
+                const data = await resp.json().catch(() => ({}));
+                if (!resp.ok) {
+                    const message = data && data.error ? data.error : `Request failed (${resp.status})`;
+                    throw new Error(message);
                 }
-
-                const argument = data.argument || '';
-                const argumentCard = createCard(
-                    'New Content',
-                    `<div class="markdown-content">${marked.parse(argument)}</div>`,
-                    'argument',
-                    'meta-card'
-                );
-                responseContainer.appendChild(argumentCard);
-
-                setStatus('Read complete. Review extraction, retrievals, and generated content.');
-            })
-            .catch(() => {
-                setStatus('Error reading URL.', true);
-                renderEmpty('Read failed. Check API availability and try again.');
-            })
-            .finally(() => {
-                readButton.disabled = false;
-                readButton.textContent = 'Read';
+                return data;
             });
         }
 
-        readButton.addEventListener('click', performRead);
-        urlInput.addEventListener('keydown', function(e) {
-            if (e.key === 'Enter') {
-                performRead();
+        function updateNotesCount() {
+            notesCount.textContent = `${state.notes.length} ${state.notes.length === 1 ? 'note' : 'notes'}`;
+        }
+
+        function getFocusedNote() {
+            return state.notes.find((n) => n.id === state.focusedNoteId) || null;
+        }
+
+        function focusNote(noteId, runSimilar = true) {
+            if (state.focusedNoteId === noteId) {
+                return;
+            }
+            state.focusedNoteId = noteId;
+            renderNotes();
+            if (runSimilar) {
+                loadSimilarForFocusedNote();
+            }
+        }
+
+        function deleteNote(noteId) {
+            const idx = state.notes.findIndex((n) => n.id === noteId);
+            if (idx < 0) {
+                return;
+            }
+
+            const wasFocused = state.focusedNoteId === noteId;
+            state.notes.splice(idx, 1);
+
+            if (wasFocused) {
+                const fallback = state.notes[idx] || state.notes[idx - 1] || null;
+                state.focusedNoteId = fallback ? fallback.id : null;
+            }
+
+            renderNotes();
+            loadSimilarForFocusedNote();
+        }
+
+        function moveNote(noteId, dir) {
+            const idx = state.notes.findIndex((n) => n.id === noteId);
+            if (idx < 0) {
+                return;
+            }
+
+            const nextIdx = idx + dir;
+            if (nextIdx < 0 || nextIdx >= state.notes.length) {
+                return;
+            }
+
+            const temp = state.notes[idx];
+            state.notes[idx] = state.notes[nextIdx];
+            state.notes[nextIdx] = temp;
+            renderNotes();
+        }
+
+        function renderNotes() {
+            updateNotesCount();
+
+            if (state.notes.length === 0) {
+                renderEmpty(notesList, 'No notes yet. Extract from full article or selected section.');
+                return;
+            }
+
+            notesList.innerHTML = '';
+            state.notes.forEach((note, idx) => {
+                const card = document.createElement('div');
+                card.className = `note-card${note.id === state.focusedNoteId ? ' focused' : ''}`;
+                card.dataset.id = String(note.id);
+
+                card.innerHTML = `
+                    <div class="note-head">
+                        <span class="note-title">Note ${idx + 1}</span>
+                        <div class="note-buttons">
+                            <button type="button" class="note-btn" data-action="up">Up</button>
+                            <button type="button" class="note-btn" data-action="down">Down</button>
+                            <button type="button" class="note-btn delete" data-action="delete">Delete</button>
+                        </div>
+                    </div>
+                    <textarea class="note-editor"></textarea>
+                `;
+
+                const editor = card.querySelector('.note-editor');
+                editor.value = note.text;
+                const upBtn = card.querySelector('[data-action="up"]');
+                const downBtn = card.querySelector('[data-action="down"]');
+                const delBtn = card.querySelector('[data-action="delete"]');
+
+                upBtn.disabled = idx === 0;
+                downBtn.disabled = idx === state.notes.length - 1;
+
+                card.addEventListener('click', function() {
+                    focusNote(note.id);
+                });
+
+                editor.addEventListener('focus', function() {
+                    focusNote(note.id);
+                });
+
+                editor.addEventListener('input', function() {
+                    note.text = editor.value;
+                    if (note.id === state.focusedNoteId) {
+                        scheduleSimilarRefresh();
+                    }
+                });
+
+                upBtn.addEventListener('click', function(e) {
+                    e.stopPropagation();
+                    moveNote(note.id, -1);
+                });
+
+                downBtn.addEventListener('click', function(e) {
+                    e.stopPropagation();
+                    moveNote(note.id, 1);
+                });
+
+                delBtn.addEventListener('click', function(e) {
+                    e.stopPropagation();
+                    deleteNote(note.id);
+                });
+
+                notesList.appendChild(card);
+            });
+        }
+
+        function appendExtractedGroups(groups) {
+            const newNotes = (groups || []).map((group) => group.trim()).filter(Boolean);
+            if (newNotes.length === 0) {
+                setStatus('No note groups were extracted.', true);
+                return;
+            }
+
+            newNotes.forEach((text) => {
+                state.noteSeq += 1;
+                state.notes.push({ id: state.noteSeq, text: text });
+            });
+
+            const last = state.notes[state.notes.length - 1];
+            state.focusedNoteId = last ? last.id : null;
+            renderNotes();
+            loadSimilarForFocusedNote();
+            setStatus(`Added ${newNotes.length} extracted ${newNotes.length === 1 ? 'note' : 'notes'}.`);
+        }
+
+        function selectedArticleSection() {
+            const start = articleInput.selectionStart;
+            const end = articleInput.selectionEnd;
+            if (typeof start !== 'number' || typeof end !== 'number' || start === end) {
+                return '';
+            }
+            return articleInput.value.slice(start, end).trim();
+        }
+
+        function extractNotesFromText(text, modeLabel) {
+            const inputText = text.trim();
+            if (!inputText) {
+                setStatus(`${modeLabel}: input text is empty.`, true);
+                return;
+            }
+
+            setBusy(extractAllButton, 'Extracting...', true);
+            setBusy(extractSelectionButton, 'Extracting...', true);
+            setStatus(`${modeLabel}: extracting notes...`);
+
+            fetchJson(`${API_BASE}/reader/extract_notes`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ text: inputText })
+            })
+            .then((data) => {
+                appendExtractedGroups(data.groups || []);
+            })
+            .catch((err) => {
+                setStatus(`${modeLabel}: ${err.message}`, true);
+            })
+            .finally(() => {
+                setBusy(extractAllButton, 'Extracting...', false);
+                setBusy(extractSelectionButton, 'Extracting...', false);
+            });
+        }
+
+        function renderSimilar(items) {
+            if (!Array.isArray(items) || items.length === 0) {
+                renderEmpty(similarList, 'No similar notes found for this focused extracted note.');
+                return;
+            }
+
+            similarList.innerHTML = '';
+            items.forEach((item) => {
+                const card = document.createElement('div');
+                card.className = 'similar-card';
+
+                const score = Number.isFinite(item.score) ? item.score.toFixed(3) : item.score;
+                card.innerHTML = `
+                    <div class="similar-header">
+                        <span class="path-pill">${item.lookup || 'Unknown'}</span>
+                        <span class="score-pill">Score: ${score}</span>
+                    </div>
+                    <div><a class="card-link" href="${item.url}" target="_blank" rel="noopener noreferrer">${item.id || item.url}</a></div>
+                    <div class="markdown-content">${marked.parse(item.text || '')}</div>
+                `;
+
+                const pathPill = card.querySelector('.path-pill');
+                applyBackgroundColor(pathPill, item.lookup || 'unknown');
+                similarList.appendChild(card);
+            });
+        }
+
+        function scheduleSimilarRefresh(delayMs = 350) {
+            if (state.similarTimer) {
+                clearTimeout(state.similarTimer);
+            }
+            state.similarTimer = setTimeout(function() {
+                state.similarTimer = null;
+                loadSimilarForFocusedNote();
+            }, delayMs);
+        }
+
+        function loadSimilarForFocusedNote() {
+            if (state.similarTimer) {
+                clearTimeout(state.similarTimer);
+                state.similarTimer = null;
+            }
+
+            const focused = getFocusedNote();
+            if (!focused || !focused.text.trim()) {
+                similarMeta.textContent = 'Focus a note in column 2 to run similarity search.';
+                renderEmpty(similarList, 'No focused note.');
+                return;
+            }
+
+            const query = focused.text.trim();
+            const reqId = ++state.similarReqSeq;
+            similarMeta.textContent = 'Searching similar notes for focused card...';
+            setBusy(refreshSimilarButton, 'Refreshing...', true);
+
+            fetchJson(`${API_BASE}/similar`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    note: query,
+                    paths: selectedPaths(),
+                    topN: 8,
+                }),
+            })
+            .then((data) => {
+                if (reqId !== state.similarReqSeq) {
+                    return;
+                }
+                renderSimilar(data.data || []);
+                similarMeta.textContent = 'Similar notes for the focused extracted card.';
+            })
+            .catch((err) => {
+                if (reqId !== state.similarReqSeq) {
+                    return;
+                }
+                similarMeta.textContent = 'Similar-note search failed.';
+                renderEmpty(similarList, 'Unable to load similar notes.');
+                setStatus(`Similar-note search failed: ${err.message}`, true);
+            })
+            .finally(() => {
+                if (reqId === state.similarReqSeq) {
+                    setBusy(refreshSimilarButton, 'Refreshing...', false);
+                }
+            });
+        }
+
+        function loadCacheArticles() {
+            setBusy(refreshCacheButton, 'Refreshing...', true);
+            fetchJson(`${API_BASE}/reader/cache_articles`)
+                .then((data) => {
+                    const files = Array.isArray(data.data) ? data.data : [];
+                    cacheSelect.innerHTML = '';
+
+                    if (files.length === 0) {
+                        const option = document.createElement('option');
+                        option.value = '';
+                        option.textContent = 'No cached markdown files';
+                        cacheSelect.appendChild(option);
+                        cacheSelect.disabled = true;
+                        loadCacheButton.disabled = true;
+                        return;
+                    }
+
+                    files.forEach((file) => {
+                        const option = document.createElement('option');
+                        option.value = file.name;
+                        option.textContent = file.name;
+                        cacheSelect.appendChild(option);
+                    });
+                    cacheSelect.disabled = false;
+                    loadCacheButton.disabled = false;
+                })
+                .catch((err) => {
+                    cacheSelect.innerHTML = '<option value="">Unable to load cache list</option>';
+                    cacheSelect.disabled = true;
+                    loadCacheButton.disabled = true;
+                    setStatus(`Failed to load cache list: ${err.message}`, true);
+                })
+                .finally(() => {
+                    setBusy(refreshCacheButton, 'Refreshing...', false);
+                });
+        }
+
+        function fetchFromUrl() {
+            const url = urlInput.value.trim();
+            if (!url) {
+                setStatus('Enter a URL before fetching.', true);
+                return;
+            }
+
+            setBusy(fetchUrlButton, 'Fetching...', true);
+            setStatus('Fetching article from URL...');
+
+            fetchJson(`${API_BASE}/reader/fetch_url`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ url: url })
+            })
+                .then((data) => {
+                    articleInput.value = data.article || '';
+                    setStatus('URL fetched and cached.');
+                    loadCacheArticles();
+                })
+                .catch((err) => {
+                    setStatus(`URL fetch failed: ${err.message}`, true);
+                })
+                .finally(() => {
+                    setBusy(fetchUrlButton, 'Fetching...', false);
+                });
+        }
+
+        function loadSelectedCacheFile() {
+            const name = cacheSelect.value;
+            if (!name) {
+                setStatus('Choose a cached file first.', true);
+                return;
+            }
+
+            setBusy(loadCacheButton, 'Loading...', true);
+            setStatus('Loading cached article...');
+
+            fetchJson(`${API_BASE}/reader/load_cache_article`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ name: name })
+            })
+                .then((data) => {
+                    articleInput.value = data.content || '';
+                    setStatus('Cached article loaded into inbox.');
+                })
+                .catch((err) => {
+                    setStatus(`Failed to load cached article: ${err.message}`, true);
+                })
+                .finally(() => {
+                    setBusy(loadCacheButton, 'Loading...', false);
+                });
+        }
+
+        function loadPaths() {
+            fetchJson(`${API_BASE}/paths`)
+                .then((paths) => {
+                    pathsList.innerHTML = '';
+                    paths.forEach((item) => {
+                        const li = document.createElement('li');
+                        applyBackgroundColor(li, item.name);
+
+                        const checkbox = document.createElement('input');
+                        checkbox.type = 'checkbox';
+                        checkbox.id = `path-${item.name}`;
+                        checkbox.name = item.name;
+                        checkbox.checked = !!item.searchDefault;
+                        checkbox.addEventListener('change', function() {
+                            if (state.focusedNoteId) {
+                                loadSimilarForFocusedNote();
+                            }
+                        });
+
+                        const label = document.createElement('label');
+                        label.htmlFor = checkbox.id;
+                        label.textContent = item.name;
+
+                        li.appendChild(checkbox);
+                        li.appendChild(label);
+                        pathsList.appendChild(li);
+                    });
+
+                    setStatus('Ready. Fill inbox, extract notes, then focus a card to browse similar notes.');
+                })
+                .catch((err) => {
+                    setStatus(`Failed to load paths: ${err.message}`, true);
+                });
+        }
+
+        fetchUrlButton.addEventListener('click', fetchFromUrl);
+        loadCacheButton.addEventListener('click', loadSelectedCacheFile);
+        refreshCacheButton.addEventListener('click', loadCacheArticles);
+
+        extractAllButton.addEventListener('click', function() {
+            extractNotesFromText(articleInput.value, 'Extract all');
+        });
+
+        extractSelectionButton.addEventListener('click', function() {
+            const selection = selectedArticleSection();
+            if (!selection) {
+                setStatus('Select text in the article box before extracting selection.', true);
+                return;
+            }
+            extractNotesFromText(selection, 'Extract selection');
+        });
+
+        articleInput.addEventListener('keydown', function(e) {
+            if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+                e.preventDefault();
+                const selection = selectedArticleSection();
+                if (!selection) {
+                    setStatus('Shortcut requires a selected section in the article box.', true);
+                    return;
+                }
+                extractNotesFromText(selection, 'Shortcut extract');
             }
         });
+
+        urlInput.addEventListener('keydown', function(e) {
+            if (e.key === 'Enter') {
+                fetchFromUrl();
+            }
+        });
+
+        refreshSimilarButton.addEventListener('click', function() {
+            loadSimilarForFocusedNote();
+        });
+
+        renderEmpty(notesList, 'No notes yet. Extract from full article or selected section.');
+        renderEmpty(similarList, 'No focused note.');
+        loadPaths();
+        loadCacheArticles();
     });
 </script>
 </body>

@@ -210,14 +210,14 @@ class SimpleRagServer < Sinatra::Application
         lookup_paths = resolve_lookup_paths(data["paths"], default_to_search_default: true)
         top_n = (data["topN"] || 20).to_i
 
-                variants = expand_variants(data["q"])
+        variants = expand_variants(data["q"])
 
         store_cache = {}
         base_entries = []
-                variant_entries = []
+        variant_entries = []
         begin
             base_entries = retrieve_by_embedding(lookup_paths, data["q"], store_cache: store_cache)
-                        variant_entries = retrieve_by_text(lookup_paths, variants, store_cache: store_cache) unless variants.empty?
+            variant_entries = retrieve_by_text(lookup_paths, variants, store_cache: store_cache) unless variants.empty?
         ensure
             close_store_cache(store_cache)
         end
@@ -225,7 +225,7 @@ class SimpleRagServer < Sinatra::Application
         fused = fuse_entries_with_weighted_rrf(
             [
                 { name: "base", entries: base_entries, weight: 1.0 },
-                                { name: "variants", entries: variant_entries, weight: 0.75 },
+                { name: "variants", entries: variant_entries, weight: 0.75 },
             ],
             component_weights: { weighted: 0.7, rrf: 0.3 },
             rrf_k: 60
@@ -234,7 +234,7 @@ class SimpleRagServer < Sinatra::Application
 
         {
             data: serialize_entries(ordered),
-                        variants: variants,
+            variants: variants,
         }.to_json
     end
 
@@ -349,6 +349,71 @@ class SimpleRagServer < Sinatra::Application
         ordered = top_n_by_score(entries, top_n)
 
         { data: serialize_entries(ordered) }.to_json
+    end
+
+    # list cached article files from jina.cacheDir
+    get "/reader/cache_articles" do
+        content_type :json
+        { data: list_cached_articles }.to_json
+    end
+
+    # load one cached article file by name
+    post "/reader/load_cache_article" do
+        content_type :json
+
+        data = JSON.parse(request.body.read)
+        begin
+            content = read_cached_article(data["name"])
+            { content: content }.to_json
+        rescue ArgumentError => e
+            status 400
+            { error: e.message }.to_json
+        end
+    end
+
+    # fetch URL content only, and cache it with the same format used by read_url
+    post "/reader/fetch_url" do
+        content_type :json
+
+        data = JSON.parse(request.body.read)
+        url = data["url"].to_s.strip
+        if url.empty?
+            status 400
+            next({ error: "URL is required" }.to_json)
+        end
+
+        begin
+            article = fetch_article(url)
+        rescue StandardError => e
+            status 502
+            next({ error: "Failed to fetch URL content: #{e.message}" }.to_json)
+        end
+
+        cached_file = save_article_result(url, article, "", "")
+
+        { article: article, cached_file: cached_file }.to_json
+    end
+
+    # extract note groups from arbitrary text
+    post "/reader/extract_notes" do
+        content_type :json
+
+        data = JSON.parse(request.body.read)
+        text = data["text"].to_s
+        if text.strip.empty?
+            status 400
+            next({ error: "Input text is required" }.to_json)
+        end
+
+        begin
+            extraction = extract_article(text)
+            groups = split_extraction_groups(extraction)
+        rescue StandardError => e
+            status 502
+            next({ error: "Failed to extract notes: #{e.message}" }.to_json)
+        end
+
+        { extraction: extraction, groups: groups }.to_json
     end
 
     # read a URL, extract concepts and compare with existing notes
