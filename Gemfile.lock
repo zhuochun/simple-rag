@@ -8,7 +8,7 @@ GEM
     nio4r (2.7.5)
     puma (7.2.0)
       nio4r (~> 2.0)
-    rack (3.1.19)
+    rack (3.2.5)
     rack-protection (4.2.1)
       base64 (>= 0.1.0)
       logger (>= 1.6.0)
@@ -27,8 +27,8 @@ GEM
       rack-session (>= 2.0.0, < 3)
       tilt (~> 2.0)
     sqlite-vec (0.1.6-x86_64-linux)
-    sqlite3 (1.7.3-x64-mingw-ucrt)
-    sqlite3 (1.7.3-x86_64-linux)
+    sqlite3 (2.9.1-x64-mingw-ucrt)
+    sqlite3 (2.9.1-x86_64-linux-gnu)
     tilt (2.7.0)
 
 PLATFORMS
@@ -37,11 +37,11 @@ PLATFORMS
 
 DEPENDENCIES
   puma
-  rack (~> 3.1.1)
-  rackup (~> 2.2)
-  sinatra (~> 4.2.0)
+  rack
+  rackup
+  sinatra
   sqlite-vec
-  sqlite3 (~> 1.6)
+  sqlite3
 
 BUNDLED WITH
    2.4.10
