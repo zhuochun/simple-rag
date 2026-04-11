@@ -1,8 +1,13 @@
 source 'https://rubygems.org'
 
-gem 'puma'
 gem 'rack'
 gem 'sinatra'
 gem "rackup"
-gem "sqlite3"
-gem "sqlite-vec"
+if Gem::Platform.local.to_s.include?("mingw-ucrt")
+  gem "sqlite3"
+  gem "webrick"
+else
+  gem "puma"
+  gem "sqlite3"
+  gem "sqlite-vec"
+end

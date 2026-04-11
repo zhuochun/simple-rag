@@ -12,6 +12,10 @@ require "digest"
 require "stringio"
 require "thread"
 require "set"
+begin
+    require "bundler/setup"
+rescue LoadError
+end
 
 require_relative "../llm/llm"
 require_relative "../llm/embedding"

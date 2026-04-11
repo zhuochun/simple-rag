@@ -5,9 +5,6 @@ GEM
     logger (1.7.0)
     mustermann (3.0.4)
       ruby2_keywords (~> 0.0.1)
-    nio4r (2.7.5)
-    puma (7.2.0)
-      nio4r (~> 2.0)
     rack (3.2.5)
     rack-protection (4.2.1)
       base64 (>= 0.1.0)
@@ -26,22 +23,21 @@ GEM
       rack-protection (= 4.2.1)
       rack-session (>= 2.0.0, < 3)
       tilt (~> 2.0)
-    sqlite-vec (0.1.6-x86_64-linux)
     sqlite3 (2.9.1-x64-mingw-ucrt)
     sqlite3 (2.9.1-x86_64-linux-gnu)
     tilt (2.7.0)
+    webrick (1.9.2)
 
 PLATFORMS
   x64-mingw-ucrt
   x86_64-linux
 
 DEPENDENCIES
-  puma
   rack
   rackup
   sinatra
-  sqlite-vec
   sqlite3
+  webrick
 
 BUNDLED WITH
-   2.4.10
+   2.6.9

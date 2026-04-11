@@ -9,6 +9,13 @@
 
 require "json"
 require "set"
+begin
+    require "bundler/setup"
+rescue LoadError
+end
+if Gem::Platform.local.to_s.include?("mingw-ucrt")
+    require "webrick"
+end
 require "sinatra/base"
 
 require_relative "../server/retriever"
@@ -175,6 +182,8 @@ if missing_key_msg
 end
 
 class SimpleRagServer < Sinatra::Application
+    set :server, :webrick if Gem::Platform.local.to_s.include?("mingw-ucrt")
+
     # list all the paths that can be searched
     get "/paths" do
         content_type :json
