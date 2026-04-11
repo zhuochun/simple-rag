@@ -1,5 +1,7 @@
 require "pathname"
 require "json"
+require "etc"
+require "thread"
 
 require_relative "cache"
 require_relative "../llm/llm"
@@ -20,6 +22,12 @@ Rules:
 PROMPT
 
 VECTOR_SEARCH_K = 512
+VECTOR_SEARCH_K_MIN = 64
+VECTOR_SEARCH_K_MULTIPLIER = 12
+TEXT_SEARCH_LIMIT_MAX = 800
+TEXT_SEARCH_LIMIT_MULTIPLIER = 20
+RETRIEVE_THREADS_MAX = 8
+STORE_CACHE_MUTEX = Mutex.new
 
 def expand_query(q)
     msgs = [
@@ -36,10 +44,13 @@ end
 def with_sqlite_store(path_config, store_cache = nil)
     if store_cache
         key = [path_config.db_file, path_config.db_table]
-        store = store_cache[key]
-        unless store
-            store = SqliteIndex.new(path_config.db_file, path_config.db_table)
-            store_cache[key] = store
+        store = nil
+        STORE_CACHE_MUTEX.synchronize do
+            store = store_cache[key]
+            unless store
+                store = SqliteIndex.new(path_config.db_file, path_config.db_table)
+                store_cache[key] = store
+            end
         end
         return yield(store)
     end
@@ -69,7 +80,65 @@ def normalize_search_terms(query_or_queries)
     Array(query_or_queries).flatten.map(&:to_s).map(&:strip).reject(&:empty?).uniq
 end
 
-def retrieve_by_embedding(lookup_paths, q, store_cache: nil)
+def retrieve_worker_count(path_count)
+    return 1 if path_count.to_i <= 1
+
+    env_threads = ENV["RAG_RETRIEVE_THREADS"].to_i
+    if env_threads > 0
+        return [[env_threads, RETRIEVE_THREADS_MAX].min, path_count.to_i].min
+    end
+
+    cpu = Etc.respond_to?(:nprocessors) ? Etc.nprocessors.to_i : 4
+    cpu = 4 if cpu <= 0
+    [[cpu, RETRIEVE_THREADS_MAX].min, path_count.to_i].min
+end
+
+def each_lookup_path(lookup_paths, parallel: true)
+    paths = Array(lookup_paths).compact
+    return if paths.empty?
+
+    if !parallel || paths.length <= 1
+        paths.each { |p| yield(p) }
+        return
+    end
+
+    queue = Queue.new
+    paths.each { |p| queue << p }
+
+    workers = retrieve_worker_count(paths.length)
+    threads = workers.times.map do
+        Thread.new do
+            loop do
+                path = begin
+                    queue.pop(true)
+                rescue ThreadError
+                    nil
+                end
+                break if path.nil?
+                yield(path)
+            rescue => e
+                STDOUT << "Path retrieval failed (#{path&.name || "unknown"}): #{e.class}: #{e.message}\n"
+            end
+        end
+    end
+    threads.each(&:join)
+end
+
+def vector_search_k_for_top_n(top_n)
+    n = top_n.to_i
+    return VECTOR_SEARCH_K if n <= 0
+
+    [[n * VECTOR_SEARCH_K_MULTIPLIER, VECTOR_SEARCH_K_MIN].max, VECTOR_SEARCH_K].min
+end
+
+def text_limit_for_top_n(top_n)
+    n = top_n.to_i
+    return nil if n <= 0
+
+    [n * TEXT_SEARCH_LIMIT_MULTIPLIER, TEXT_SEARCH_LIMIT_MAX].min
+end
+
+def retrieve_by_embedding(lookup_paths, q, store_cache: nil, top_n: nil, parallel: true)
     begin
         qe = CACHE.get_or_set(q, method(:embedding).to_proc)
         qn = normalize_embedding(qe)
@@ -78,23 +147,27 @@ def retrieve_by_embedding(lookup_paths, q, store_cache: nil)
         return []
     end
 
+    k = vector_search_k_for_top_n(top_n)
     entries = []
-    lookup_paths.each do |p|
+    entries_mutex = Mutex.new
+
+    each_lookup_path(lookup_paths, parallel: parallel) do |p|
         STDOUT << "Reading index: #{p.name}\n"
         reader_cls = get_reader(p.reader)
         next if reader_cls.nil?
 
+        path_entries = []
         if p.db_file && p.db_table
             with_sqlite_store(p, store_cache) do |store|
                 file_cache = {}
                 matched_candidates = 0
 
-                store.vector_search(qn, VECTOR_SEARCH_K).each do |item|
+                store.vector_search(qn, k).each do |item|
                     matched_candidates += 1
                     score = dot_product(qn, normalize_embedding(item["embedding"]))
                     next if score < p.threshold
 
-                    entries << {
+                    path_entries << {
                         "path" => item["path"],
                         "chunk" => item["chunk"],
                         "score" => score,
@@ -113,7 +186,7 @@ def retrieve_by_embedding(lookup_paths, q, store_cache: nil)
                         score = dot_product(qn, normalize_embedding(item["embedding"]))
                         next if score < p.threshold
 
-                        entries << {
+                        path_entries << {
                             "path" => item["path"],
                             "chunk" => item["chunk"],
                             "score" => score,
@@ -130,7 +203,7 @@ def retrieve_by_embedding(lookup_paths, q, store_cache: nil)
                             score = dot_product(qn, normalize_embedding(item["embedding"]))
                             next if score < p.threshold
 
-                            entries << {
+                            path_entries << {
                                 "path" => item["path"],
                                 "chunk" => item["chunk"],
                                 "score" => score,
@@ -155,7 +228,7 @@ def retrieve_by_embedding(lookup_paths, q, store_cache: nil)
                 score = dot_product(qn, item[:embedding])
                 next if score < p.threshold
 
-                entries << {
+                path_entries << {
                     "path" => item[:path],
                     "chunk" => item[:chunk],
                     "score" => score,
@@ -167,7 +240,8 @@ def retrieve_by_embedding(lookup_paths, q, store_cache: nil)
             end
         end
 
-        STDOUT << "Matched num: #{entries.length}\n"
+        entries_mutex.synchronize { entries.concat(path_entries) }
+        STDOUT << "Matched num for #{p.name}: #{path_entries.length}\n"
     end
 
     entries
@@ -196,7 +270,7 @@ Generate 6 short keyword variants for exact keyword matching in markdown.
 Rules:
 - Keep the same intent as the user input.
 - Output exactly 6 terms:
-  - 3 Chinese terms (简体中文), each 1 to 6 characters.
+  - 3 Chinese terms, each 1 to 6 characters.
   - 3 English terms, each 1 to 3 words.
 - Prefer concrete nouns, names, acronyms, and likely terms from docs.
 - Terms must be distinct and useful for search.
@@ -216,21 +290,25 @@ def expand_variants(q)
     variants
 end
 
-def retrieve_by_text(lookup_paths, query_or_queries, store_cache: nil)
+def retrieve_by_text(lookup_paths, query_or_queries, store_cache: nil, top_n: nil, parallel: true)
     queries = normalize_search_terms(query_or_queries)
     return [] if queries.empty?
 
+    limit_per_path = text_limit_for_top_n(top_n)
     entries = []
-    lookup_paths.each do |p|
+    entries_mutex = Mutex.new
+
+    each_lookup_path(lookup_paths, parallel: parallel) do |p|
         STDOUT << "Reading text index: #{p.name}\n"
 
         reader_cls = get_reader(p.reader)
         next if reader_cls.nil?
 
         file_cache = {}
+        path_entries = []
         if p.db_file && p.db_table
             with_sqlite_store(p, store_cache) do |store|
-                store.text_search_any(queries).each do |item|
+                store.text_search_any(queries, limit: limit_per_path).each do |item|
                     reader = file_cache[item["path"]] ||= reader_cls.new(item["path"])
                     if item["text"].nil?
                         text = reader.load.get_chunk(item["chunk"])
@@ -243,17 +321,21 @@ def retrieve_by_text(lookup_paths, query_or_queries, store_cache: nil)
                     item["url"] = extract_url(item["path"], p.url)
                     item["reader"] = reader
 
-                    entries << item
+                    path_entries << item
                 end
             end
-            STDOUT << "Matched num: #{entries.length}\n"
+            entries_mutex.synchronize { entries.concat(path_entries) }
+            STDOUT << "Matched num for #{p.name}: #{path_entries.length}\n"
             next
         end
 
         index_file = File.expand_path(p.out)
         next unless File.exist?(index_file)
 
+        matched = 0
         File.foreach(index_file) do |line|
+            break if limit_per_path && matched >= limit_per_path
+
             item = JSON.parse(line)
             reader = file_cache[item["path"]] ||= reader_cls.new(item["path"]).load
             chunk_text = reader.get_chunk(item["chunk"])
@@ -265,10 +347,12 @@ def retrieve_by_text(lookup_paths, query_or_queries, store_cache: nil)
             item["url"] = extract_url(item["path"], p.url)
             item["reader"] = reader
 
-            entries << item
+            path_entries << item
+            matched += 1
         end
 
-        STDOUT << "Matched num: #{entries.length}\n"
+        entries_mutex.synchronize { entries.concat(path_entries) }
+        STDOUT << "Matched num for #{p.name}: #{path_entries.length}\n"
     end
 
     entries

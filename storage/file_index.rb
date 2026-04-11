@@ -37,8 +37,11 @@ class FileIndex
 end
 
 INDEX_CACHE = {}
+INDEX_CACHE_MUTEX = Mutex.new
 
 # Load and return FileIndex for a config path
 def load_index_cache(path_config)
-  INDEX_CACHE[path_config.name] ||= FileIndex.new(path_config)
+  INDEX_CACHE_MUTEX.synchronize do
+    INDEX_CACHE[path_config.name] ||= FileIndex.new(path_config)
+  end
 end

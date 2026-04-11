@@ -201,9 +201,9 @@ class SimpleRagServer < Sinatra::Application
         top_n = (data["topN"] || 20).to_i
         q = data["q"]
 
-        entries = retrieve_by_embedding(lookup_paths, q)
+        entries = retrieve_by_embedding(lookup_paths, q, top_n: top_n)
         if q.to_s.strip.length < 5 && q.to_s.split(/\s+/).length < 5
-            entries.concat(retrieve_by_text(lookup_paths, q))
+            entries.concat(retrieve_by_text(lookup_paths, q, top_n: top_n))
             entries = merge_entries_by_chunk(entries)
         end
 
@@ -225,8 +225,8 @@ class SimpleRagServer < Sinatra::Application
         base_entries = []
         variant_entries = []
         begin
-            base_entries = retrieve_by_embedding(lookup_paths, data["q"], store_cache: store_cache)
-            variant_entries = retrieve_by_text(lookup_paths, variants, store_cache: store_cache) unless variants.empty?
+            base_entries = retrieve_by_embedding(lookup_paths, data["q"], store_cache: store_cache, top_n: top_n)
+            variant_entries = retrieve_by_text(lookup_paths, variants, store_cache: store_cache, top_n: top_n) unless variants.empty?
         ensure
             close_store_cache(store_cache)
         end
@@ -354,7 +354,7 @@ class SimpleRagServer < Sinatra::Application
         lookup_paths = resolve_lookup_paths(data["paths"])
         top_n = (data["topN"] || 3).to_i
 
-        entries = retrieve_by_embedding(lookup_paths, data["note"] || "")
+        entries = retrieve_by_embedding(lookup_paths, data["note"] || "", top_n: top_n)
         ordered = top_n_by_score(entries, top_n)
 
         { data: serialize_entries(ordered) }.to_json
@@ -445,7 +445,7 @@ class SimpleRagServer < Sinatra::Application
         store_cache = {}
         begin
             groups.each do |group|
-                entries = retrieve_by_embedding(lookup_paths, group, store_cache: store_cache)
+                entries = retrieve_by_embedding(lookup_paths, group, store_cache: store_cache, top_n: 5)
                 ordered = top_n_by_score(entries, 5)
 
                 retrievals << ordered.map do |item|
