@@ -345,7 +345,7 @@ class SqliteIndex
       require "sqlite_vec"
       SqliteVec.load(@db)
     rescue LoadError
-      ext_path = ENV["DOT_SQLITE_VEC_EXTENSION"].to_s.strip
+      ext_path = default_vector_extension_path
       if !ext_path.empty?
         begin
           @db.load_extension(ext_path)
@@ -372,6 +372,16 @@ class SqliteIndex
       @vector_error = "vec_version() check failed (#{e.class}: #{e.message})"
       false
     end
+  end
+
+  def default_vector_extension_path
+    env_path = ENV["DOT_SQLITE_VEC_EXTENSION"].to_s.strip
+    return env_path unless env_path.empty?
+
+    vendored = File.expand_path("../vendor/sqlite-vec/vec0.dll", __dir__)
+    return vendored if File.exist?(vendored)
+
+    ""
   end
 
   def ensure_meta_schema!
