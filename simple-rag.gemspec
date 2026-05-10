@@ -31,6 +31,8 @@ Gem::Specification.new do |spec|
 
   spec.add_runtime_dependency "sinatra", "~> 4.1"
   spec.add_runtime_dependency "rackup", "~> 2.2"
+  spec.add_runtime_dependency "fiddle", "~> 1.1"
+  spec.add_runtime_dependency "ostruct", "~> 0.6"
   if Gem::Platform.local.to_s.include?("mingw-ucrt")
     spec.add_runtime_dependency "sqlite3", "~> 2.9.2"
     spec.add_runtime_dependency "webrick", "~> 1.9"

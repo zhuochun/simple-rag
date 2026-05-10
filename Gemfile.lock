@@ -2,9 +2,11 @@ GEM
   remote: https://rubygems.org/
   specs:
     base64 (0.3.0)
+    fiddle (1.1.8)
     logger (1.7.0)
     mustermann (3.0.4)
       ruby2_keywords (~> 0.0.1)
+    ostruct (0.6.3)
     rack (3.2.5)
     rack-protection (4.2.1)
       base64 (>= 0.1.0)
@@ -33,6 +35,8 @@ PLATFORMS
   x86_64-linux
 
 DEPENDENCIES
+  fiddle
+  ostruct
   rack
   rackup
   sinatra
