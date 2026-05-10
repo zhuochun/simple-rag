@@ -78,8 +78,27 @@ module ChunkUtils
     end
 
     def split_hard_by_chars(text, max_tokens)
-        max_chars = [max_tokens * 4, 1000].max
-        text.scan(/.{1,#{max_chars}}/m)
+        pieces = text.scan(/(?:[\p{Han}]|[\p{L}\p{N}]+|[^\s])\s*/m)
+        return text.scan(/.{1,#{max_tokens}}/m) if pieces.empty?
+
+        parts = []
+        current = []
+        current_tokens = 0
+
+        pieces.each do |piece|
+            piece_tokens = count_tokens(piece)
+            if current_tokens + piece_tokens > max_tokens && current.any?
+                parts << current.join
+                current = []
+                current_tokens = 0
+            end
+
+            current << piece
+            current_tokens += piece_tokens
+        end
+
+        parts << current.join if current.any?
+        parts
     end
 
     def filter_small_chunks(chunks, min_tokens = DEFAULT_MIN_TOKENS)
