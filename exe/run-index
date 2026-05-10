@@ -21,6 +21,7 @@ require_relative "../llm/llm"
 require_relative "../llm/embedding"
 require_relative "../readers/reader"
 require_relative "../lib/config_loader"
+require_relative "../lib/ollama_service"
 require_relative "../lib/provider_env_validator"
 require_relative "../storage/sqlite_index"
 
@@ -35,6 +36,8 @@ rescue => e
     STDOUT << "Config error: #{e.message}\n"
     exit 1
 end
+
+exit 9 unless OllamaService.ensure_started(CONFIG)
 
 OPENAI_KEY = ENV["DOT_OPENAI_KEY"] || ""
 GEMINI_KEY = ENV["DOT_GEMINI_KEY"] || ""

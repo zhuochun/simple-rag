@@ -33,7 +33,7 @@ def chat(messages, opts = {})
   case provider
   when 'ollama'
     model = cfg(:chat, 'model', 'llama2')
-    url = cfg(:chat, 'url', 'http://localhost:11434/api/chat')
+    url = cfg(:chat, 'url', 'http://127.0.0.1:11434/api/chat')
     ollama_chat(messages, model, url, opts)
   when 'gemini'
     model = cfg(:chat, 'model', 'gemini-2.5-flash')
@@ -57,7 +57,7 @@ def embedding(txts, opts = {})
   case provider
   when 'ollama'
     model = cfg(:embedding, 'model', 'nomic-embed-text')
-    url = cfg(:embedding, 'url', 'http://localhost:11434/api/embeddings')
+    url = cfg(:embedding, 'url', 'http://127.0.0.1:11434/api/embeddings')
     ollama_embedding(txts, model, url, opts)
   when 'gemini'
     model = cfg(:embedding, 'model', 'gemini-embedding-001')

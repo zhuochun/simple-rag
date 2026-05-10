@@ -1,6 +1,17 @@
+require "uri"
+
 require_relative "http"
 
+def ollama_url(url)
+  uri = URI(url)
+  uri.host = "127.0.0.1" if uri.host.to_s.downcase == "localhost"
+  uri.to_s
+rescue URI::InvalidURIError
+  url
+end
+
 def ollama_embedding(txts, model, url, opts = {})
+  url = ollama_url(url)
   data = {
     "model" => model,
     "prompt" => txts
@@ -17,6 +28,7 @@ def ollama_embedding(txts, model, url, opts = {})
 end
 
 def ollama_chat(messages, model, url, opts = {})
+  url = ollama_url(url)
   data = {
     "model" => model,
     "messages" => messages,

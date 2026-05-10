@@ -24,6 +24,7 @@ require_relative "../server/discuss"
 require_relative "../server/duplicate"
 require_relative "../server/article"
 require_relative "../lib/config_loader"
+require_relative "../lib/ollama_service"
 require_relative "../lib/provider_env_validator"
 
 if ARGV.length != 1
@@ -37,6 +38,8 @@ rescue => e
     STDOUT << "Config error: #{e.message}\n"
     exit 1
 end
+
+exit 9 unless OllamaService.ensure_started(CONFIG)
 
 DISMISSED_FILE = CONFIG.dismissedDuplicatesFile
 DISMISSED_CLUSTERS = if DISMISSED_FILE && File.exist?(DISMISSED_FILE)
