@@ -1,0 +1,768 @@
+#!/usr/bin/env ruby
+# encoding: utf-8
+
+# Build cognition-map data from indexed notes.
+#
+# Usage:
+#   run-index-map config.json
+#   run-index-map config.json journal,learning
+#   run-index-map config.json '["journal","learning"]'
+#
+# Notes:
+# - Run this after `run-index` (or after `run-migrate` if you use sqlite).
+# - `map.path` is REQUIRED in config.json.
+# - Optional path filtering can come from:
+#   - CLI second argument, or
+#   - config.json field: map.includePaths
+
+require "json"
+require "pathname"
+require "digest"
+require "set"
+require "time"
+require "fileutils"
+begin
+  require "bundler/setup"
+rescue LoadError
+end
+
+require_relative "../lib/config_loader"
+require_relative "../lib/ollama_service"
+require_relative "../llm/llm"
+require_relative "../readers/reader"
+require_relative "../storage/sqlite_index"
+
+if ARGV.length < 1 || ARGV.length > 2
+  STDOUT << "Invalid arguments received, need a config file and optional path names\n"
+  exit 1
+end
+
+CONFIG_FILE = File.expand_path(ARGV[0])
+CONFIG_BASE_DIR = File.dirname(CONFIG_FILE)
+CLI_INCLUDE_RAW = ARGV[1]
+
+begin
+  CONFIG = ConfigLoader.load_config(CONFIG_FILE)
+rescue => e
+  STDOUT << "Config error: #{e.message}\n"
+  exit 1
+end
+
+MAP_WIDTH = 2600
+MAP_HEIGHT = 1700
+MAP_MARGIN = 140
+MIN_CLUSTER_COUNT = 1
+MAX_CLUSTER_COUNT = 18
+MIN_CLUSTER_SIZE = 3
+MAX_LABEL_SNIPPETS = 5
+MAX_LABEL_CHARS = 220
+KMEANS_MAX_ITER = 24
+KMEANS_EPSILON = 1e-5
+
+def config_value(section, key)
+  return nil if section.nil?
+  if section.respond_to?(key)
+    section.public_send(key)
+  elsif section.is_a?(Hash)
+    section[key] || section[key.to_s]
+  end
+end
+
+def provider_name(config, section)
+  cfg_section = config.respond_to?(section) ? config.public_send(section) : nil
+  provider = config_value(cfg_section, :provider)
+  provider.to_s.strip.downcase
+end
+
+def map_section
+  CONFIG.respond_to?(:map) ? CONFIG.map : nil
+end
+
+def map_config_value(key)
+  config_value(map_section, key)
+end
+
+def should_start_ollama?
+  provider_name(CONFIG, :chat) == "ollama" || provider_name(CONFIG, :embedding) == "ollama"
+end
+
+def parse_include_names(raw)
+  return nil if raw.nil? || raw.to_s.strip.empty?
+
+  txt = raw.to_s.strip
+  arr = if txt.start_with?("[")
+    parsed = JSON.parse(txt)
+    unless parsed.is_a?(Array)
+      raise ArgumentError, "Path filter must be a JSON array when using bracket syntax"
+    end
+    parsed
+  else
+    txt.split(",")
+  end
+
+  names = arr.map(&:to_s).map(&:strip).reject(&:empty?).uniq
+  raise ArgumentError, "Path filter is empty" if names.empty?
+  names
+end
+
+def config_include_names
+  raw = map_config_value(:includePaths)
+  return nil if raw.nil?
+
+  arr = raw.is_a?(Array) ? raw : [raw]
+  names = arr.map(&:to_s).map(&:strip).reject(&:empty?).uniq
+  raise ArgumentError, "map.includePaths is present but empty" if names.empty?
+  names
+end
+
+def resolve_target_paths
+  cli_names = parse_include_names(CLI_INCLUDE_RAW)
+  names = cli_names || config_include_names
+  return CONFIG.paths if names.nil?
+
+  known_names = CONFIG.paths.map(&:name)
+  unknown = names - known_names
+  unless unknown.empty?
+    raise ArgumentError, %(Unknown path names in include filter: #{unknown.join(", ")})
+  end
+
+  selected = CONFIG.paths.select { |p| names.include?(p.name) }
+  raise ArgumentError, "No paths selected for map generation" if selected.empty?
+  selected
+end
+
+def map_out_file!
+  configured = map_config_value(:path).to_s.strip
+  if configured.empty?
+    raise ArgumentError, %(Config field "map.path" is required for run-index-map)
+  end
+
+  path = Pathname.new(configured)
+  path.absolute? ? path.to_s : File.expand_path(configured, CONFIG_BASE_DIR)
+end
+
+def log_label_warning(reason, response: nil, exception: nil)
+  lines = []
+  lines << "[LabelWarning #{Time.now.utc.iso8601}] #{reason}"
+  lines << "Exception: #{exception.class}: #{exception.message}" if exception
+  if response && !response.to_s.strip.empty?
+    clipped = response.to_s
+    clipped = clipped[0, 2400] + "...(truncated)" if clipped.length > 2400
+    lines << "LLM response: #{clipped}"
+  end
+  STDOUT << lines.join("\n") << "\n"
+end
+
+def safe_float_array(raw)
+  arr = raw.is_a?(Array) ? raw : JSON.parse(raw.to_s)
+  arr.map { |v| v.to_f }
+end
+
+def safe_normalize(vec)
+  norm = Math.sqrt(vec.inject(0.0) { |s, v| s + (v * v) })
+  return nil if norm <= 0.0
+  vec.map { |v| v / norm }
+end
+
+def dot2(a, b)
+  sum = 0.0
+  a.each_with_index { |v, i| sum += v * b[i] }
+  sum
+end
+
+def cosine_distance(a, b)
+  1.0 - dot2(a, b)
+end
+
+def extract_id(file_path)
+  path = Pathname.new(file_path)
+  segments = path.each_filename.to_a
+  return File.basename(file_path) if segments.length < 2
+  File.join(segments[-2], segments[-1])
+end
+
+def extract_url(file_path, url_prefix)
+  if url_prefix
+    path = Pathname.new(file_path)
+    filename_without_ext = path.basename(path.extname).to_s
+    "#{url_prefix}#{filename_without_ext}"
+  else
+    "file://#{file_path}"
+  end
+end
+
+def read_jsonl_path(path_cfg, reader_cls)
+  index_file = File.expand_path(path_cfg.out)
+  return [] unless File.exist?(index_file)
+
+  file_cache = {}
+  notes = []
+  File.foreach(index_file).with_index do |line, idx|
+    begin
+      row = JSON.parse(line)
+      emb = safe_float_array(row["embedding"])
+      chunk_idx = row["chunk"].to_i
+      file_path = row["path"]
+      reader = file_cache[file_path] ||= reader_cls.new(file_path).load
+      text = reader.get_chunk(chunk_idx)
+      next if text.nil? || text.strip.empty?
+
+      notes << {
+        path: file_path,
+        chunk: chunk_idx,
+        hash: row["hash"],
+        lookup: path_cfg.name,
+        id: extract_id(file_path),
+        url: extract_url(file_path, path_cfg.url),
+        text: text,
+        embedding: emb
+      }
+    rescue => e
+      STDOUT << "[#{path_cfg.name}] JSONL line #{idx + 1} skipped: #{e.class}: #{e.message}\n"
+    end
+  end
+
+  notes
+end
+
+def read_sqlite_path(path_cfg, reader_cls)
+  file_cache = {}
+  notes = []
+  store = SqliteIndex.new(path_cfg.db_file, path_cfg.db_table)
+  begin
+    store.each_item do |row|
+      file_path = row["path"]
+      chunk_idx = row["chunk"].to_i
+      reader = file_cache[file_path] ||= reader_cls.new(file_path).load
+      text = row["text"] || reader.get_chunk(chunk_idx)
+      next if text.nil? || text.strip.empty?
+
+      notes << {
+        path: file_path,
+        chunk: chunk_idx,
+        hash: row["hash"],
+        lookup: path_cfg.name,
+        id: extract_id(file_path),
+        url: extract_url(file_path, path_cfg.url),
+        text: text,
+        embedding: safe_float_array(row["embedding"])
+      }
+    end
+  ensure
+    store.close
+  end
+
+  notes
+end
+
+def load_all_notes(paths)
+  all = []
+  paths.each do |path_cfg|
+    reader_cls = get_reader(path_cfg.reader)
+    if reader_cls.nil?
+      STDOUT << %(Skip "#{path_cfg.name}": unknown reader "#{path_cfg.reader}"\n)
+      next
+    end
+
+    notes = if path_cfg.db_file && path_cfg.db_table
+      read_sqlite_path(path_cfg, reader_cls)
+    else
+      read_jsonl_path(path_cfg, reader_cls)
+    end
+    STDOUT << %(Loaded #{notes.length} notes from "#{path_cfg.name}"\n)
+    all.concat(notes)
+  end
+  all
+end
+
+def choose_anchor_indices(embeddings)
+  count = embeddings.length
+  return [0, 0, 0] if count == 1
+  return [0, 1, 0] if count == 2
+
+  a = 0
+  b = (0...count).max_by { |i| cosine_distance(embeddings[a], embeddings[i]) }
+  c = (0...count).max_by do |i|
+    [cosine_distance(embeddings[a], embeddings[i]), cosine_distance(embeddings[b], embeddings[i])].min
+  end
+  [a, b, c]
+end
+
+def normalize_to_canvas(values, min_px, max_px)
+  return Array.new(values.length, (min_px + max_px) / 2.0) if values.empty?
+
+  min_v = values.min
+  max_v = values.max
+  span = max_v - min_v
+  return Array.new(values.length, (min_px + max_px) / 2.0) if span.abs < 1e-9
+
+  values.map do |v|
+    ratio = (v - min_v) / span.to_f
+    min_px + ratio * (max_px - min_px)
+  end
+end
+
+def desired_cluster_count(note_count)
+  return 1 if note_count <= 30
+  base = (Math.sqrt(note_count).to_f / 2.2).round
+  [[base, MIN_CLUSTER_COUNT].max, MAX_CLUSTER_COUNT, note_count].min
+end
+
+def sq_dist(a, b)
+  dx = a[0] - b[0]
+  dy = a[1] - b[1]
+  (dx * dx) + (dy * dy)
+end
+
+def kmeans_plus_plus(points, k, rng)
+  centers = [points[rng.rand(points.length)].dup]
+  while centers.length < k
+    d2s = points.map do |p|
+      centers.map { |c| sq_dist(p, c) }.min
+    end
+    total = d2s.inject(0.0, :+)
+    if total <= 0.0
+      centers << points[rng.rand(points.length)].dup
+      next
+    end
+
+    pick = rng.rand * total
+    running = 0.0
+    chosen_idx = d2s.length - 1
+    d2s.each_with_index do |d2, i|
+      running += d2
+      if running >= pick
+        chosen_idx = i
+        break
+      end
+    end
+    centers << points[chosen_idx].dup
+  end
+  centers
+end
+
+def kmeans(points, k, seed_text)
+  rng = Random.new(Digest::SHA256.hexdigest(seed_text)[0, 12].to_i(16) ^ points.length)
+  centers = kmeans_plus_plus(points, k, rng)
+  assignments = Array.new(points.length, 0)
+
+  KMEANS_MAX_ITER.times do
+    changed = false
+
+    points.each_with_index do |p, idx|
+      best_id = 0
+      best_d2 = sq_dist(p, centers[0])
+      (1...centers.length).each do |cid|
+        d2 = sq_dist(p, centers[cid])
+        next unless d2 < best_d2
+        best_d2 = d2
+        best_id = cid
+      end
+      if assignments[idx] != best_id
+        assignments[idx] = best_id
+        changed = true
+      end
+    end
+
+    sums = Array.new(centers.length) { [0.0, 0.0, 0] }
+    points.each_with_index do |p, idx|
+      cid = assignments[idx]
+      sums[cid][0] += p[0]
+      sums[cid][1] += p[1]
+      sums[cid][2] += 1
+    end
+
+    moved = 0.0
+    centers.each_with_index do |c, cid|
+      count = sums[cid][2]
+      if count <= 0
+        centers[cid] = points[rng.rand(points.length)].dup
+        moved += 1.0
+        next
+      end
+      nx = sums[cid][0] / count.to_f
+      ny = sums[cid][1] / count.to_f
+      moved += sq_dist(c, [nx, ny])
+      centers[cid] = [nx, ny]
+    end
+
+    break unless changed
+    break if moved <= KMEANS_EPSILON
+  end
+
+  [centers, assignments]
+end
+
+def merge_small_clusters(points, centers, assignments)
+  loop do
+    members = Hash.new { |h, k| h[k] = [] }
+    assignments.each_with_index { |cid, idx| members[cid] << idx }
+    small = members.select { |_, idxs| idxs.length < MIN_CLUSTER_SIZE }
+    break if small.empty? || centers.length <= 1
+
+    changed_any = false
+    small.keys.each do |cid|
+      idxs = members[cid]
+      next if idxs.nil? || idxs.empty?
+      next if centers.length <= 1
+
+      target = nil
+      best = Float::INFINITY
+      centers.each_with_index do |center, other_cid|
+        next if other_cid == cid
+        d2 = sq_dist(centers[cid], center)
+        if d2 < best
+          best = d2
+          target = other_cid
+        end
+      end
+      next if target.nil?
+      idxs.each { |i| assignments[i] = target }
+      changed_any = true
+    end
+
+    break unless changed_any
+
+    used_ids = assignments.uniq.sort
+    remap = {}
+    used_ids.each_with_index { |old_id, new_id| remap[old_id] = new_id }
+    assignments.map! { |old| remap[old] }
+    centers = used_ids.map { |old_id| centers[old_id] }
+  end
+
+  [centers, assignments]
+end
+
+def compute_cluster_stats(points, members)
+  stats = {}
+  members.each do |cid, idxs|
+    cx = idxs.inject(0.0) { |s, i| s + points[i][0] } / idxs.length.to_f
+    cy = idxs.inject(0.0) { |s, i| s + points[i][1] } / idxs.length.to_f
+    dx = Math.sqrt(idxs.inject(0.0) { |s, i| s + ((points[i][0] - cx) ** 2) } / idxs.length.to_f)
+    dy = Math.sqrt(idxs.inject(0.0) { |s, i| s + ((points[i][1] - cy) ** 2) } / idxs.length.to_f)
+    stats[cid] = { cx: cx, cy: cy, dx: dx, dy: dy, count: idxs.length }
+  end
+  stats
+end
+
+def spread_cluster_centers(stats)
+  cluster_ids = stats.keys.sort
+  anchors = cluster_ids.map { |cid| [stats[cid][:cx], stats[cid][:cy]] }
+  centers = anchors.map(&:dup)
+  radii = cluster_ids.map do |cid|
+    s = stats[cid]
+    [58.0, Math.sqrt(s[:count]) * 4.4 + ((s[:dx] + s[:dy]) * 0.68)].max
+  end
+
+  n = centers.length
+  220.times do
+    n.times do |i|
+      centers[i][0] += (anchors[i][0] - centers[i][0]) * 0.028
+      centers[i][1] += (anchors[i][1] - centers[i][1]) * 0.028
+    end
+
+    (0...n).each do |i|
+      ((i + 1)...n).each do |j|
+        dx = centers[j][0] - centers[i][0]
+        dy = centers[j][1] - centers[i][1]
+        dist = Math.sqrt(dx * dx + dy * dy)
+        dist = 0.001 if dist <= 0.001
+
+        min_dist = radii[i] + radii[j] + 34.0
+        next unless dist < min_dist
+
+        push = (min_dist - dist) / 2.0
+        ux = dx / dist
+        uy = dy / dist
+        centers[i][0] -= ux * push
+        centers[i][1] -= uy * push
+        centers[j][0] += ux * push
+        centers[j][1] += uy * push
+      end
+    end
+
+    n.times do |i|
+      margin = radii[i] + 18.0
+      centers[i][0] = [[centers[i][0], MAP_MARGIN + margin].max, MAP_WIDTH - MAP_MARGIN - margin].min
+      centers[i][1] = [[centers[i][1], MAP_MARGIN + margin].max, MAP_HEIGHT - MAP_MARGIN - margin].min
+    end
+  end
+
+  out = {}
+  cluster_ids.each_with_index { |cid, i| out[cid] = centers[i] }
+  out
+end
+
+def reposition_points!(points, members, before_stats, after_centers)
+  members.each do |cid, idxs|
+    old = before_stats[cid]
+    new_c = after_centers[cid]
+    next if old.nil? || new_c.nil?
+
+    stretch = [1.16, 1.02 + Math.log(idxs.length + 1)].max
+    stretch = [stretch, 2.15].min
+
+    idxs.each do |i|
+      ox = points[i][0] - old[:cx]
+      oy = points[i][1] - old[:cy]
+      nx = new_c[0] + (ox * stretch)
+      ny = new_c[1] + (oy * stretch)
+      points[i][0] = [[nx, MAP_MARGIN].max, MAP_WIDTH - MAP_MARGIN].min
+      points[i][1] = [[ny, MAP_MARGIN].max, MAP_HEIGHT - MAP_MARGIN].min
+    end
+  end
+end
+
+def clip_text(text, max_chars = MAX_LABEL_CHARS)
+  raw = text.to_s
+  raw = raw.gsub(/https?:\/\/\S+/, " ")
+  raw = raw.gsub(/[`*_>#~\-]{2,}/, " ")
+  raw = raw.gsub(/\s+/, " ").strip
+  return raw if raw.length <= max_chars
+  raw[0...max_chars]
+end
+
+STOP_WORDS = %w[
+  the and with from this that into about over under for not are was were been
+  then than when where while what your you ours itself also have has had will
+  they them their there here should could would can cannot etc markdown notes
+  note todo task today yesterday tomorrow after before above below around
+].to_set
+
+def keywords_from_snippets(snippets, limit = 6)
+  tokens = snippets.join(" ").scan(/[\p{Han}]{2,8}|[A-Za-z][A-Za-z0-9_\-]{2,}/)
+  freq = Hash.new(0)
+  tokens.each do |tok|
+    key = tok.downcase
+    next if STOP_WORDS.include?(key)
+    freq[key] += 1
+  end
+  freq.sort_by { |_, c| -c }.first(limit).map(&:first)
+end
+
+def sanitize_label(label)
+  cleaned = label.to_s.gsub(/[\r\n\t]/, " ")
+  cleaned = cleaned.gsub(/[\"'`]/, "")
+  cleaned = cleaned.gsub(/\s+/, " ").strip
+  cleaned = cleaned[0, 42]
+  cleaned
+end
+
+def xml_escape(text)
+  text.to_s
+      .gsub("&", "&amp;")
+      .gsub("<", "&lt;")
+      .gsub(">", "&gt;")
+      .gsub("\"", "&quot;")
+      .gsub("'", "&apos;")
+end
+
+def fallback_label(snippets, cluster_index)
+  words = keywords_from_snippets(snippets, 3)
+  return "Cluster #{cluster_index}" if words.empty?
+  words.join(" ")
+end
+
+def cluster_samples_for_labels(notes, points, members, stats)
+  members.keys.sort.each_with_index.map do |cid, order_idx|
+    idxs = members[cid]
+    center = stats[cid]
+    ordered = idxs.sort_by do |i|
+      dx = points[i][0] - center[:cx]
+      dy = points[i][1] - center[:cy]
+      (dx * dx) + (dy * dy)
+    end
+
+    sample_idxs = ordered.first([ordered.length, MAX_LABEL_SNIPPETS].min)
+
+    snippets = sample_idxs.map { |i| clip_text(notes[i][:text]) }.reject(&:empty?)
+
+    {
+      cluster_id: cid,
+      cluster_index: order_idx + 1,
+      snippets: snippets
+    }
+  end
+end
+
+def build_label_prompt(cluster_sample)
+  notes_xml = cluster_sample[:snippets].each_with_index.map do |snippet, idx|
+    %(    <note rank="#{idx + 1}">#{xml_escape(snippet)}</note>)
+  end.join("\n")
+
+  <<~PROMPT
+    You are naming one knowledge mountain in a cognition map.
+    The model is small, so keep reasoning short and output format strict.
+
+    Return only the label text, nothing else.
+    Rules:
+    - 2 to 5 words in English, or 2 to 10 Chinese characters.
+    - Prefer abstract topical themes.
+    - Do not output filenames, URLs, code syntax, XML tags, punctuation wrappers, or explanations.
+
+    <cluster index="#{cluster_sample[:cluster_index]}">
+      <notes>
+#{notes_xml}
+      </notes>
+    </cluster>
+  PROMPT
+end
+
+def generate_cluster_labels(cluster_samples)
+  return {} if cluster_samples.empty?
+
+  labels = {}
+  cluster_samples.each do |cluster_sample|
+    cluster_index = cluster_sample[:cluster_index]
+    raw_response = nil
+    begin
+      prompt = build_label_prompt(cluster_sample)
+      raw_response = chat([
+        { role: ROLE_SYSTEM, content: "You output only the final map label text." },
+        { role: ROLE_USER, content: prompt }
+      ]).to_s
+
+      label = sanitize_label(raw_response)
+      if label.empty?
+        log_label_warning(
+          "Empty label from LLM for cluster #{cluster_index}",
+          response: raw_response
+        )
+        next
+      end
+      labels[cluster_index] = label
+    rescue => e
+      log_label_warning(
+        "LLM label generation failed for cluster #{cluster_index}",
+        response: raw_response,
+        exception: e
+      )
+    end
+  end
+
+  labels
+end
+
+def build_map_data(notes)
+  raise "No notes available. Run run-index first." if notes.empty?
+
+  vector_dim = nil
+  notes.each_with_index do |note, idx|
+    emb = note[:embedding]
+    if emb.nil? || emb.empty?
+      raise "Missing embedding for note index #{idx} (#{note[:path]}##{note[:chunk]})"
+    end
+    vector_dim ||= emb.length
+    if emb.length != vector_dim
+      raise "Embedding dimension mismatch: expected=#{vector_dim}, got=#{emb.length}, note=#{note[:path]}##{note[:chunk]}"
+    end
+    normalized = safe_normalize(emb)
+    raise "Zero-norm embedding at #{note[:path]}##{note[:chunk]}" if normalized.nil?
+    note[:embedding] = normalized
+  end
+
+  embeddings = notes.map { |n| n[:embedding] }
+  a_idx, b_idx, c_idx = choose_anchor_indices(embeddings)
+  a = embeddings[a_idx]
+  b = embeddings[b_idx]
+  c = embeddings[c_idx]
+
+  raw_x = embeddings.map { |e| dot2(e, a) - dot2(e, b) }
+  raw_y = embeddings.map { |e| dot2(e, c) - 0.5 * (dot2(e, a) + dot2(e, b)) }
+
+  px = normalize_to_canvas(raw_x, MAP_MARGIN, MAP_WIDTH - MAP_MARGIN)
+  py = normalize_to_canvas(raw_y, MAP_MARGIN, MAP_HEIGHT - MAP_MARGIN)
+  points = px.each_with_index.map { |x, i| [x, py[i]] }
+
+  k = desired_cluster_count(notes.length)
+  centers, assignments = kmeans(points, k, "map-kmeans:#{notes.length}:#{vector_dim}")
+  centers, assignments = merge_small_clusters(points, centers, assignments)
+
+  members = Hash.new { |h, cid| h[cid] = [] }
+  assignments.each_with_index { |cid, note_idx| members[cid] << note_idx }
+
+  before_stats = compute_cluster_stats(points, members)
+  spread_centers = spread_cluster_centers(before_stats)
+  reposition_points!(points, members, before_stats, spread_centers)
+  final_stats = compute_cluster_stats(points, members)
+
+  cluster_samples = cluster_samples_for_labels(notes, points, members, final_stats)
+  llm_labels = generate_cluster_labels(cluster_samples)
+
+  cluster_id_order_map = {}
+  clusters = members.keys.sort.each_with_index.map do |cid, order_idx|
+    stat = final_stats[cid]
+    cluster_index = order_idx + 1
+    cluster_id = "mountain-#{cluster_index}"
+    cluster_id_order_map[cid] = cluster_id
+
+    snippets = cluster_samples[order_idx][:snippets]
+    label = llm_labels[cluster_index]
+    if label.to_s.strip.empty?
+      label = fallback_label(snippets, cluster_index)
+    end
+
+    {
+      id: cluster_id,
+      label: label,
+      centerX: stat[:cx].round(2),
+      centerY: stat[:cy].round(2),
+      spreadX: (stat[:dx] + 36.0).round(2),
+      spreadY: (stat[:dy] + 36.0).round(2),
+      noteCount: stat[:count]
+    }
+  end
+
+  notes_payload = notes.each_with_index.map do |n, idx|
+    cid = assignments[idx]
+    {
+      id: "#{n[:lookup]}::#{n[:path]}##{n[:chunk]}",
+      lookup: n[:lookup],
+      path: n[:path],
+      chunk: n[:chunk],
+      hash: n[:hash],
+      title: n[:id],
+      url: n[:url],
+      text: n[:text],
+      x: points[idx][0].round(2),
+      y: points[idx][1].round(2),
+      clusterId: cluster_id_order_map[cid]
+    }
+  end
+
+  {
+    generatedAt: Time.now.utc.iso8601,
+    noteCount: notes_payload.length,
+    vectorDim: vector_dim,
+    width: MAP_WIDTH,
+    height: MAP_HEIGHT,
+    clusters: clusters.sort_by { |c| -c[:noteCount] },
+    notes: notes_payload
+  }
+end
+
+begin
+  map_out_file = map_out_file!
+
+  if should_start_ollama?
+    ok = OllamaService.ensure_started(CONFIG)
+    exit 9 unless ok
+  end
+
+  target_paths = resolve_target_paths
+  STDOUT << "Selected paths: #{target_paths.map(&:name).join(", ")}\n"
+
+  notes = load_all_notes(target_paths)
+  map_data = build_map_data(notes)
+
+  out_dir = File.dirname(map_out_file)
+  FileUtils.mkdir_p(out_dir) unless Dir.exist?(out_dir)
+  File.write(map_out_file, JSON.pretty_generate(map_data))
+
+  STDOUT << "Map data generated: #{map_out_file}\n"
+  STDOUT << "Notes: #{map_data[:noteCount]}, mountains: #{map_data[:clusters].length}, vector_dim: #{map_data[:vectorDim]}\n"
+rescue => e
+  STDOUT << "run-index-map failed: #{e.class}: #{e.message}\n"
+  STDOUT << "Backtrace: #{e.backtrace&.first}\n"
+  exit 1
+end

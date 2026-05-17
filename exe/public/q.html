@@ -304,6 +304,7 @@
     <nav class="top-nav">
         <a href="q.html" class="active">Search</a>
         <a href="graph.html">Graph</a>
+        <a href="map.html">Map</a>
         <a href="reader.html">Reader</a>
         <a href="duplicate.html">Duplicates</a>
         <a href="random.html">Random</a>
@@ -333,6 +334,7 @@
             const statusMessage = document.getElementById('status-message');
             let retrievedNotes = [];
             let activeQuery = '';
+            let startupExploreNote = null;
 
             function setStatus(message, isError = false) {
                 statusMessage.textContent = message;
@@ -346,6 +348,26 @@
             function setSearchButtonsDisabled(disabled) {
                 searchButton.disabled = disabled;
                 searchPlusButton.disabled = disabled;
+            }
+
+            function consumeExplorePayloadFromUrl() {
+                const params = new URLSearchParams(window.location.search);
+                const exploreKey = params.get('exploreKey');
+                if (!exploreKey) return null;
+
+                try {
+                    const payload = localStorage.getItem(exploreKey);
+                    if (!payload) return null;
+                    const parsed = JSON.parse(payload);
+                    const note = parsed && typeof parsed.note === 'string' ? parsed.note.trim() : '';
+                    localStorage.removeItem(exploreKey);
+                    return note || null;
+                } catch (err) {
+                    console.error(err);
+                    return null;
+                } finally {
+                    window.history.replaceState({}, '', window.location.pathname);
+                }
             }
 
             function renderEmpty(message) {
@@ -445,6 +467,11 @@
                         pathsList.appendChild(li);
                     });
                     setStatus('Ready. Enter a query and run Search or Search+.');
+                    if (startupExploreNote) {
+                        searchInput.value = startupExploreNote;
+                        startupExploreNote = null;
+                        performSearch();
+                    }
                 })
                 .catch(() => setStatus('Unable to load paths. Check if the API is running.', true));
 
@@ -596,6 +623,11 @@
                     performSearch();
                 }
             });
+
+            startupExploreNote = consumeExplorePayloadFromUrl();
+            if (startupExploreNote) {
+                setStatus('Loaded explore note from map, running search...');
+            }
         });
     </script>
 </body>

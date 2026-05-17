@@ -13,6 +13,10 @@
         "token": "",
         "cacheDir": ""
     },
+    "map": {
+        "path": "map_data.json",
+        "includePaths": ["temp"]
+    },
     "dismissedDuplicatesFile": "dismissed.txt",
     "paths": [
         {

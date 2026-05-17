@@ -9,6 +9,7 @@
 
 require "json"
 require "set"
+require "pathname"
 begin
     require "bundler/setup"
 rescue LoadError
@@ -32,8 +33,11 @@ if ARGV.length != 1
     exit 1
 end
 
+CONFIG_FILE = File.expand_path(ARGV[0])
+CONFIG_BASE_DIR = File.dirname(CONFIG_FILE)
+
 begin
-    CONFIG = ConfigLoader.load_config(ARGV[0], with_path_map: true)
+    CONFIG = ConfigLoader.load_config(CONFIG_FILE, with_path_map: true)
 rescue => e
     STDOUT << "Config error: #{e.message}\n"
     exit 1
@@ -68,6 +72,19 @@ def resolve_lookup_paths(selected, default_to_search_default: false)
     end
 
     names.map { |name| CONFIG.path_map[name] }.compact
+end
+
+def map_data_file_path
+    map_cfg = CONFIG.respond_to?(:map) ? CONFIG.map : nil
+    configured = if map_cfg.respond_to?(:path)
+        map_cfg.path
+    elsif map_cfg.is_a?(Hash)
+        map_cfg[:path] || map_cfg["path"]
+    end.to_s.strip
+    raise %(Config field "map.path" is required for map endpoints) if configured.empty?
+    raw = configured
+    path = Pathname.new(raw)
+    path.absolute? ? path.to_s : File.expand_path(raw, CONFIG_BASE_DIR)
 end
 
 def merge_entries_by_chunk(entries)
@@ -192,6 +209,29 @@ class SimpleRagServer < Sinatra::Application
         content_type :json
 
         CONFIG.paths.map { |p| { name: p.name, searchDefault: p.searchDefault } }.to_json
+    end
+
+    # return generated cognition-map data JSON
+    get "/map_data" do
+        content_type :json
+
+        begin
+            path = map_data_file_path
+        rescue => e
+            status 500
+            next({ error: e.message }.to_json)
+        end
+        unless File.exist?(path)
+            status 404
+            next({ error: "Map data not found. Run run-index-map first. expected=#{path}" }.to_json)
+        end
+
+        begin
+            JSON.parse(File.read(path)).to_json
+        rescue => e
+            status 500
+            { error: "Failed to load map data: #{e.class}: #{e.message}" }.to_json
+        end
     end
 
     # query within the paths
