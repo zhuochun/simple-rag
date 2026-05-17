@@ -5,8 +5,6 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Cognition Map</title>
     <style>
-        @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&display=swap');
-
         :root {
             --bg: #0f1217;
             --panel: #141922d9;
@@ -26,7 +24,7 @@
             margin: 0;
             min-height: 100%;
             color: var(--text);
-            font-family: "Space Grotesk", "Segoe UI", sans-serif;
+            font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
             background:
                 radial-gradient(circle at 14% 10%, #1b2230 0%, #1b223000 36%),
                 radial-gradient(circle at 82% 24%, #1c2535 0%, #1c253500 38%),
@@ -309,6 +307,7 @@ document.addEventListener("DOMContentLoaded", function() {
         data: null,
         notes: [],
         clusters: [],
+        terrain: null,
         camera: { x: 0, y: 0, k: 1 },
         hovered: null,
         selected: null,
@@ -317,8 +316,23 @@ document.addEventListener("DOMContentLoaded", function() {
         dragMoved: false,
         dragStart: { x: 0, y: 0 },
         lastPointer: { x: 0, y: 0 },
-        visibleLookups: new Set()
+        visibleLookups: new Set(),
+        filterReady: false
     };
+
+    const TERRAIN_LEVEL_RATIOS = [
+        0.022, 0.034, 0.05, 0.072, 0.1,
+        0.134, 0.175, 0.224, 0.282, 0.35,
+        0.43, 0.52, 0.62, 0.73, 0.84
+    ];
+
+    function clamp(value, min, max) {
+        return Math.max(min, Math.min(max, value));
+    }
+
+    function markTerrainDirty() {
+        state.terrain = null;
+    }
 
     function hashString(text) {
         let h = 0;
@@ -377,18 +391,28 @@ document.addEventListener("DOMContentLoaded", function() {
     }
 
     function resetView() {
-        const bounds = mapBounds();
+        const world = mapBounds();
+        const bounds = terrainViewBounds() || {
+            minX: 0,
+            minY: 0,
+            maxX: world.width,
+            maxY: world.height
+        };
         const width = stage.clientWidth || 1;
         const height = stage.clientHeight || 1;
-        const kx = (width * 0.9) / bounds.width;
-        const ky = (height * 0.9) / bounds.height;
-        state.camera.k = Math.max(0.2, Math.min(3.2, Math.min(kx, ky)));
-        state.camera.x = (width - bounds.width * state.camera.k) / 2;
-        state.camera.y = (height - bounds.height * state.camera.k) / 2;
+        const contentWidth = Math.max(1, bounds.maxX - bounds.minX);
+        const contentHeight = Math.max(1, bounds.maxY - bounds.minY);
+        const centerX = (bounds.minX + bounds.maxX) / 2;
+        const centerY = (bounds.minY + bounds.maxY) / 2;
+        const kx = (width * 0.9) / contentWidth;
+        const ky = (height * 0.88) / contentHeight;
+        state.camera.k = Math.max(0.2, Math.min(3.2, Math.min(kx, ky) * 1.16));
+        state.camera.x = (width / 2) - (centerX * state.camera.k);
+        state.camera.y = (height / 2) - (centerY * state.camera.k);
     }
 
     function noteVisible(note) {
-        if (state.visibleLookups.size === 0) return true;
+        if (!state.filterReady) return true;
         return state.visibleLookups.has(note.lookup);
     }
 
@@ -426,78 +450,333 @@ document.addEventListener("DOMContentLoaded", function() {
         ctx.restore();
     }
 
-    function drawWarpedRing(cx, cy, rx, ry, phase, wobble) {
-        const steps = 76;
-        ctx.beginPath();
-        for (let i = 0; i <= steps; i += 1) {
-            const a = (i / steps) * Math.PI * 2;
-            const noise = 1
-                + Math.sin((a * 3.0) + phase) * wobble
-                + Math.cos((a * 5.0) - phase * 0.9) * wobble * 0.6;
-            const wx = cx + Math.cos(a) * rx * noise;
-            const wy = cy + Math.sin(a) * ry * noise;
-            if (i === 0) {
-                ctx.moveTo(wx, wy);
-            } else {
-                ctx.lineTo(wx, wy);
+    function edgePoint(edge, x0, y0, x1, y1, tl, tr, br, bl, level) {
+        function interp(ax, ay, av, bx, by, bv) {
+            const span = bv - av;
+            const t = Math.abs(span) < 1e-9 ? 0.5 : clamp((level - av) / span, 0, 1);
+            return [
+                ax + ((bx - ax) * t),
+                ay + ((by - ay) * t)
+            ];
+        }
+
+        if (edge === 0) return interp(x0, y0, tl, x1, y0, tr);
+        if (edge === 1) return interp(x1, y0, tr, x1, y1, br);
+        if (edge === 2) return interp(x0, y1, bl, x1, y1, br);
+        return interp(x0, y0, tl, x0, y1, bl);
+    }
+
+    function buildContourSegments(values, cols, rows, originX, originY, cellSize, level) {
+        const segments = [];
+
+        function addSegment(edgeA, edgeB, x0, y0, x1, y1, tl, tr, br, bl) {
+            const a = edgePoint(edgeA, x0, y0, x1, y1, tl, tr, br, bl, level);
+            const b = edgePoint(edgeB, x0, y0, x1, y1, tl, tr, br, bl, level);
+            segments.push([a[0], a[1], b[0], b[1]]);
+        }
+
+        for (let row = 0; row < rows - 1; row += 1) {
+            const y0 = originY + (row * cellSize);
+            const y1 = y0 + cellSize;
+            for (let col = 0; col < cols - 1; col += 1) {
+                const x0 = originX + (col * cellSize);
+                const x1 = x0 + cellSize;
+                const idx = (row * cols) + col;
+                const tl = values[idx];
+                const tr = values[idx + 1];
+                const bl = values[idx + cols];
+                const br = values[idx + cols + 1];
+
+                let cellCase = 0;
+                if (tl >= level) cellCase |= 1;
+                if (tr >= level) cellCase |= 2;
+                if (br >= level) cellCase |= 4;
+                if (bl >= level) cellCase |= 8;
+
+                if (cellCase === 0 || cellCase === 15) continue;
+
+                const center = (tl + tr + br + bl) / 4;
+                switch (cellCase) {
+                    case 1:
+                    case 14:
+                        addSegment(3, 0, x0, y0, x1, y1, tl, tr, br, bl);
+                        break;
+                    case 2:
+                    case 13:
+                        addSegment(0, 1, x0, y0, x1, y1, tl, tr, br, bl);
+                        break;
+                    case 3:
+                    case 12:
+                        addSegment(3, 1, x0, y0, x1, y1, tl, tr, br, bl);
+                        break;
+                    case 4:
+                    case 11:
+                        addSegment(1, 2, x0, y0, x1, y1, tl, tr, br, bl);
+                        break;
+                    case 5:
+                        if (center >= level) {
+                            addSegment(0, 1, x0, y0, x1, y1, tl, tr, br, bl);
+                            addSegment(2, 3, x0, y0, x1, y1, tl, tr, br, bl);
+                        } else {
+                            addSegment(3, 0, x0, y0, x1, y1, tl, tr, br, bl);
+                            addSegment(1, 2, x0, y0, x1, y1, tl, tr, br, bl);
+                        }
+                        break;
+                    case 6:
+                    case 9:
+                        addSegment(0, 2, x0, y0, x1, y1, tl, tr, br, bl);
+                        break;
+                    case 7:
+                    case 8:
+                        addSegment(3, 2, x0, y0, x1, y1, tl, tr, br, bl);
+                        break;
+                    case 10:
+                        if (center >= level) {
+                            addSegment(3, 0, x0, y0, x1, y1, tl, tr, br, bl);
+                            addSegment(1, 2, x0, y0, x1, y1, tl, tr, br, bl);
+                        } else {
+                            addSegment(0, 1, x0, y0, x1, y1, tl, tr, br, bl);
+                            addSegment(2, 3, x0, y0, x1, y1, tl, tr, br, bl);
+                        }
+                        break;
+                }
             }
         }
-        ctx.closePath();
+
+        return segments;
+    }
+
+    function buildTerrain(notes) {
+        const bounds = mapBounds();
+        const padding = 90;
+        const cellSize = Math.round(clamp(Math.min(bounds.width, bounds.height) / 96, 14, 22));
+        const sigma = clamp(Math.sqrt(bounds.width * bounds.height) / 36, cellSize * 2.8, 76);
+        const radius = sigma * 3;
+        const originX = -padding;
+        const originY = -padding;
+        const cols = Math.ceil((bounds.width + (padding * 2)) / cellSize) + 1;
+        const rows = Math.ceil((bounds.height + (padding * 2)) / cellSize) + 1;
+        const values = new Float32Array(cols * rows);
+
+        notes.forEach(note => {
+            const nx = Number(note.x);
+            const ny = Number(note.y);
+            if (!Number.isFinite(nx) || !Number.isFinite(ny)) return;
+
+            const minCol = clamp(Math.floor((nx - radius - originX) / cellSize), 0, cols - 1);
+            const maxCol = clamp(Math.ceil((nx + radius - originX) / cellSize), 0, cols - 1);
+            const minRow = clamp(Math.floor((ny - radius - originY) / cellSize), 0, rows - 1);
+            const maxRow = clamp(Math.ceil((ny + radius - originY) / cellSize), 0, rows - 1);
+
+            for (let row = minRow; row <= maxRow; row += 1) {
+                const gy = originY + (row * cellSize);
+                const dy = (gy - ny) / sigma;
+                const dy2 = dy * dy;
+                const rowOffset = row * cols;
+                for (let col = minCol; col <= maxCol; col += 1) {
+                    const gx = originX + (col * cellSize);
+                    const dx = (gx - nx) / sigma;
+                    const dist2 = (dx * dx) + dy2;
+                    if (dist2 <= 9) {
+                        values[rowOffset + col] += Math.exp(-0.5 * dist2);
+                    }
+                }
+            }
+        });
+
+        let max = 0;
+        for (let i = 0; i < values.length; i += 1) {
+            if (values[i] > max) max = values[i];
+        }
+
+        const contours = max <= 0
+            ? []
+            : TERRAIN_LEVEL_RATIOS.map((ratio, index) => {
+                const level = max * ratio;
+                return {
+                    ratio,
+                    index,
+                    level,
+                    major: index % 4 === 0,
+                    segments: buildContourSegments(values, cols, rows, originX, originY, cellSize, level)
+                };
+            });
+
+        return { values, cols, rows, originX, originY, cellSize, max, contours };
+    }
+
+    function currentTerrain() {
+        if (!state.terrain) {
+            state.terrain = buildTerrain(visibleNotes());
+        }
+        return state.terrain;
+    }
+
+    function terrainViewBounds() {
+        const terrain = currentTerrain();
+        if (!terrain || terrain.max <= 0) return null;
+
+        const threshold = terrain.max * 0.035;
+        let minX = Infinity;
+        let minY = Infinity;
+        let maxX = -Infinity;
+        let maxY = -Infinity;
+
+        for (let row = 0; row < terrain.rows; row += 1) {
+            for (let col = 0; col < terrain.cols; col += 1) {
+                const value = terrain.values[(row * terrain.cols) + col];
+                if (value < threshold) continue;
+
+                const x = terrain.originX + (col * terrain.cellSize);
+                const y = terrain.originY + (row * terrain.cellSize);
+                minX = Math.min(minX, x);
+                minY = Math.min(minY, y);
+                maxX = Math.max(maxX, x + terrain.cellSize);
+                maxY = Math.max(maxY, y + terrain.cellSize);
+            }
+        }
+
+        if (!Number.isFinite(minX)) return null;
+
+        const world = mapBounds();
+        const pad = terrain.cellSize * 3;
+        return {
+            minX: clamp(minX - pad, 0, world.width),
+            minY: clamp(minY - pad, 0, world.height),
+            maxX: clamp(maxX + pad, 0, world.width),
+            maxY: clamp(maxY + pad, 0, world.height)
+        };
     }
 
     function drawContours() {
+        const terrain = currentTerrain();
+        if (!terrain || terrain.max <= 0) return;
+
+        ctx.save();
+        ctx.lineCap = "round";
+        ctx.lineJoin = "round";
+
+        terrain.contours.forEach(contour => {
+            if (contour.segments.length === 0) return;
+
+            const depth = terrain.contours.length <= 1
+                ? 1
+                : contour.index / (terrain.contours.length - 1);
+            const alpha = 0.012 + (Math.pow(depth, 1.55) * 0.262);
+            const majorBoost = contour.major && depth > 0.28 ? 0.04 : 0;
+
+            ctx.beginPath();
+            ctx.strokeStyle = `rgba(232, 238, 250, ${Math.min(0.34, alpha + majorBoost)})`;
+            ctx.lineWidth = 0.36 + (depth * 0.52) + (contour.major && depth > 0.28 ? 0.13 : 0);
+
+            contour.segments.forEach(segment => {
+                const a = worldToScreen(segment[0], segment[1]);
+                const b = worldToScreen(segment[2], segment[3]);
+                ctx.moveTo(a.x, a.y);
+                ctx.lineTo(b.x, b.y);
+            });
+            ctx.stroke();
+        });
+
+        ctx.restore();
+    }
+
+    function drawPeakMarker(x, y, size) {
+        ctx.beginPath();
+        ctx.moveTo(x, y - size);
+        ctx.lineTo(x + (size * 0.86), y + (size * 0.62));
+        ctx.lineTo(x - (size * 0.86), y + (size * 0.62));
+        ctx.closePath();
+        ctx.fillStyle = "rgba(244, 248, 255, 0.58)";
+        ctx.strokeStyle = "rgba(255, 255, 255, 0.3)";
+        ctx.lineWidth = 1;
+        ctx.fill();
+        ctx.stroke();
+    }
+
+    function drawClusterLabels() {
         const visibleCount = clusterVisibleCount();
-        const clusters = state.clusters.slice().sort((a, b) => a.noteCount - b.noteCount);
         const labelCandidates = state.clusters
             .map(cluster => ({ cluster, count: visibleCount.get(cluster.id) || 0 }))
             .filter(item => item.count > 0)
             .sort((a, b) => b.count - a.count)
-            .slice(0, 10);
-        const labelAllow = new Set(labelCandidates.map(item => item.cluster.id));
+            .slice(0, 16);
 
-        clusters.forEach(cluster => {
-            const activeCount = visibleCount.get(cluster.id) || 0;
-            if (activeCount <= 0) return;
+        ctx.save();
+        const placed = [];
+        const stageWidth = stage.clientWidth;
+        const stageHeight = stage.clientHeight;
+
+        labelCandidates.forEach(item => {
+            const cluster = item.cluster;
+            const activeCount = item.count;
+            if (activeCount < 36 || state.camera.k < 0.22) return;
 
             const p = worldToScreen(cluster.centerX, cluster.centerY);
-            const spreadX = cluster.spreadX * state.camera.k;
-            const spreadY = cluster.spreadY * state.camera.k;
-            const ringCount = Math.max(7, Math.min(16, Math.round(Math.sqrt(activeCount) * 1.45 + 5)));
-            const seed = hashString(cluster.id);
-            const basePhase = (seed % 628) / 100.0;
+            const fontSize = Math.max(10, Math.min(12.4, 9.6 + Math.sqrt(activeCount) * 0.32));
+            const markerSize = Math.max(3.8, Math.min(5.4, fontSize * 0.4));
+            ctx.font = `600 ${fontSize}px "Segoe UI", "Microsoft YaHei", sans-serif`;
 
-            ctx.save();
-            ctx.strokeStyle = "rgba(235, 242, 255, 0.28)";
-            ctx.lineWidth = 1;
+            const rawLabel = displayClusterLabel(cluster.label);
+            if (!rawLabel) return;
 
-            for (let ring = ringCount; ring >= 1; ring -= 1) {
-                const t = ring / ringCount;
-                const rx = (spreadX * 0.88) + (spreadX * 1.6 * t) + (7 * t);
-                const ry = (spreadY * 0.88) + (spreadY * 1.6 * t) + (7 * t);
-                drawWarpedRing(
-                    p.x,
-                    p.y,
-                    rx,
-                    ry,
-                    basePhase + ring * 0.25,
-                    0.022 + (0.009 * (1 - t))
-                );
-                ctx.stroke();
+            const label = fitLabelToWidth(rawLabel, 126);
+            const metrics = ctx.measureText(label);
+            const labelY = p.y + markerSize + 5;
+            const box = {
+                left: p.x - (metrics.width / 2) - 5,
+                right: p.x + (metrics.width / 2) + 5,
+                top: labelY - 4,
+                bottom: labelY + fontSize + 4
+            };
+
+            if (
+                box.left < 6 ||
+                box.right > stageWidth - 6 ||
+                box.top < 6 ||
+                box.bottom > stageHeight - 6 ||
+                placed.some(existing => boxesOverlap(box, existing))
+            ) {
+                return;
             }
+            placed.push(box);
 
-            if (labelAllow.has(cluster.id) && activeCount >= 14 && state.camera.k >= 0.26) {
-                ctx.fillStyle = "rgba(246, 250, 255, 0.92)";
-                ctx.font = `600 ${Math.max(12, Math.min(16, 11 + Math.sqrt(activeCount) * 0.75))}px "Space Grotesk", sans-serif`;
-                ctx.textAlign = "center";
-                ctx.textBaseline = "middle";
-                ctx.shadowColor = "rgba(4, 8, 16, 0.8)";
-                ctx.shadowBlur = 7;
-                ctx.fillText(cluster.label, p.x, p.y);
-                ctx.shadowBlur = 0;
-            }
+            ctx.shadowColor = "rgba(4, 8, 16, 0.78)";
+            ctx.shadowBlur = 5;
+            drawPeakMarker(p.x, p.y - markerSize - 1, markerSize);
 
-            ctx.restore();
+            ctx.fillStyle = "rgba(246, 250, 255, 0.86)";
+            ctx.textAlign = "center";
+            ctx.textBaseline = "top";
+            ctx.fillText(label, p.x, labelY);
         });
+        ctx.restore();
+    }
+
+    function drawTerrainRelief() {
+        const terrain = currentTerrain();
+        if (!terrain || terrain.max <= 0) return;
+
+        const step = state.camera.k < 0.5 ? 2 : 1;
+        const screenSize = Math.max(1, terrain.cellSize * state.camera.k * step);
+
+        ctx.save();
+        for (let row = 0; row < terrain.rows; row += step) {
+            for (let col = 0; col < terrain.cols; col += step) {
+                const value = terrain.values[(row * terrain.cols) + col];
+                if (value <= terrain.max * 0.025) continue;
+
+                const t = value / terrain.max;
+                const alpha = 0.012 + (Math.pow(t, 1.35) * 0.055);
+                const p = worldToScreen(
+                    terrain.originX + (col * terrain.cellSize),
+                    terrain.originY + (row * terrain.cellSize)
+                );
+                ctx.fillStyle = `rgba(236, 242, 255, ${alpha})`;
+                ctx.fillRect(p.x, p.y, screenSize, screenSize);
+            }
+        }
+        ctx.restore();
     }
 
     function drawNotes() {
@@ -512,13 +791,13 @@ document.addEventListener("DOMContentLoaded", function() {
             const p = worldToScreen(note.x, note.y);
             const isHover = state.hovered && state.hovered.id === note.id;
             const isSelected = state.selected && state.selected.id === note.id;
-            const radius = isSelected ? 3.1 : (isHover ? 2.4 : 1.45);
+            const radius = isSelected ? 2.6 : (isHover ? 1.9 : 1.05);
 
             ctx.beginPath();
             ctx.arc(p.x, p.y, radius, 0, Math.PI * 2);
             ctx.fillStyle = isSelected
-                ? "rgba(255, 255, 255, 0.98)"
-                : (isHover ? "rgba(250, 253, 255, 0.9)" : "rgba(226, 235, 255, 0.4)");
+                ? "rgba(255, 255, 255, 0.88)"
+                : (isHover ? "rgba(250, 253, 255, 0.72)" : "rgba(226, 235, 255, 0.26)");
             ctx.fill();
         }
     }
@@ -528,8 +807,10 @@ document.addEventListener("DOMContentLoaded", function() {
         const height = stage.clientHeight;
         ctx.clearRect(0, 0, width, height);
         drawBackgroundGrid();
+        drawTerrainRelief();
         drawContours();
         drawNotes();
+        drawClusterLabels();
     }
 
     function pointerPos(evt) {
@@ -561,6 +842,28 @@ document.addEventListener("DOMContentLoaded", function() {
     function summarizeText(text, max = 260) {
         const compact = String(text || "").replace(/\s+/g, " ").trim();
         return compact.length > max ? `${compact.slice(0, max)}...` : compact;
+    }
+
+    function displayClusterLabel(label) {
+        const cleaned = String(label || "Mountain")
+            .replace(/<\|[^|]+\|>/g, " ")
+            .replace(/[_-]+/g, " ")
+            .replace(/\s+/g, " ")
+            .trim();
+        if (/^主题\d+$/i.test(cleaned)) return "";
+        return cleaned || "Mountain";
+    }
+
+    function fitLabelToWidth(label, maxWidth) {
+        let fitted = label;
+        while (fitted.length > 4 && ctx.measureText(fitted).width > maxWidth) {
+            fitted = fitted.slice(0, -1).trim();
+        }
+        return fitted.length < label.length ? `${fitted}...` : fitted;
+    }
+
+    function boxesOverlap(a, b) {
+        return a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top;
     }
 
     function renderNotePanel(note) {
@@ -617,6 +920,9 @@ document.addEventListener("DOMContentLoaded", function() {
         } else {
             state.visibleLookups.delete(name);
         }
+        markTerrainDirty();
+        state.hovered = null;
+        showTooltip(null);
         draw();
         setStatus(`Showing ${visibleNotes().length} notes`);
     }
@@ -624,6 +930,8 @@ document.addEventListener("DOMContentLoaded", function() {
     function renderPaths(lookups) {
         pathsList.innerHTML = "";
         state.visibleLookups = new Set(lookups);
+        state.filterReady = true;
+        markTerrainDirty();
         lookups.forEach(name => {
             const li = document.createElement("li");
             const id = `path-${hashString(name)}`;
@@ -659,6 +967,7 @@ document.addEventListener("DOMContentLoaded", function() {
                 state.data = data;
                 state.notes = Array.isArray(data.notes) ? data.notes : [];
                 state.clusters = Array.isArray(data.clusters) ? data.clusters : [];
+                markTerrainDirty();
                 const lookups = Array.from(new Set(state.notes.map(n => n.lookup).filter(Boolean))).sort();
                 renderPaths(lookups);
                 renderMeta(data);

@@ -54,10 +54,13 @@ MAP_MARGIN = 140
 MIN_CLUSTER_COUNT = 1
 MAX_CLUSTER_COUNT = 18
 MIN_CLUSTER_SIZE = 3
-MAX_LABEL_SNIPPETS = 5
-MAX_LABEL_CHARS = 220
+MAX_LABEL_SNIPPETS = 12
+MAX_LABEL_CHARS = 100
+MAX_LABEL_ATTEMPTS = 3
 KMEANS_MAX_ITER = 24
 KMEANS_EPSILON = 1e-5
+CLUSTER_LAYOUT_PAD_X = 220.0
+CLUSTER_LAYOUT_PAD_Y = 120.0
 
 def config_value(section, key)
   return nil if section.nil?
@@ -445,20 +448,51 @@ def compute_cluster_stats(points, members)
   stats
 end
 
+def scale_value(value, src_min, src_max, dst_min, dst_max)
+  span = src_max - src_min
+  return (dst_min + dst_max) / 2.0 if span.abs < 1e-9
+
+  dst_min + ((value - src_min) / span.to_f) * (dst_max - dst_min)
+end
+
+def expanded_cluster_anchors(stats, cluster_ids)
+  return {} if cluster_ids.empty?
+
+  anchors = cluster_ids.map { |cid| [stats[cid][:cx], stats[cid][:cy]] }
+  return { cluster_ids.first => [MAP_WIDTH / 2.0, MAP_HEIGHT / 2.0] } if anchors.length == 1
+
+  min_x, max_x = anchors.map(&:first).minmax
+  min_y, max_y = anchors.map(&:last).minmax
+  target_min_x = CLUSTER_LAYOUT_PAD_X
+  target_max_x = MAP_WIDTH - CLUSTER_LAYOUT_PAD_X
+  target_min_y = CLUSTER_LAYOUT_PAD_Y
+  target_max_y = MAP_HEIGHT - CLUSTER_LAYOUT_PAD_Y
+
+  out = {}
+  cluster_ids.each_with_index do |cid, idx|
+    raw_x, raw_y = anchors[idx]
+    x = scale_value(raw_x, min_x, max_x, target_min_x, target_max_x)
+    y = scale_value(raw_y, min_y, max_y, target_min_y, target_max_y)
+    out[cid] = [x, y]
+  end
+  out
+end
+
 def spread_cluster_centers(stats)
   cluster_ids = stats.keys.sort
-  anchors = cluster_ids.map { |cid| [stats[cid][:cx], stats[cid][:cy]] }
-  centers = anchors.map(&:dup)
   radii = cluster_ids.map do |cid|
     s = stats[cid]
     [58.0, Math.sqrt(s[:count]) * 4.4 + ((s[:dx] + s[:dy]) * 0.68)].max
   end
+  expanded_anchors = expanded_cluster_anchors(stats, cluster_ids)
+  anchors = cluster_ids.map { |cid| expanded_anchors[cid] || [stats[cid][:cx], stats[cid][:cy]] }
+  centers = anchors.map(&:dup)
 
   n = centers.length
-  220.times do
+  340.times do
     n.times do |i|
-      centers[i][0] += (anchors[i][0] - centers[i][0]) * 0.028
-      centers[i][1] += (anchors[i][1] - centers[i][1]) * 0.028
+      centers[i][0] += (anchors[i][0] - centers[i][0]) * 0.052
+      centers[i][1] += (anchors[i][1] - centers[i][1]) * 0.052
     end
 
     (0...n).each do |i|
@@ -468,7 +502,7 @@ def spread_cluster_centers(stats)
         dist = Math.sqrt(dx * dx + dy * dy)
         dist = 0.001 if dist <= 0.001
 
-        min_dist = radii[i] + radii[j] + 34.0
+        min_dist = radii[i] + radii[j] + 74.0
         next unless dist < min_dist
 
         push = (min_dist - dist) / 2.0
@@ -513,13 +547,70 @@ def reposition_points!(points, members, before_stats, after_centers)
   end
 end
 
-def clip_text(text, max_chars = MAX_LABEL_CHARS)
+def expand_cluster_layout!(points, members)
+  stats = compute_cluster_stats(points, members)
+  cluster_ids = stats.keys.sort
+  return if cluster_ids.length < 2
+
+  min_x, max_x = cluster_ids.map { |cid| stats[cid][:cx] }.minmax
+  min_y, max_y = cluster_ids.map { |cid| stats[cid][:cy] }.minmax
+  target_min_x = CLUSTER_LAYOUT_PAD_X
+  target_max_x = MAP_WIDTH - CLUSTER_LAYOUT_PAD_X
+  target_min_y = CLUSTER_LAYOUT_PAD_Y
+  target_max_y = MAP_HEIGHT - CLUSTER_LAYOUT_PAD_Y
+
+  cluster_ids.each do |cid|
+    stat = stats[cid]
+    target_x = scale_value(stat[:cx], min_x, max_x, target_min_x, target_max_x)
+    target_y = scale_value(stat[:cy], min_y, max_y, target_min_y, target_max_y)
+    dx = target_x - stat[:cx]
+    dy = target_y - stat[:cy]
+
+    members[cid].each do |idx|
+      points[idx][0] = [[points[idx][0] + dx, MAP_MARGIN].max, MAP_WIDTH - MAP_MARGIN].min
+      points[idx][1] = [[points[idx][1] + dy, MAP_MARGIN].max, MAP_HEIGHT - MAP_MARGIN].min
+    end
+  end
+end
+
+def label_excerpt(text, max_chars = MAX_LABEL_CHARS)
   raw = text.to_s
+  raw = strip_model_artifacts(raw)
   raw = raw.gsub(/https?:\/\/\S+/, " ")
-  raw = raw.gsub(/[`*_>#~\-]{2,}/, " ")
-  raw = raw.gsub(/\s+/, " ").strip
-  return raw if raw.length <= max_chars
-  raw[0...max_chars]
+  raw = raw.gsub(/\[\[[^\]|]+?\|([^\]]+)\]\]/, "\\1")
+  raw = raw.gsub(/\[\[([^\]]+)\]\]/, "\\1")
+  raw = raw.gsub(/\[([^\]]+)\]\([^)]+\)/, "\\1")
+  raw = raw.gsub(/`{1,3}[^`]*`{1,3}/, " ")
+  raw = raw.gsub(/<[^>]+>/, " ")
+  raw = raw.gsub(/[*_~]/, " ")
+
+  lines = raw.lines.map(&:strip).reject(&:empty?)
+  while lines.first&.match?(/\A[#]{1,6}\s+/)
+    lines.shift
+  end
+
+  cleaned = lines.join("\n")
+  cleaned = cleaned.gsub(/\A[-*+]\s+/, "")
+  cleaned = cleaned.gsub(/[#]{1,6}\s*/, "")
+  cleaned = cleaned.gsub(/[>]+/, " ")
+  cleaned = cleaned.gsub(/\s+/, " ").strip
+  return "" if cleaned.empty?
+
+  first_sentence = cleaned[/\A.*?[。.!?！？]/]
+  first_line = lines.first.to_s
+    .gsub(/\A[-*+]\s+/, "")
+    .gsub(/[#]{1,6}\s*/, "")
+    .gsub(/\s+/, " ")
+    .strip
+
+  candidate = [first_sentence, first_line, cleaned[0...max_chars]]
+    .compact
+    .map(&:strip)
+    .reject(&:empty?)
+    .min_by(&:length)
+
+  candidate = candidate.to_s.gsub(/\s+/, " ").strip
+  candidate.length > max_chars ? candidate[0...max_chars].strip : candidate
 end
 
 STOP_WORDS = %w[
@@ -527,25 +618,112 @@ STOP_WORDS = %w[
   then than when where while what your you ours itself also have has had will
   they them their there here should could would can cannot etc markdown notes
   note todo task today yesterday tomorrow after before above below around
+  key need road win thing idea topic theme concept content point issue
+  summary every time elaborate usability tests chatgpt gpt prompt waste resources
 ].to_set
 
+GENERIC_LABEL_WORDS = %w[
+  win key need road attentio affirm keyevent greatapi response event thing idea
+  topic theme concept content point issue summary every time elaborate usability tests
+  chatgpt gpt prompt waste resources
+].to_set
+
+GENERIC_CHINESE_LABEL_FRAGMENTS = %w[
+  它是 一种 这个 那个 我们 他们 你们 但是 如果 因为 所以 需要 可以
+  通过 对于 关于 时候 进行 可能 重要 做事 和学习 学习时 干啥 和几
+  智信 活企 活下去 建立自己 如何 永远是企 永远是 问题库 死胡同 过程性解 避免陷入 联系到
+].freeze
+
 def keywords_from_snippets(snippets, limit = 6)
-  tokens = snippets.join(" ").scan(/[\p{Han}]{2,8}|[A-Za-z][A-Za-z0-9_\-]{2,}/)
+  tokens = snippets.join(" ").scan(/[\p{Han}]{2,4}|[A-Za-z][A-Za-z0-9_\-]{2,}/)
   freq = Hash.new(0)
   tokens.each do |tok|
-    key = tok.downcase
+    key = tok.match?(/\p{Han}/) ? tok : tok.downcase
     next if STOP_WORDS.include?(key)
+    next if key.match?(/\p{Han}/) && GENERIC_CHINESE_LABEL_FRAGMENTS.any? { |fragment| key.include?(fragment) }
     freq[key] += 1
   end
   freq.sort_by { |_, c| -c }.first(limit).map(&:first)
 end
 
-def sanitize_label(label)
-  cleaned = label.to_s.gsub(/[\r\n\t]/, " ")
-  cleaned = cleaned.gsub(/[\"'`]/, "")
+def strip_model_artifacts(text)
+  text.to_s
+      .gsub(/<think>.*?<\/think>/mi, " ")
+      .gsub(/<\/?think>/i, " ")
+      .gsub(/<\|[^>]*\|>/, "\n")
+end
+
+def clean_label_fragment(text)
+  cleaned = strip_model_artifacts(text)
+  cleaned = cleaned.gsub(/<[^>]+>/, " ")
+  cleaned = cleaned.gsub(/([a-z])([A-Z])/, "\\1 \\2")
+  cleaned = cleaned.gsub(/\b(?:label|name|title)\s*[:：]\s*/i, " ")
+  cleaned = cleaned.gsub(/[\"'`“”‘’]/, "")
+  cleaned = cleaned.gsub(/[()\[\]{}]/, " ")
+  cleaned = cleaned.gsub(/[\\\/_|]+/, " ")
+  cleaned = cleaned.gsub(/\bapi\b/i, "API")
   cleaned = cleaned.gsub(/\s+/, " ").strip
-  cleaned = cleaned[0, 42]
+  cleaned = cleaned.gsub(/(\p{Han})\s+(\p{Han})/, "\\1\\2")
+  cleaned = cleaned.gsub(/\A[-:：,，.。;；\s]+|[-:：,，.。;；\s]+\z/, "")
   cleaned
+end
+
+def usable_label?(label)
+  cleaned = label.to_s.strip
+  return false if cleaned.empty?
+  return false if cleaned =~ /[<>]/
+  return false if cleaned =~ /https?:|www\.|```/i
+  return false if cleaned =~ /\b(?:cluster|mountain|label|note|filename|untitled)\b/i
+
+  words = cleaned.scan(/[A-Za-z][A-Za-z0-9]*/).map(&:downcase)
+  han_count = cleaned.scan(/\p{Han}/).length
+  word_count = words.length
+  normalized = cleaned.downcase.gsub(/\s+/, "")
+  return false if GENERIC_LABEL_WORDS.include?(normalized)
+  return false if words.any? { |word| GENERIC_LABEL_WORDS.include?(word) }
+  if han_count >= 2
+    return false if cleaned.length > 6
+    return false if GENERIC_CHINESE_LABEL_FRAGMENTS.any? { |fragment| cleaned.include?(fragment) }
+    return false if cleaned.include?("和")
+    return false if cleaned.end_with?("几", "时", "但", "简")
+    return true
+  end
+  return false if word_count == 1 && cleaned.length < 5
+  return word_count <= 5 && cleaned.length <= 36 if word_count > 0
+
+  cleaned.length <= 24
+end
+
+def sanitize_label(label)
+  fragments = strip_model_artifacts(label)
+    .split(/[\r\n]+|[。.!?！？；;]+/)
+    .map { |fragment| clean_label_fragment(fragment) }
+    .reject(&:empty?)
+
+  cleaned = fragments.find { |fragment| usable_label?(fragment) } || fragments.first.to_s
+  cleaned = clean_label_fragment(cleaned)
+  return "" unless usable_label?(cleaned)
+
+  words = cleaned.scan(/[A-Za-z][A-Za-z0-9]*/)
+  if words.length > 5
+    cleaned = words.first(5).join(" ")
+  end
+
+  cleaned[0, 42].strip
+end
+
+def label_key(label)
+  clean_label_fragment(label).downcase.gsub(/\s+/, "")
+end
+
+def add_rejected_label(rejected_labels, candidate)
+  cleaned = clean_label_fragment(candidate)
+  cleaned = cleaned[0, 42].strip
+  key = label_key(cleaned)
+  return if key.empty?
+  return if rejected_labels.any? { |existing| label_key(existing) == key }
+
+  rejected_labels << cleaned
 end
 
 def xml_escape(text)
@@ -557,10 +735,36 @@ def xml_escape(text)
       .gsub("'", "&apos;")
 end
 
-def fallback_label(snippets, cluster_index)
-  words = keywords_from_snippets(snippets, 3)
-  return "Cluster #{cluster_index}" if words.empty?
-  words.join(" ")
+def fallback_label(snippets, cluster_index, used_labels = Set.new)
+  keywords = keywords_from_snippets(snippets, 10)
+  words = keywords.select { |word| word.match?(/\p{Han}/) } +
+          keywords.reject { |word| word.match?(/\p{Han}/) }
+
+  words.each do |word|
+    label = sanitize_label(word)
+    next if label.empty?
+    next if used_labels.include?(label_key(label))
+
+    return label
+  end
+
+  english = keywords.reject { |word| word.match?(/\p{Han}/) }.first(3)
+  unless english.empty?
+    label = sanitize_label(english.join(" "))
+    return label if !label.empty? && !used_labels.include?(label_key(label))
+  end
+
+  "主题#{cluster_index}"
+end
+
+def alternate_duplicate_label(label)
+  chars = label.to_s.scan(/\p{Han}/)
+  if chars.length == 4
+    candidate = (chars[2, 2] + chars[0, 2]).join
+    return candidate if usable_label?(candidate)
+  end
+
+  ""
 end
 
 def cluster_samples_for_labels(notes, points, members, stats)
@@ -575,32 +779,89 @@ def cluster_samples_for_labels(notes, points, members, stats)
 
     sample_idxs = ordered.first([ordered.length, MAX_LABEL_SNIPPETS].min)
 
-    snippets = sample_idxs.map { |i| clip_text(notes[i][:text]) }.reject(&:empty?)
+    snippets = sample_idxs.map { |i| label_excerpt(notes[i][:text]) }.reject(&:empty?)
 
     {
       cluster_id: cid,
       cluster_index: order_idx + 1,
-      snippets: snippets
+      snippets: snippets,
+      keywords: keywords_from_snippets(snippets, 8)
     }
   end
 end
 
-def build_label_prompt(cluster_sample)
+def build_label_prompt(cluster_sample, used_labels: [], rejected_labels: [], attempt: 1)
   notes_xml = cluster_sample[:snippets].each_with_index.map do |snippet, idx|
     %(    <note rank="#{idx + 1}">#{xml_escape(snippet)}</note>)
   end.join("\n")
+  used_xml = used_labels.last(24).map do |label|
+    %(    <label>#{xml_escape(label)}</label>)
+  end.join("\n")
+  rejected_xml = rejected_labels.last(12).map do |label|
+    %(    <label>#{xml_escape(label)}</label>)
+  end.join("\n")
+  retry_note = attempt > 1 ? "    - This is retry #{attempt}. The previous answer failed validation; choose a different valid label.\n" : ""
+  used_block = used_xml.empty? ? "" : <<~USED
+
+    Already used labels. Do not reuse any of these:
+    <used_labels>
+#{used_xml}
+    </used_labels>
+  USED
+  rejected_block = rejected_xml.empty? ? "" : <<~REJECTED
+
+    Rejected labels from previous attempts. Do not reuse these:
+    <rejected_labels>
+#{rejected_xml}
+    </rejected_labels>
+  REJECTED
 
   <<~PROMPT
     You are naming one knowledge mountain in a cognition map.
-    The model is small, so keep reasoning short and output format strict.
+    The model is small, so keep reasoning private and output format strict.
 
     Return only the label text, nothing else.
     Rules:
-    - 2 to 5 words in English, or 2 to 10 Chinese characters.
-    - Prefer abstract topical themes.
-    - Do not output filenames, URLs, code syntax, XML tags, punctuation wrappers, or explanations.
+    - Prefer a polished Chinese label of 2 to 6 characters.
+    - If English is clearly better, use 1 to 3 words.
+    - Prefer short abstract topical themes.
+    - Use neutral written style. Avoid slang, sentence fragments, and invented abbreviations.
+    - Do not output reasoning, filenames, URLs, code syntax, XML tags, punctuation wrappers, or explanations.
+    - Do not output special tokens such as <|endoftext|>, <think>, or </think>.
+    - Do not use the words Cluster, Mountain, Label, or Note.
+    - Avoid generic or broken labels like win, key, need, road, attentio, greatapi.
+#{retry_note}
+
+    Good style examples:
+    关系沟通
+    明智决策
+    科学思维
+    精英思维
+    银行金融
+    Self Regulation
+
+    Bad style examples:
+    干啥不顺
+    招聘和几
+    智信
+    活企
+    活下去
+    建立自己
+    如何坚持
+    永远是企
+    问题库
+    死胡同
+    过程性解
+    避免陷入
+    联系到
+    win
+    key
+    summary every time
+    elaborate usability tests
+#{used_block}#{rejected_block}
 
     <cluster index="#{cluster_sample[:cluster_index]}">
+      <keywords>#{xml_escape(cluster_sample[:keywords].join(", "))}</keywords>
       <notes>
 #{notes_xml}
       </notes>
@@ -612,32 +873,69 @@ def generate_cluster_labels(cluster_samples)
   return {} if cluster_samples.empty?
 
   labels = {}
+  used_label_keys = Set.new
+  used_label_texts = []
   cluster_samples.each do |cluster_sample|
     cluster_index = cluster_sample[:cluster_index]
-    raw_response = nil
-    begin
-      prompt = build_label_prompt(cluster_sample)
-      raw_response = chat([
-        { role: ROLE_SYSTEM, content: "You output only the final map label text." },
-        { role: ROLE_USER, content: prompt }
-      ]).to_s
+    rejected_labels = []
+    assigned_label = nil
 
-      label = sanitize_label(raw_response)
-      if label.empty?
-        log_label_warning(
-          "Empty label from LLM for cluster #{cluster_index}",
-          response: raw_response
+    (1..MAX_LABEL_ATTEMPTS).each do |attempt|
+      raw_response = nil
+      begin
+        prompt = build_label_prompt(
+          cluster_sample,
+          used_labels: used_label_texts,
+          rejected_labels: rejected_labels,
+          attempt: attempt
         )
-        next
+        raw_response = chat([
+          { role: ROLE_SYSTEM, content: "You output only the final map label text." },
+          { role: ROLE_USER, content: prompt }
+        ]).to_s
+
+        label = sanitize_label(raw_response)
+        if label.empty?
+          add_rejected_label(rejected_labels, raw_response)
+          log_label_warning(
+            "Empty label from LLM for cluster #{cluster_index} (attempt #{attempt}/#{MAX_LABEL_ATTEMPTS})",
+            response: raw_response
+          )
+          next
+        end
+
+        key = label_key(label)
+        if used_label_keys.include?(key)
+          add_rejected_label(rejected_labels, label)
+          log_label_warning(
+            "Duplicate label from LLM for cluster #{cluster_index}: #{label} (attempt #{attempt}/#{MAX_LABEL_ATTEMPTS})",
+            response: raw_response
+          )
+          next
+        end
+
+        assigned_label = label
+        break
+      rescue => e
+        add_rejected_label(rejected_labels, raw_response) unless raw_response.nil?
+        log_label_warning(
+          "LLM label generation failed for cluster #{cluster_index} (attempt #{attempt}/#{MAX_LABEL_ATTEMPTS})",
+          response: raw_response,
+          exception: e
+        )
       end
-      labels[cluster_index] = label
-    rescue => e
+    end
+
+    if assigned_label.to_s.strip.empty?
+      assigned_label = fallback_label(cluster_sample[:snippets], cluster_index, used_label_keys)
       log_label_warning(
-        "LLM label generation failed for cluster #{cluster_index}",
-        response: raw_response,
-        exception: e
+        "Using fallback label for cluster #{cluster_index}: #{assigned_label}"
       )
     end
+
+    labels[cluster_index] = assigned_label
+    used_label_keys.add(label_key(assigned_label))
+    used_label_texts << assigned_label
   end
 
   labels
@@ -684,12 +982,14 @@ def build_map_data(notes)
   before_stats = compute_cluster_stats(points, members)
   spread_centers = spread_cluster_centers(before_stats)
   reposition_points!(points, members, before_stats, spread_centers)
+  expand_cluster_layout!(points, members)
   final_stats = compute_cluster_stats(points, members)
 
   cluster_samples = cluster_samples_for_labels(notes, points, members, final_stats)
   llm_labels = generate_cluster_labels(cluster_samples)
 
   cluster_id_order_map = {}
+  final_label_keys = Set.new
   clusters = members.keys.sort.each_with_index.map do |cid, order_idx|
     stat = final_stats[cid]
     cluster_index = order_idx + 1
@@ -699,8 +999,14 @@ def build_map_data(notes)
     snippets = cluster_samples[order_idx][:snippets]
     label = llm_labels[cluster_index]
     if label.to_s.strip.empty?
-      label = fallback_label(snippets, cluster_index)
+      label = fallback_label(snippets, cluster_index, final_label_keys)
     end
+    key = label_key(label)
+    if final_label_keys.include?(key)
+      label = fallback_label(snippets, cluster_index, final_label_keys)
+      key = label_key(label)
+    end
+    final_label_keys.add(key)
 
     {
       id: cluster_id,
