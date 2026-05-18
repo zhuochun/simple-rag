@@ -8,7 +8,7 @@ def openrouter_chat(messages, model, url, opts = {})
     "messages" => messages
   }.merge(opts)
 
-  response = http_post(url, OPENROUTER_KEY, data)
+  response = http_post(url, ENV["DOT_OPENROUTER_KEY"], data)
 
   if response.code != "200"
     raise_http_error("Chat error", response, url)
@@ -28,7 +28,7 @@ def openrouter_embedding(txts, model, url, opts = {})
     "input" => txts
   }.merge(opts)
 
-  response = http_post(url, OPENROUTER_KEY, data)
+  response = http_post(url, ENV["DOT_OPENROUTER_KEY"], data)
 
   if response.code != "200"
     raise_http_error("Embedding error", response, url)

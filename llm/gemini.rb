@@ -28,7 +28,7 @@ def gemini_chat(messages, model, base_url, opts = {})
   end
   data = { "contents" => contents }.merge(opts)
 
-  response = gemini_http_post(api_url, GEMINI_KEY, data)
+  response = gemini_http_post(api_url, ENV["DOT_GEMINI_KEY"], data)
 
   if response.code != "200"
     raise_http_error("Chat error", response, api_url)
@@ -46,7 +46,7 @@ def gemini_embedding(txts, model, base_url, opts = {})
   content = { "parts" => [{ "text" => txts }] }
   data = { "model" => "models/#{model}", "content" => content }.merge(opts)
 
-  response = gemini_http_post(api_url, GEMINI_KEY, data)
+  response = gemini_http_post(api_url, ENV["DOT_GEMINI_KEY"], data)
 
   if response.code != "200"
     raise_http_error("Embedding error", response, api_url)

@@ -334,7 +334,7 @@
             const statusMessage = document.getElementById('status-message');
             let retrievedNotes = [];
             let activeQuery = '';
-            let startupExploreNote = null;
+            let startupExplorePayload = null;
 
             function setStatus(message, isError = false) {
                 statusMessage.textContent = message;
@@ -360,14 +360,68 @@
                     if (!payload) return null;
                     const parsed = JSON.parse(payload);
                     const note = parsed && typeof parsed.note === 'string' ? parsed.note.trim() : '';
+                    const fallbackNote = parsed && typeof parsed.fallbackNote === 'string' ? parsed.fallbackNote.trim() : '';
+                    const ref = parsed && parsed.ref && typeof parsed.ref === 'object' ? parsed.ref : null;
                     localStorage.removeItem(exploreKey);
-                    return note || null;
+                    if (note) return { note };
+                    if (ref) return { ref, fallbackNote };
+                    return fallbackNote ? { note: fallbackNote } : null;
                 } catch (err) {
                     console.error(err);
                     return null;
                 } finally {
                     window.history.replaceState({}, '', window.location.pathname);
                 }
+            }
+
+            function fetchMapNote(ref) {
+                return fetch('http://localhost:4567/map_note', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(ref)
+                }).then(response => {
+                    if (!response.ok) {
+                        throw new Error(`HTTP ${response.status}`);
+                    }
+                    return response.json();
+                }).then(data => {
+                    const text = data && typeof data.text === 'string' ? data.text.trim() : '';
+                    if (!text) throw new Error('Empty note text');
+                    return text;
+                });
+            }
+
+            function runStartupExplore() {
+                if (!startupExplorePayload) return;
+
+                const payload = startupExplorePayload;
+                startupExplorePayload = null;
+
+                if (payload.note) {
+                    searchInput.value = payload.note;
+                    performSearch();
+                    return;
+                }
+
+                if (!payload.ref) return;
+
+                setStatus('Expanding map note, then running search...');
+                fetchMapNote(payload.ref)
+                    .catch(err => {
+                        console.warn(err);
+                        const fallback = payload.fallbackNote || (payload.ref && payload.ref.snippet) || '';
+                        if (!fallback) throw err;
+                        setStatus('Map note changed or could not be expanded; searching from snippet.', true);
+                        return fallback;
+                    })
+                    .then(note => {
+                        searchInput.value = note;
+                        performSearch();
+                    })
+                    .catch(err => {
+                        console.error(err);
+                        setStatus('Unable to load the map note for exploration.', true);
+                    });
             }
 
             function renderEmpty(message) {
@@ -467,11 +521,7 @@
                         pathsList.appendChild(li);
                     });
                     setStatus('Ready. Enter a query and run Search or Search+.');
-                    if (startupExploreNote) {
-                        searchInput.value = startupExploreNote;
-                        startupExploreNote = null;
-                        performSearch();
-                    }
+                    runStartupExplore();
                 })
                 .catch(() => setStatus('Unable to load paths. Check if the API is running.', true));
 
@@ -624,8 +674,8 @@
                 }
             });
 
-            startupExploreNote = consumeExplorePayloadFromUrl();
-            if (startupExploreNote) {
+            startupExplorePayload = consumeExplorePayloadFromUrl();
+            if (startupExplorePayload) {
                 setStatus('Loaded explore note from map, running search...');
             }
         });

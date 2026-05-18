@@ -191,9 +191,50 @@ def serialize_entries(entries)
     end
 end
 
-OPENAI_KEY = ENV["DOT_OPENAI_KEY"] || ""
-GEMINI_KEY = ENV["DOT_GEMINI_KEY"] || ""
-OPENROUTER_KEY = ENV["DOT_OPENROUTER_KEY"] || ""
+def find_indexed_note_ref(lookup, path, chunk, hash = nil)
+    lookup = lookup.to_s
+    path = path.to_s
+    return nil if lookup.empty? || path.empty?
+
+    chunk_idx = Integer(chunk)
+    path_cfg = CONFIG.path_map[lookup]
+    return nil unless path_cfg
+
+    hash_value = hash.to_s
+    hash_matches = lambda do |item_hash|
+        hash_value.empty? || item_hash.to_s == hash_value
+    end
+
+    if path_cfg.db_file && path_cfg.db_table
+        with_sqlite_store(path_cfg) do |store|
+            store.each_item do |row|
+                next unless row["path"].to_s == path
+                next unless row["chunk"].to_i == chunk_idx
+                next unless hash_matches.call(row["hash"])
+
+                return [path_cfg, path, chunk_idx]
+            end
+        end
+    else
+        return nil if path_cfg.out.nil? || path_cfg.out.to_s.strip.empty?
+
+        index_file = File.expand_path(path_cfg.out)
+        return nil unless File.exist?(index_file)
+
+        File.foreach(index_file) do |line|
+            row = JSON.parse(line)
+            next unless row["path"].to_s == path
+            next unless row["chunk"].to_i == chunk_idx
+            next unless hash_matches.call(row["hash"])
+
+            return [path_cfg, path, chunk_idx]
+        end
+    end
+
+    nil
+rescue ArgumentError, JSON::ParserError, TypeError
+    nil
+end
 
 missing_key_msg = ProviderEnvValidator.missing_key_message(CONFIG)
 if missing_key_msg
@@ -227,11 +268,57 @@ class SimpleRagServer < Sinatra::Application
         end
 
         begin
-            JSON.parse(File.read(path)).to_json
+            File.read(path)
         rescue => e
             status 500
             { error: "Failed to load map data: #{e.class}: #{e.message}" }.to_json
         end
+    end
+
+    # return full text for one indexed cognition-map note
+    post "/map_note" do
+        content_type :json
+
+        begin
+            data = JSON.parse(request.body.read)
+        rescue => e
+            status 400
+            next({ error: "Invalid JSON: #{e.message}" }.to_json)
+        end
+
+        ref = find_indexed_note_ref(data["lookup"], data["path"], data["chunk"], data["hash"])
+        unless ref
+            status 404
+            next({ error: "Map note not found in configured index" }.to_json)
+        end
+
+        path_cfg, path, chunk_idx = ref
+        reader_cls = get_reader(path_cfg.reader)
+        unless reader_cls
+            status 500
+            next({ error: "Reader not found for #{path_cfg.reader}" }.to_json)
+        end
+
+        begin
+            text = reader_cls.new(path).load.get_chunk(chunk_idx)
+        rescue => e
+            status 500
+            next({ error: "Failed to load note: #{e.class}: #{e.message}" }.to_json)
+        end
+
+        if text.nil? || text.to_s.strip.empty?
+            status 404
+            next({ error: "Map note chunk is empty" }.to_json)
+        end
+
+        {
+            path: path,
+            lookup: path_cfg.name,
+            id: extract_id(path),
+            url: extract_url(path, path_cfg.url),
+            chunk: chunk_idx,
+            text: text,
+        }.to_json
     end
 
     # query within the paths

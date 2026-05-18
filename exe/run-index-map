@@ -28,6 +28,7 @@ end
 
 require_relative "../lib/config_loader"
 require_relative "../lib/ollama_service"
+require_relative "../lib/provider_env_validator"
 require_relative "../llm/llm"
 require_relative "../readers/reader"
 require_relative "../storage/sqlite_index"
@@ -46,6 +47,12 @@ begin
 rescue => e
   STDOUT << "Config error: #{e.message}\n"
   exit 1
+end
+
+missing_key_msg = ProviderEnvValidator.missing_key_message(CONFIG)
+if missing_key_msg
+  STDOUT << "#{missing_key_msg}\n"
+  exit 9
 end
 
 MAP_WIDTH = 2600
@@ -533,8 +540,8 @@ def reposition_points!(points, members, before_stats, after_centers)
     new_c = after_centers[cid]
     next if old.nil? || new_c.nil?
 
-    stretch = [1.16, 1.02 + Math.log(idxs.length + 1)].max
-    stretch = [stretch, 2.15].min
+    stretch = 1.05 + (Math.log10(idxs.length + 1) * 0.35)
+    stretch = [[stretch, 1.12].max, 1.65].min
 
     idxs.each do |i|
       ox = points[i][0] - old[:cx]
@@ -543,32 +550,6 @@ def reposition_points!(points, members, before_stats, after_centers)
       ny = new_c[1] + (oy * stretch)
       points[i][0] = [[nx, MAP_MARGIN].max, MAP_WIDTH - MAP_MARGIN].min
       points[i][1] = [[ny, MAP_MARGIN].max, MAP_HEIGHT - MAP_MARGIN].min
-    end
-  end
-end
-
-def expand_cluster_layout!(points, members)
-  stats = compute_cluster_stats(points, members)
-  cluster_ids = stats.keys.sort
-  return if cluster_ids.length < 2
-
-  min_x, max_x = cluster_ids.map { |cid| stats[cid][:cx] }.minmax
-  min_y, max_y = cluster_ids.map { |cid| stats[cid][:cy] }.minmax
-  target_min_x = CLUSTER_LAYOUT_PAD_X
-  target_max_x = MAP_WIDTH - CLUSTER_LAYOUT_PAD_X
-  target_min_y = CLUSTER_LAYOUT_PAD_Y
-  target_max_y = MAP_HEIGHT - CLUSTER_LAYOUT_PAD_Y
-
-  cluster_ids.each do |cid|
-    stat = stats[cid]
-    target_x = scale_value(stat[:cx], min_x, max_x, target_min_x, target_max_x)
-    target_y = scale_value(stat[:cy], min_y, max_y, target_min_y, target_max_y)
-    dx = target_x - stat[:cx]
-    dy = target_y - stat[:cy]
-
-    members[cid].each do |idx|
-      points[idx][0] = [[points[idx][0] + dx, MAP_MARGIN].max, MAP_WIDTH - MAP_MARGIN].min
-      points[idx][1] = [[points[idx][1] + dy, MAP_MARGIN].max, MAP_HEIGHT - MAP_MARGIN].min
     end
   end
 end
@@ -611,6 +592,14 @@ def label_excerpt(text, max_chars = MAX_LABEL_CHARS)
 
   candidate = candidate.to_s.gsub(/\s+/, " ").strip
   candidate.length > max_chars ? candidate[0...max_chars].strip : candidate
+end
+
+def map_snippet(text, max_chars = 360)
+  raw = strip_model_artifacts(text.to_s)
+  raw = raw.gsub(/\s+/, " ").strip
+  return "" if raw.empty?
+
+  raw.length > max_chars ? "#{raw[0...max_chars].strip}..." : raw
 end
 
 STOP_WORDS = %w[
@@ -982,7 +971,6 @@ def build_map_data(notes)
   before_stats = compute_cluster_stats(points, members)
   spread_centers = spread_cluster_centers(before_stats)
   reposition_points!(points, members, before_stats, spread_centers)
-  expand_cluster_layout!(points, members)
   final_stats = compute_cluster_stats(points, members)
 
   cluster_samples = cluster_samples_for_labels(notes, points, members, final_stats)
@@ -1029,7 +1017,7 @@ def build_map_data(notes)
       hash: n[:hash],
       title: n[:id],
       url: n[:url],
-      text: n[:text],
+      snippet: map_snippet(n[:text]),
       x: points[idx][0].round(2),
       y: points[idx][1].round(2),
       clusterId: cluster_id_order_map[cid]

@@ -317,7 +317,11 @@ document.addEventListener("DOMContentLoaded", function() {
         dragStart: { x: 0, y: 0 },
         lastPointer: { x: 0, y: 0 },
         visibleLookups: new Set(),
-        filterReady: false
+        filterReady: false,
+        visibleCache: null,
+        spatialIndex: null,
+        spatialCellSize: 48,
+        drawPending: false
     };
 
     const TERRAIN_LEVEL_RATIOS = [
@@ -332,6 +336,11 @@ document.addEventListener("DOMContentLoaded", function() {
 
     function markTerrainDirty() {
         state.terrain = null;
+    }
+
+    function invalidateVisibleNotes() {
+        state.visibleCache = null;
+        state.spatialIndex = null;
     }
 
     function hashString(text) {
@@ -355,6 +364,15 @@ document.addEventListener("DOMContentLoaded", function() {
         statusChip.textContent = text;
     }
 
+    function requestDraw() {
+        if (state.drawPending) return;
+        state.drawPending = true;
+        window.requestAnimationFrame(() => {
+            state.drawPending = false;
+            draw();
+        });
+    }
+
     function resizeCanvas() {
         const rect = stage.getBoundingClientRect();
         const ratio = window.devicePixelRatio || 1;
@@ -363,7 +381,7 @@ document.addEventListener("DOMContentLoaded", function() {
         canvas.style.width = `${rect.width}px`;
         canvas.style.height = `${rect.height}px`;
         ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
-        draw();
+        requestDraw();
     }
 
     function worldToScreen(x, y) {
@@ -417,7 +435,10 @@ document.addEventListener("DOMContentLoaded", function() {
     }
 
     function visibleNotes() {
-        return state.notes.filter(noteVisible);
+        if (!state.visibleCache) {
+            state.visibleCache = state.notes.filter(noteVisible);
+        }
+        return state.visibleCache;
     }
 
     function clusterVisibleCount() {
@@ -710,7 +731,9 @@ document.addEventListener("DOMContentLoaded", function() {
         labelCandidates.forEach(item => {
             const cluster = item.cluster;
             const activeCount = item.count;
-            if (activeCount < 36 || state.camera.k < 0.22) return;
+            if (state.camera.k < 0.22) return;
+            if (activeCount < 8 && state.camera.k < 0.7) return;
+            if (activeCount < 3 && state.camera.k < 1.4) return;
 
             const p = worldToScreen(cluster.centerX, cluster.centerY);
             const fontSize = Math.max(10, Math.min(12.4, 9.6 + Math.sqrt(activeCount) * 0.32));
@@ -827,16 +850,72 @@ document.addEventListener("DOMContentLoaded", function() {
         let bestD2 = Infinity;
         const hitRadiusWorld = 9 / Math.max(state.camera.k, 0.001);
         const hitRadius2 = hitRadiusWorld * hitRadiusWorld;
-        visibleNotes().forEach(note => {
-            const dx = note.x - world.x;
-            const dy = note.y - world.y;
-            const d2 = (dx * dx) + (dy * dy);
-            if (d2 < bestD2 && d2 <= hitRadius2) {
-                best = note;
-                bestD2 = d2;
+        const index = spatialIndex();
+        const cellSize = state.spatialCellSize;
+        const minCx = Math.floor((world.x - hitRadiusWorld) / cellSize);
+        const maxCx = Math.floor((world.x + hitRadiusWorld) / cellSize);
+        const minCy = Math.floor((world.y - hitRadiusWorld) / cellSize);
+        const maxCy = Math.floor((world.y + hitRadiusWorld) / cellSize);
+
+        for (let cx = minCx; cx <= maxCx; cx += 1) {
+            for (let cy = minCy; cy <= maxCy; cy += 1) {
+                const bucket = index.get(`${cx}:${cy}`);
+                if (!bucket) continue;
+                bucket.forEach(note => {
+                    const dx = note.x - world.x;
+                    const dy = note.y - world.y;
+                    const d2 = (dx * dx) + (dy * dy);
+                    if (d2 < bestD2 && d2 <= hitRadius2) {
+                        best = note;
+                        bestD2 = d2;
+                    }
+                });
             }
-        });
+        }
         return best;
+    }
+
+    function spatialIndex() {
+        if (state.spatialIndex) return state.spatialIndex;
+
+        const index = new Map();
+        const cellSize = state.spatialCellSize;
+        visibleNotes().forEach(note => {
+            const cx = Math.floor(note.x / cellSize);
+            const cy = Math.floor(note.y / cellSize);
+            const key = `${cx}:${cy}`;
+            if (!index.has(key)) index.set(key, []);
+            index.get(key).push(note);
+        });
+        state.spatialIndex = index;
+        return index;
+    }
+
+    function notePreviewText(note, max = 260) {
+        return summarizeText(note && (note.snippet || note.text), max);
+    }
+
+    function appendTextLine(parent, label, value) {
+        parent.appendChild(document.createTextNode(`${label}: ${value}`));
+        parent.appendChild(document.createElement("br"));
+    }
+
+    function mapNoteRef(note) {
+        return {
+            lookup: note.lookup,
+            path: note.path,
+            chunk: note.chunk,
+            hash: note.hash,
+            title: note.title,
+            snippet: notePreviewText(note, 360)
+        };
+    }
+
+    function renderEmptyNotePanel() {
+        const empty = document.createElement("div");
+        empty.className = "empty";
+        empty.textContent = "Click any note dot to open q.html exploration and preview it here.";
+        notePanel.replaceChildren(empty);
     }
 
     function summarizeText(text, max = 260) {
@@ -868,28 +947,46 @@ document.addEventListener("DOMContentLoaded", function() {
 
     function renderNotePanel(note) {
         if (!note) {
-            notePanel.innerHTML = '<div class="empty">Click any note dot to open q.html exploration and preview it here.</div>';
+            renderEmptyNotePanel();
             return;
         }
-        notePanel.innerHTML = `
-            <h3 id="note-title">${note.title || "Untitled Note"}</h3>
-            <div id="note-meta">
-                Path: ${note.lookup || "-"}<br>
-                Chunk: ${note.chunk}<br>
-                Mountain: ${note.clusterId}
-            </div>
-            <div id="note-body">${summarizeText(note.text)}</div>
-            <div id="note-actions">
-                <button class="btn" id="open-search-btn" type="button">Explore In q.html</button>
-                ${note.url ? '<button class="btn" id="open-source-btn" type="button">Open Source</button>' : ""}
-            </div>
-        `;
-        const openSearchBtn = document.getElementById("open-search-btn");
+
+        const title = document.createElement("h3");
+        title.id = "note-title";
+        title.textContent = note.title || "Untitled Note";
+
+        const metaBox = document.createElement("div");
+        metaBox.id = "note-meta";
+        appendTextLine(metaBox, "Path", note.lookup || "-");
+        appendTextLine(metaBox, "Chunk", note.chunk ?? "-");
+        appendTextLine(metaBox, "Mountain", note.clusterId || "-");
+
+        const body = document.createElement("div");
+        body.id = "note-body";
+        body.textContent = notePreviewText(note);
+
+        const actions = document.createElement("div");
+        actions.id = "note-actions";
+
+        const openSearchBtn = document.createElement("button");
+        openSearchBtn.className = "btn";
+        openSearchBtn.id = "open-search-btn";
+        openSearchBtn.type = "button";
+        openSearchBtn.textContent = "Explore In q.html";
         openSearchBtn.addEventListener("click", () => openInSearch(note));
+
+        actions.appendChild(openSearchBtn);
         if (note.url) {
-            const openSourceBtn = document.getElementById("open-source-btn");
+            const openSourceBtn = document.createElement("button");
+            openSourceBtn.className = "btn";
+            openSourceBtn.id = "open-source-btn";
+            openSourceBtn.type = "button";
+            openSourceBtn.textContent = "Open Source";
             openSourceBtn.addEventListener("click", () => window.open(note.url, "_blank", "noopener,noreferrer"));
+            actions.appendChild(openSourceBtn);
         }
+
+        notePanel.replaceChildren(title, metaBox, body, actions);
     }
 
     function showTooltip(note, screenX, screenY) {
@@ -897,20 +994,26 @@ document.addEventListener("DOMContentLoaded", function() {
             tooltip.classList.remove("show");
             return;
         }
-        tooltip.innerHTML = `<strong>${note.lookup}</strong><br>${summarizeText(note.text, 120)}`;
+        const strong = document.createElement("strong");
+        strong.textContent = note.lookup || "-";
+        tooltip.replaceChildren(strong, document.createElement("br"), document.createTextNode(notePreviewText(note, 120)));
         tooltip.style.left = `${screenX}px`;
         tooltip.style.top = `${screenY}px`;
         tooltip.classList.add("show");
     }
 
     function openInSearch(note) {
-        const safeNote = typeof note.text === "string" ? note.text.trim() : "";
-        if (!safeNote) {
+        const snippet = notePreviewText(note, 360);
+        if (!snippet && !note.path) {
             setStatus("Cannot open empty note");
             return;
         }
         const key = `qExploreNote:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`;
-        localStorage.setItem(key, JSON.stringify({ note: safeNote, createdAt: Date.now() }));
+        localStorage.setItem(key, JSON.stringify({
+            ref: mapNoteRef(note),
+            fallbackNote: snippet,
+            createdAt: Date.now()
+        }));
         window.open(`q.html?exploreKey=${encodeURIComponent(key)}`, "_blank", "noopener,noreferrer");
     }
 
@@ -921,37 +1024,45 @@ document.addEventListener("DOMContentLoaded", function() {
             state.visibleLookups.delete(name);
         }
         markTerrainDirty();
+        invalidateVisibleNotes();
         state.hovered = null;
         showTooltip(null);
-        draw();
+        requestDraw();
         setStatus(`Showing ${visibleNotes().length} notes`);
     }
 
     function renderPaths(lookups) {
-        pathsList.innerHTML = "";
+        pathsList.replaceChildren();
         state.visibleLookups = new Set(lookups);
         state.filterReady = true;
+        invalidateVisibleNotes();
         markTerrainDirty();
         lookups.forEach(name => {
             const li = document.createElement("li");
             const id = `path-${hashString(name)}`;
-            li.innerHTML = `
-                <input type="checkbox" id="${id}" checked>
-                <label for="${id}">${name}</label>
-            `;
-            const checkbox = li.querySelector("input");
+
+            const checkbox = document.createElement("input");
+            checkbox.type = "checkbox";
+            checkbox.id = id;
+            checkbox.checked = true;
+
+            const label = document.createElement("label");
+            label.htmlFor = id;
+            label.textContent = name;
+
             checkbox.addEventListener("change", () => toggleLookup(name, checkbox.checked));
+            li.appendChild(checkbox);
+            li.appendChild(label);
             pathsList.appendChild(li);
         });
     }
 
     function renderMeta(data) {
-        meta.innerHTML = `
-            Generated: ${new Date(data.generatedAt).toLocaleString()}<br>
-            Notes: ${data.noteCount}<br>
-            Mountains: ${data.clusters.length}<br>
-            Vector Dim: ${data.vectorDim}
-        `;
+        meta.replaceChildren();
+        appendTextLine(meta, "Generated", new Date(data.generatedAt).toLocaleString());
+        appendTextLine(meta, "Notes", data.noteCount);
+        appendTextLine(meta, "Mountains", data.clusters.length);
+        meta.appendChild(document.createTextNode(`Vector Dim: ${data.vectorDim}`));
     }
 
     function loadData() {
@@ -967,12 +1078,13 @@ document.addEventListener("DOMContentLoaded", function() {
                 state.data = data;
                 state.notes = Array.isArray(data.notes) ? data.notes : [];
                 state.clusters = Array.isArray(data.clusters) ? data.clusters : [];
+                invalidateVisibleNotes();
                 markTerrainDirty();
                 const lookups = Array.from(new Set(state.notes.map(n => n.lookup).filter(Boolean))).sort();
                 renderPaths(lookups);
                 renderMeta(data);
                 resetView();
-                draw();
+                requestDraw();
                 setStatus(`Loaded ${state.notes.length} notes in ${state.clusters.length} mountains`);
             })
             .catch(err => {
@@ -985,6 +1097,7 @@ document.addEventListener("DOMContentLoaded", function() {
     function onPointerDown(evt) {
         canvas.setPointerCapture(evt.pointerId);
         const p = pointerPos(evt);
+        state.lastPointer = p;
         state.dragging = true;
         state.dragPointerId = evt.pointerId;
         state.dragMoved = false;
@@ -1010,7 +1123,7 @@ document.addEventListener("DOMContentLoaded", function() {
             state.dragStart = p;
         }
 
-        draw();
+        requestDraw();
     }
 
     function onPointerUp(evt) {
@@ -1020,7 +1133,9 @@ document.addEventListener("DOMContentLoaded", function() {
         state.dragPointerId = null;
 
         if (!state.dragMoved) {
-            const hit = nearestNote(state.lastPointer.x, state.lastPointer.y);
+            const p = pointerPos(evt);
+            state.lastPointer = p;
+            const hit = nearestNote(p.x, p.y);
             if (hit) {
                 state.selected = hit;
                 renderNotePanel(hit);
@@ -1029,7 +1144,7 @@ document.addEventListener("DOMContentLoaded", function() {
                 state.selected = null;
                 renderNotePanel(null);
             }
-            draw();
+            requestDraw();
         }
     }
 
@@ -1046,7 +1161,7 @@ document.addEventListener("DOMContentLoaded", function() {
         state.camera.k = next;
         state.camera.x = p.x - (worldX * next);
         state.camera.y = p.y - (worldY * next);
-        draw();
+        requestDraw();
     }
 
     window.addEventListener("resize", resizeCanvas);

@@ -16,7 +16,13 @@ module ProviderEnvValidator
     providers.each do |provider|
       env_key = REQUIRED_ENV_BY_PROVIDER[provider]
       next if env_key.nil?
-      return "Remember to set env #{env_key}" if ENV[env_key].to_s.empty?
+      next unless ENV[env_key].to_s.empty?
+      return <<~MSG.strip
+        Missing API key for provider "#{provider}".
+        Required env var: #{env_key}
+        PowerShell (current session): $env:#{env_key}="YOUR_KEY"
+        cmd.exe (current session): set #{env_key}=YOUR_KEY
+      MSG
     end
 
     nil
