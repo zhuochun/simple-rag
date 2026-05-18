@@ -30,8 +30,8 @@ class HttpResult:
     url: str
 
 
-def missing_key_message(config: Config) -> str | None:
-    providers = {provider_name(config, "chat"), provider_name(config, "embedding")}
+def missing_key_message(config: Config, sections: tuple[str, ...] = ("chat", "embedding")) -> str | None:
+    providers = {provider_name(config, section) for section in sections}
     for provider in sorted(p for p in providers if p):
         env_key = REQUIRED_ENV_BY_PROVIDER.get(provider)
         if env_key and not os.environ.get(env_key):
@@ -44,12 +44,12 @@ def missing_key_message(config: Config) -> str | None:
     return None
 
 
-def should_start_ollama(config: Config) -> bool:
-    return provider_name(config, "chat") == "ollama" or provider_name(config, "embedding") == "ollama"
+def should_start_ollama(config: Config, sections: tuple[str, ...] = ("chat", "embedding")) -> bool:
+    return any(provider_name(config, section) == "ollama" for section in sections)
 
 
-def ensure_ollama_started(config: Config, wait_seconds: int = 15) -> bool:
-    url = _ollama_api_url(config)
+def ensure_ollama_started(config: Config, sections: tuple[str, ...] = ("chat", "embedding"), wait_seconds: int = 15) -> bool:
+    url = _ollama_api_url(config, sections)
     if not url:
         return True
     if _ollama_running(url):
@@ -193,11 +193,13 @@ def _http_error(prefix: str, result: HttpResult) -> str:
     return f"{prefix}: {', '.join(parts)}"
 
 
-def _ollama_api_url(config: Config) -> str | None:
+def _ollama_api_url(config: Config, sections: tuple[str, ...] = ("chat", "embedding")) -> str | None:
     for section, default_url in (
         ("embedding", "http://127.0.0.1:11434/api/embeddings"),
         ("chat", "http://127.0.0.1:11434/api/chat"),
     ):
+        if section not in sections:
+            continue
         if provider_name(config, section) != "ollama":
             continue
         return _ollama_tags_url(config_value(config, section, "url", default_url))

@@ -12,14 +12,42 @@ gem install simple-rag-zc
 
 - Setup Config JSON
   - Copy `example_config.json` to `config.json`, then edit the paths to absolute path.
-  - `map.path` is required if you want to use `run-index-map` / `map.html`.
+  - `map.path` is required if you want to use `run-index-map-py` / `map.html`.
+- Setup Python map generator
+  - Python 3.10+ is required for the faster map generator.
+  - From the repo root, install the Python package and dependencies:
+
+```bash
+python -m pip install -e python
+```
+
 - Run `run-index config.json` *Required
   - To generate embeddings for all files. It takes a while on the first time.
-- Run `run-index-map config.json` *Optional but required for map.html
-  - To cluster indexed notes into mountains and generate map data JSON.
+- Run `run-index-map-py config.json` *Optional but required for map.html
+  - Preferred map generator. It clusters indexed notes into mountains and writes the map data JSON.
   - Optional include-only paths:
     - set `map.includePaths` in config.json (array of `paths[].name`)
-    - or call `run-index-map config.json journal,learning`
+    - or call `run-index-map-py config.json journal,learning`
+  - For faster iteration, run the two stages separately:
+
+```bash
+run-index-map-py config.json --step clusters
+run-index-map-py config.json --step labels
+```
+
+  - Or run both stages in one command:
+
+```bash
+run-index-map-py config.json --step all
+```
+
+  - Label generation uses concurrent LLM requests. Tune it with either `map.labelWorkers` in `config.json` or `--label-workers`:
+
+```bash
+run-index-map-py config.json --step labels --label-workers 6
+```
+
+  - The older Ruby `run-index-map` command is still available as a fallback, but the Python version is the recommended path.
 - Optional migration from JSONL to SQLite tables
   - Set per-path `db` as `sqlite_file_path@table_name`
   - Run `run-migrate config.json` to migrate every path that has both `out` and `db`

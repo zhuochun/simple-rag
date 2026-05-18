@@ -430,7 +430,7 @@ def build_map_payload(
     members: dict[int, list[int]],
     final_stats: dict[int, dict[str, Any]],
     vector_dim: int,
-    labeler: Labeler,
+    labeler: Labeler | None,
     *,
     layout_meta: dict[str, Any] | None = None,
     degree_scores: dict[int, float] | None = None,
@@ -450,7 +450,7 @@ def build_map_payload(
         neighbor_samples=neighbor_samples,
     )
     cluster_sample_by_id = {sample["cluster_id"]: sample for sample in cluster_samples}
-    llm_labels = labeler.generate_cluster_labels(cluster_samples)
+    llm_labels = labeler.generate_cluster_labels(cluster_samples) if labeler else {}
     cluster_id_order_map: dict[int, str] = {}
     final_label_keys: set[str] = set()
     clusters = []
@@ -536,7 +536,7 @@ def build_map_payload(
     return payload
 
 
-def build_map_data_with_kmeans(notes: list[dict[str, Any]], vector_dim: int, labeler: Labeler, fallback_reason: str | None = None) -> dict[str, Any]:
+def build_map_data_with_kmeans(notes: list[dict[str, Any]], vector_dim: int, labeler: Labeler | None, fallback_reason: str | None = None) -> dict[str, Any]:
     embeddings = [note["embedding"] for note in notes]
     a_idx, b_idx, c_idx = choose_anchor_indices(embeddings)
     a = embeddings[a_idx]
@@ -562,7 +562,7 @@ def build_map_data_with_kmeans(notes: list[dict[str, Any]], vector_dim: int, lab
     return build_map_payload(notes, points, assignments, members, final_stats, vector_dim, labeler, layout_meta=layout_meta)
 
 
-def build_map_data_with_graph(config: Config, notes: list[dict[str, Any]], vector_dim: int, labeler: Labeler) -> dict[str, Any]:
+def build_map_data_with_graph(config: Config, notes: list[dict[str, Any]], vector_dim: int, labeler: Labeler | None) -> dict[str, Any]:
     k = graph_knn_k(config, len(notes))
     min_size = graph_community_min_size(config)
     min_edge_weight = graph_edge_min_weight(config)
@@ -625,7 +625,7 @@ def build_map_data_with_graph(config: Config, notes: list[dict[str, Any]], vecto
     )
 
 
-def build_map_data(config: Config, notes: list[dict[str, Any]], labeler: Labeler) -> dict[str, Any]:
+def build_map_data(config: Config, notes: list[dict[str, Any]], labeler: Labeler | None) -> dict[str, Any]:
     vector_dim = prepare_notes_for_map(notes)
     requested_layout = map_layout_requested(config) or MAP_LAYOUT_DEFAULT
     print(f"Map layout requested: {requested_layout}")

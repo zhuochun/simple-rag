@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import hashlib
 import html
 import json
@@ -45,9 +46,10 @@ GENERIC_CHINESE_LABEL_FRAGMENTS = (
 
 
 class Labeler:
-    def __init__(self, config: Config, cache_path: Path | None):
+    def __init__(self, config: Config, cache_path: Path | None, max_workers: int = 4):
         self.config = config
         self.cache_path = cache_path
+        self.max_workers = max(1, int(max_workers))
         self.cache: dict[str, dict[str, Any]] = {}
         self.dirty = False
         if cache_path and cache_path.exists():
@@ -68,6 +70,8 @@ class Labeler:
         labels: dict[int, dict[str, Any]] = {}
         used_label_keys: set[str] = set()
         used_label_texts: list[str] = []
+        pending: list[tuple[dict[str, Any], str]] = []
+
         for sample in cluster_samples:
             cluster_index = int(sample["cluster_index"])
             cache_key = self._cache_key(sample)
@@ -80,16 +84,65 @@ class Labeler:
                     used_label_texts.append(label["primaryLabel"])
                     continue
 
-            assigned = self._generate_one(sample, used_label_keys, used_label_texts)
-            labels[cluster_index] = assigned
-            used_label_keys.add(label_key(assigned["primaryLabel"]))
-            used_label_texts.append(assigned["primaryLabel"])
-            self.cache[cache_key] = assigned
-            self.dirty = True
+            pending.append((sample, cache_key))
+
+        if pending:
+            print(f"Generating labels: pending={len(pending)}, workers={self.max_workers}")
+            generated: dict[int, tuple[str, dict[str, Any]]] = {}
+            with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+                futures = {
+                    executor.submit(self._generate_one, sample, used_label_texts): (sample, cache_key)
+                    for sample, cache_key in pending
+                }
+                for future in as_completed(futures):
+                    sample, cache_key = futures[future]
+                    cluster_index = int(sample["cluster_index"])
+                    try:
+                        generated[cluster_index] = (cache_key, future.result())
+                    except Exception as exc:
+                        log_label_warning(f"LLM label generation failed for cluster {cluster_index}", exception=exc)
+                        generated[cluster_index] = (
+                            cache_key,
+                            {
+                                "primaryLabel": fallback_label(sample["snippets"], cluster_index, set()),
+                                "subtitle": "",
+                                "keywordChips": sample["keywords"][:3],
+                            },
+                        )
+
+            for sample, cache_key in pending:
+                cluster_index = int(sample["cluster_index"])
+                assigned = generated[cluster_index][1]
+                key = label_key(assigned["primaryLabel"])
+                if not key or key in used_label_keys:
+                    assigned = {
+                        **assigned,
+                        "primaryLabel": fallback_label(sample["snippets"], cluster_index, used_label_keys),
+                    }
+                    key = label_key(assigned["primaryLabel"])
+                labels[cluster_index] = assigned
+                used_label_keys.add(key)
+                used_label_texts.append(assigned["primaryLabel"])
+                self.cache[cache_key] = assigned
+                self.dirty = True
         self.save()
         return labels
 
-    def _generate_one(self, sample: dict[str, Any], used_label_keys: set[str], used_label_texts: list[str]) -> dict[str, Any]:
+    def generate_fallback_labels(self, cluster_samples: list[dict[str, Any]]) -> dict[int, dict[str, Any]]:
+        labels: dict[int, dict[str, Any]] = {}
+        used_label_keys: set[str] = set()
+        for sample in cluster_samples:
+            cluster_index = int(sample["cluster_index"])
+            primary = fallback_label(sample["snippets"], cluster_index, used_label_keys)
+            used_label_keys.add(label_key(primary))
+            labels[cluster_index] = {
+                "primaryLabel": primary,
+                "subtitle": "",
+                "keywordChips": sample["keywords"][:3],
+            }
+        return labels
+
+    def _generate_one(self, sample: dict[str, Any], used_label_texts: list[str]) -> dict[str, Any]:
         rejected: list[str] = []
         cluster_index = sample["cluster_index"]
         for attempt in range(1, MAX_LABEL_ATTEMPTS + 1):
@@ -108,37 +161,18 @@ class Labeler:
                     add_rejected_label(rejected, raw_response)
                     log_label_warning(f"Empty label from LLM for cluster {cluster_index} (attempt {attempt}/{MAX_LABEL_ATTEMPTS})", response=raw_response)
                     continue
-                key = label_key(label["primaryLabel"])
-                if key in used_label_keys:
-                    add_rejected_label(rejected, label["primaryLabel"])
-                    log_label_warning(f"Duplicate label from LLM for cluster {cluster_index}: {label['primaryLabel']} (attempt {attempt}/{MAX_LABEL_ATTEMPTS})", response=raw_response)
-                    continue
                 return label
             except Exception as exc:
                 if raw_response is not None:
                     add_rejected_label(rejected, raw_response)
                 log_label_warning(f"LLM label generation failed for cluster {cluster_index} (attempt {attempt}/{MAX_LABEL_ATTEMPTS})", response=raw_response, exception=exc)
 
-        primary = fallback_label(sample["snippets"], int(cluster_index), used_label_keys)
+        primary = fallback_label(sample["snippets"], int(cluster_index), set())
         label = {"primaryLabel": primary, "subtitle": "", "keywordChips": sample["keywords"][:3]}
         log_label_warning(f"Using fallback label for cluster {cluster_index}: {primary}")
         return label
 
-    @staticmethod
-    def _cache_key(sample: dict[str, Any]) -> str:
-        body = json.dumps(
-            {
-                "snippets": sample.get("snippets", []),
-                "keywords": sample.get("keywords", []),
-                "neighbors": sample.get("neighbors", []),
-            },
-            ensure_ascii=False,
-            sort_keys=True,
-        )
-        return hashlib.sha256(body.encode("utf-8")).hexdigest()
-
-    @staticmethod
-    def _coerce_label(raw: dict[str, Any], fallback_keywords: list[str]) -> dict[str, Any] | None:
+    def _coerce_label(self, raw: dict[str, Any], fallback_keywords: list[str]) -> dict[str, Any] | None:
         primary = sanitize_label(raw.get("primaryLabel") or raw.get("label") or "")
         if not primary:
             return None
@@ -155,6 +189,19 @@ class Labeler:
             "subtitle": clean_label_fragment(str(raw.get("subtitle") or ""))[:60],
             "keywordChips": chips[:3],
         }
+
+    @staticmethod
+    def _cache_key(sample: dict[str, Any]) -> str:
+        body = json.dumps(
+            {
+                "snippets": sample.get("snippets", []),
+                "keywords": sample.get("keywords", []),
+                "neighbors": sample.get("neighbors", []),
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        return hashlib.sha256(body.encode("utf-8")).hexdigest()
 
 
 def log_label_warning(reason: str, response: str | None = None, exception: Exception | None = None) -> None:
