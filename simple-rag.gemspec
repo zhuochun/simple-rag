@@ -21,12 +21,13 @@ Gem::Specification.new do |spec|
     "readers/**/*",
     "server/**/*",
     "storage/**/*",
+    "python/**/*",
     "exe/public/**/*",
     "exe/*"
   ]
 
   spec.bindir        = "exe"
-  spec.executables   = ["run-index", "run-server", "run-migrate", "run-index-map"]
+  spec.executables   = ["run-index", "run-server", "run-migrate", "run-index-map", "run-index-map-py"]
   spec.require_paths = ["lib"]
 
   spec.add_runtime_dependency "sinatra", "~> 4.1"

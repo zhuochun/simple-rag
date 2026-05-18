@@ -1,0 +1,15 @@
+[project]
+name = "simple-rag-map"
+version = "0.1.0"
+description = "Python map-data generator for simple-rag indexes"
+requires-python = ">=3.10"
+dependencies = [
+  "numpy>=1.26",
+]
+
+[project.scripts]
+run-index-map-py = "simple_rag_map.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
