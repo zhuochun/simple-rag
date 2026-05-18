@@ -83,6 +83,7 @@ MAP_GRAPH_EDGE_MIN_WEIGHT_DEFAULT = 0.0
 MAP_LAYOUT_ITERATIONS_DEFAULT = 650
 NODE_LAYOUT_ITERATION_MAX = 3000
 NODE_LAYOUT_MIN_ITERATIONS = 50
+MAP_MAX_GRAPH_COMMUNITIES = 160
 COMMUNITY_LAYOUT_ITERATIONS = 250
 COMMUNITY_IDEAL_DISTANCE = 260.0
 COMMUNITY_ATTRACTION = 0.012
@@ -133,7 +134,7 @@ end
 
 def graph_layout_enabled?
   requested = map_layout_requested
-  return requested == "graph" unless requested.nil?
+  return requested == "graph" && sqlite_vec_available? unless requested.nil?
 
   sqlite_vec_available?
 end
@@ -278,6 +279,10 @@ def distance_to_weight(distance)
 end
 
 def open_vec_db
+  unless sqlite_vec_available?
+    raise GraphDependencyError, "sqlite-vec unavailable on this platform"
+  end
+
   db = SQLite3::Database.new(":memory:")
   db.results_as_hash = true
   begin
@@ -287,11 +292,7 @@ def open_vec_db
   end
 
   begin
-    if SQLITE_VEC_AVAILABLE
-      SqliteVec.load(db)
-    else
-      raise GraphDependencyError, "sqlite-vec gem is not installed"
-    end
+    SqliteVec.load(db)
   rescue LoadError => e
     raise GraphDependencyError, "sqlite-vec gem load failed: #{e.message}"
   rescue => e
@@ -1635,10 +1636,16 @@ def build_map_data_with_graph(notes, vector_dim:)
   adjacency = graph[:adjacency]
   edges = graph[:edges]
   STDOUT << "Undirected edges: #{edges.length}\n"
+  if edges.empty?
+    raise ArgumentError, "kNN graph has no usable edges; lower map.graphEdgeMinWeight or check sqlite-vec vector search results"
+  end
 
   assignments = detect_communities_weighted_local_moving(adjacency, min_size: min_size)
   assignments.each_with_index { |cid, idx| notes[idx][:community_id] = cid }
   members = build_members_from_assignments(assignments)
+  if members.length > MAP_MAX_GRAPH_COMMUNITIES
+    raise ArgumentError, "Graph community count too high (#{members.length}); check kNN graph connectivity or increase map.communityMinSize"
+  end
   STDOUT << "Detected communities: #{members.length}\n"
   STDOUT << "Running force layout: iterations=#{iterations}\n"
 
