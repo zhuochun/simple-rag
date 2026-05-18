@@ -74,8 +74,6 @@ MAX_LABEL_CHARS = 100
 MAX_LABEL_ATTEMPTS = 3
 KMEANS_MAX_ITER = 24
 KMEANS_EPSILON = 1e-5
-CLUSTER_LAYOUT_PAD_X = 220.0
-CLUSTER_LAYOUT_PAD_Y = 120.0
 MAP_LAYOUT_DEFAULT = "graph"
 MAP_KNN_K_DEFAULT = 30
 MAP_COMMUNITY_MIN_SIZE_DEFAULT = 8
@@ -84,10 +82,12 @@ MAP_LAYOUT_ITERATIONS_DEFAULT = 650
 NODE_LAYOUT_ITERATION_MAX = 3000
 NODE_LAYOUT_MIN_ITERATIONS = 50
 MAP_MAX_GRAPH_COMMUNITIES = 160
-COMMUNITY_LAYOUT_ITERATIONS = 250
-COMMUNITY_IDEAL_DISTANCE = 260.0
-COMMUNITY_ATTRACTION = 0.012
-COMMUNITY_REPULSION = 9000.0
+MAP_CROSS_COMMUNITY_EDGES_PER_NODE = 4
+SAME_COMMUNITY_EDGE_IDEAL = 34.0
+CROSS_COMMUNITY_EDGE_IDEAL = 76.0
+SAME_COMMUNITY_ATTRACTION = 0.018
+CROSS_COMMUNITY_ATTRACTION = 0.012
+COMMUNITY_GRAVITY = 0.0014
 NODE_INITIAL_TEMP = 18.0
 
 def config_value(section, key)
@@ -118,7 +118,7 @@ def windows_platform?
 end
 
 def sqlite_vec_available?
-  SQLITE_VEC_AVAILABLE && !windows_platform?
+  SQLITE_VEC_AVAILABLE
 end
 
 def map_layout_requested
@@ -134,9 +134,9 @@ end
 
 def graph_layout_enabled?
   requested = map_layout_requested
-  return requested == "graph" && sqlite_vec_available? unless requested.nil?
+  return requested == "graph" unless requested.nil?
 
-  sqlite_vec_available?
+  true
 end
 
 def map_integer_config(key, default:, min:, max:)
@@ -365,6 +365,42 @@ ensure
   end
 end
 
+def build_knn_edges_with_ruby(notes, k:)
+  STDOUT << "Building kNN graph with pure Ruby: notes=#{notes.length}, k=#{k}\n"
+  directed = []
+  embeddings = notes.map { |note| note[:embedding] }
+
+  embeddings.each_with_index do |src_embedding, src_idx|
+    neighbors = []
+    embeddings.each_with_index do |dst_embedding, dst_idx|
+      next if src_idx == dst_idx
+
+      weight = dot2(src_embedding, dst_embedding)
+      weight = [[weight, 0.0].max, 1.0].min
+      neighbors << [dst_idx, weight]
+    end
+
+    neighbors
+      .sort_by { |dst_idx, weight| [-weight, dst_idx] }
+      .first(k)
+      .each { |dst_idx, weight| directed << [src_idx, dst_idx, weight] }
+  end
+
+  STDOUT << "Built directed kNN edges: #{directed.length}\n"
+  directed
+end
+
+def build_knn_edges(notes, k:, vector_dim:)
+  if sqlite_vec_available?
+    build_knn_edges_with_sqlite_vec(notes, k: k, vector_dim: vector_dim)
+  else
+    build_knn_edges_with_ruby(notes, k: k)
+  end
+rescue GraphDependencyError => e
+  STDOUT << "#{e.message}; using pure Ruby kNN graph\n"
+  build_knn_edges_with_ruby(notes, k: k)
+end
+
 def symmetrize_knn_edges(directed_edges, node_count:, min_weight:)
   pair_weights = {}
   directed_edges.each do |src, dst, weight|
@@ -379,6 +415,7 @@ def symmetrize_knn_edges(directed_edges, node_count:, min_weight:)
   pair_weights.each do |(a, b), directed|
     wab = directed[[a, b]]
     wba = directed[[b, a]]
+    mutual = !wab.nil? && !wba.nil?
     weight = if wab && wba
       [wab, wba].max * 1.15
     else
@@ -389,7 +426,7 @@ def symmetrize_knn_edges(directed_edges, node_count:, min_weight:)
 
     adjacency[a][b] = weight
     adjacency[b][a] = weight
-    edges << [a, b, weight]
+    edges << { source: a, target: b, weight: weight, mutual: mutual }
   end
 
   {
@@ -397,6 +434,52 @@ def symmetrize_knn_edges(directed_edges, node_count:, min_weight:)
     adjacency: adjacency,
     edges: edges
   }
+end
+
+def graph_from_edges(edges, node_count:)
+  adjacency = Array.new(node_count) { {} }
+  edges.each do |edge|
+    a = edge[:source]
+    b = edge[:target]
+    weight = edge[:weight].to_f
+    adjacency[a][b] = weight
+    adjacency[b][a] = weight
+  end
+  { node_count: node_count, adjacency: adjacency, edges: edges }
+end
+
+def retain_layout_edges(edges, communities, cross_per_node:)
+  retained = {}
+  cross_by_node = Hash.new { |h, k| h[k] = [] }
+
+  edges.each do |edge|
+    a = edge[:source]
+    b = edge[:target]
+    same = communities[a] == communities[b]
+    key = a < b ? [a, b] : [b, a]
+
+    if same || edge[:mutual]
+      retained[key] = edge.merge(same_community: same, bridge: !same)
+    end
+
+    next if same
+
+    cross_by_node[a] << edge
+    cross_by_node[b] << edge
+  end
+
+  cross_by_node.each_value do |node_edges|
+    node_edges.sort_by { |edge| [-edge[:weight].to_f, edge[:source], edge[:target]] }
+      .first(cross_per_node)
+      .each do |edge|
+        a = edge[:source]
+        b = edge[:target]
+        key = a < b ? [a, b] : [b, a]
+        retained[key] = edge.merge(same_community: false, bridge: true)
+      end
+  end
+
+  retained.values.sort_by { |edge| [edge[:source], edge[:target]] }
 end
 
 def extract_id(file_path)
@@ -670,105 +753,6 @@ def compute_cluster_stats(points, members)
   stats
 end
 
-def scale_value(value, src_min, src_max, dst_min, dst_max)
-  span = src_max - src_min
-  return (dst_min + dst_max) / 2.0 if span.abs < 1e-9
-
-  dst_min + ((value - src_min) / span.to_f) * (dst_max - dst_min)
-end
-
-def expanded_cluster_anchors(stats, cluster_ids)
-  return {} if cluster_ids.empty?
-
-  anchors = cluster_ids.map { |cid| [stats[cid][:cx], stats[cid][:cy]] }
-  return { cluster_ids.first => [MAP_WIDTH / 2.0, MAP_HEIGHT / 2.0] } if anchors.length == 1
-
-  min_x, max_x = anchors.map(&:first).minmax
-  min_y, max_y = anchors.map(&:last).minmax
-  target_min_x = CLUSTER_LAYOUT_PAD_X
-  target_max_x = MAP_WIDTH - CLUSTER_LAYOUT_PAD_X
-  target_min_y = CLUSTER_LAYOUT_PAD_Y
-  target_max_y = MAP_HEIGHT - CLUSTER_LAYOUT_PAD_Y
-
-  out = {}
-  cluster_ids.each_with_index do |cid, idx|
-    raw_x, raw_y = anchors[idx]
-    x = scale_value(raw_x, min_x, max_x, target_min_x, target_max_x)
-    y = scale_value(raw_y, min_y, max_y, target_min_y, target_max_y)
-    out[cid] = [x, y]
-  end
-  out
-end
-
-def spread_cluster_centers(stats)
-  cluster_ids = stats.keys.sort
-  radii = cluster_ids.map do |cid|
-    s = stats[cid]
-    [58.0, Math.sqrt(s[:count]) * 4.4 + ((s[:dx] + s[:dy]) * 0.68)].max
-  end
-  expanded_anchors = expanded_cluster_anchors(stats, cluster_ids)
-  anchors = cluster_ids.map { |cid| expanded_anchors[cid] || [stats[cid][:cx], stats[cid][:cy]] }
-  centers = anchors.map(&:dup)
-
-  n = centers.length
-  340.times do
-    n.times do |i|
-      centers[i][0] += (anchors[i][0] - centers[i][0]) * 0.052
-      centers[i][1] += (anchors[i][1] - centers[i][1]) * 0.052
-    end
-
-    (0...n).each do |i|
-      ((i + 1)...n).each do |j|
-        dx = centers[j][0] - centers[i][0]
-        dy = centers[j][1] - centers[i][1]
-        dist = Math.sqrt(dx * dx + dy * dy)
-        dist = 0.001 if dist <= 0.001
-
-        min_dist = radii[i] + radii[j] + 74.0
-        next unless dist < min_dist
-
-        push = (min_dist - dist) / 2.0
-        ux = dx / dist
-        uy = dy / dist
-        centers[i][0] -= ux * push
-        centers[i][1] -= uy * push
-        centers[j][0] += ux * push
-        centers[j][1] += uy * push
-      end
-    end
-
-    n.times do |i|
-      margin = radii[i] + 18.0
-      centers[i][0] = [[centers[i][0], MAP_MARGIN + margin].max, MAP_WIDTH - MAP_MARGIN - margin].min
-      centers[i][1] = [[centers[i][1], MAP_MARGIN + margin].max, MAP_HEIGHT - MAP_MARGIN - margin].min
-    end
-  end
-
-  out = {}
-  cluster_ids.each_with_index { |cid, i| out[cid] = centers[i] }
-  out
-end
-
-def reposition_points!(points, members, before_stats, after_centers)
-  members.each do |cid, idxs|
-    old = before_stats[cid]
-    new_c = after_centers[cid]
-    next if old.nil? || new_c.nil?
-
-    stretch = 1.05 + (Math.log10(idxs.length + 1) * 0.35)
-    stretch = [[stretch, 1.12].max, 1.65].min
-
-    idxs.each do |i|
-      ox = points[i][0] - old[:cx]
-      oy = points[i][1] - old[:cy]
-      nx = new_c[0] + (ox * stretch)
-      ny = new_c[1] + (oy * stretch)
-      points[i][0] = [[nx, MAP_MARGIN].max, MAP_WIDTH - MAP_MARGIN].min
-      points[i][1] = [[ny, MAP_MARGIN].max, MAP_HEIGHT - MAP_MARGIN].min
-    end
-  end
-end
-
 def build_members_from_assignments(assignments)
   members = Hash.new { |h, cid| h[cid] = [] }
   assignments.each_with_index { |cid, idx| members[cid] << idx }
@@ -855,86 +839,6 @@ def detect_communities_weighted_local_moving(adjacency, min_size:)
   merge_small_communities(assignments, adjacency, min_size: min_size)
 end
 
-def layout_community_centers(adjacency, communities, width:, height:, margin:)
-  members = build_members_from_assignments(communities)
-  community_ids = members.keys.sort
-  return { community_ids.first => [width / 2.0, height / 2.0] } if community_ids.length == 1
-
-  center_x = width / 2.0
-  center_y = height / 2.0
-  centers = {}
-  community_ids.each_with_index do |cid, idx|
-    angle = idx * Math::PI * (3.0 - Math.sqrt(5.0))
-    radius = 56.0 * Math.sqrt(idx + 1)
-    centers[cid] = [center_x + (Math.cos(angle) * radius), center_y + (Math.sin(angle) * radius)]
-  end
-
-  community_edges = Hash.new(0.0)
-  adjacency.each_with_index do |neighbors, i|
-    neighbors.each do |j, weight|
-      next if j <= i
-      ci = communities[i]
-      cj = communities[j]
-      next if ci == cj
-      a, b = ci < cj ? [ci, cj] : [cj, ci]
-      community_edges[[a, b]] += weight.to_f
-    end
-  end
-
-  COMMUNITY_LAYOUT_ITERATIONS.times do |iter|
-    forces = Hash.new { |h, k| h[k] = [0.0, 0.0] }
-
-    community_ids.each_with_index do |ca, i|
-      ((i + 1)...community_ids.length).each do |j|
-        cb = community_ids[j]
-        dx = centers[cb][0] - centers[ca][0]
-        dy = centers[cb][1] - centers[ca][1]
-        dist = Math.sqrt((dx * dx) + (dy * dy))
-        dist = 1.0 if dist < 1.0
-        ux = dx / dist
-        uy = dy / dist
-        repulsion = COMMUNITY_REPULSION / (dist * dist)
-        forces[ca][0] -= ux * repulsion
-        forces[ca][1] -= uy * repulsion
-        forces[cb][0] += ux * repulsion
-        forces[cb][1] += uy * repulsion
-      end
-    end
-
-    community_edges.each do |(ca, cb), weight|
-      dx = centers[cb][0] - centers[ca][0]
-      dy = centers[cb][1] - centers[ca][1]
-      dist = Math.sqrt((dx * dx) + (dy * dy))
-      dist = 1.0 if dist < 1.0
-      ux = dx / dist
-      uy = dy / dist
-      attraction = COMMUNITY_ATTRACTION * weight * Math.log(dist / COMMUNITY_IDEAL_DISTANCE)
-      forces[ca][0] += ux * attraction
-      forces[ca][1] += uy * attraction
-      forces[cb][0] -= ux * attraction
-      forces[cb][1] -= uy * attraction
-    end
-
-    cooling = 1.0 - (iter.to_f / COMMUNITY_LAYOUT_ITERATIONS)
-    max_step = [8.0 * cooling, 0.8].max
-    community_ids.each do |cid|
-      fx, fy = forces[cid]
-      step = Math.sqrt((fx * fx) + (fy * fy))
-      if step > max_step
-        scale = max_step / step
-        fx *= scale
-        fy *= scale
-      end
-      centers[cid][0] += fx
-      centers[cid][1] += fy
-      centers[cid][0] = [[centers[cid][0], margin].max, width - margin].min
-      centers[cid][1] = [[centers[cid][1], margin].max, height - margin].min
-    end
-  end
-
-  centers
-end
-
 def normalize_points_to_canvas!(points, width:, height:, margin:)
   return if points.empty?
 
@@ -980,19 +884,13 @@ end
 def layout_graph_force(adjacency, communities, iterations:, width:, height:, margin:)
   node_count = adjacency.length
   members = build_members_from_assignments(communities)
-  community_centers = layout_community_centers(adjacency, communities, width: width, height: height, margin: margin)
-  points = Array.new(node_count) { [width / 2.0, height / 2.0] }
 
-  members.keys.sort.each do |cid|
-    idxs = members[cid].sort
-    center = community_centers[cid]
-    base_radius = [20.0, Math.sqrt(idxs.length) * 7.5].max
-    idxs.each_with_index do |idx, local_idx|
-      angle = (idx * 0.987_654_321) + (local_idx * 2.399_963_229_728_653)
-      radius = base_radius * Math.sqrt((local_idx + 1).to_f / idxs.length.to_f)
-      points[idx][0] = center[0] + (Math.cos(angle) * radius)
-      points[idx][1] = center[1] + (Math.sin(angle) * radius)
-    end
+  center_x = width / 2.0
+  center_y = height / 2.0
+  points = Array.new(node_count) do |idx|
+    angle = idx * Math::PI * (3.0 - Math.sqrt(5.0))
+    radius = 7.0 * Math.sqrt(idx + 1)
+    [center_x + (Math.cos(angle) * radius), center_y + (Math.sin(angle) * radius)]
   end
 
   edges = []
@@ -1014,8 +912,8 @@ def layout_graph_force(adjacency, communities, iterations:, width:, height:, mar
       ux = dx / dist
       uy = dy / dist
       same = communities[a] == communities[b]
-      ideal = same ? 34.0 : 110.0
-      strength = same ? 0.020 : 0.006
+      ideal = same ? SAME_COMMUNITY_EDGE_IDEAL : CROSS_COMMUNITY_EDGE_IDEAL
+      strength = same ? SAME_COMMUNITY_ATTRACTION : CROSS_COMMUNITY_ATTRACTION
       force = strength * w * (dist - ideal)
       fx = ux * force
       fy = uy * force
@@ -1025,59 +923,66 @@ def layout_graph_force(adjacency, communities, iterations:, width:, height:, mar
       forces[b][1] -= fy
     end
 
-    members.each_value do |idxs|
-      sorted = idxs.sort
-      if sorted.length <= 300
-        sorted.each_with_index do |a, i|
-          ((i + 1)...sorted.length).each do |j|
-            b = sorted[j]
-            dx = points[b][0] - points[a][0]
-            dy = points[b][1] - points[a][1]
-            dist2 = (dx * dx) + (dy * dy)
-            dist2 = 16.0 if dist2 < 16.0
-            dist = Math.sqrt(dist2)
-            ux = dx / dist
-            uy = dy / dist
-            rep = 14.0 / dist2
-            fx = ux * rep
-            fy = uy * rep
-            forces[a][0] -= fx
-            forces[a][1] -= fy
-            forces[b][0] += fx
-            forces[b][1] += fy
-          end
+    if node_count <= 1200
+      node_count.times do |a|
+        ((a + 1)...node_count).each do |b|
+          dx = points[b][0] - points[a][0]
+          dy = points[b][1] - points[a][1]
+          dist2 = (dx * dx) + (dy * dy)
+          dist2 = 16.0 if dist2 < 16.0
+          dist = Math.sqrt(dist2)
+          ux = dx / dist
+          uy = dy / dist
+          rep = 18.0 / dist2
+          fx = ux * rep
+          fy = uy * rep
+          forces[a][0] -= fx
+          forces[a][1] -= fy
+          forces[b][0] += fx
+          forces[b][1] += fy
         end
-      else
-        offsets = [1, 7, 19, 43]
-        sorted.each_with_index do |a, idx|
-          offsets.each do |offset|
-            j = idx + offset
-            break if j >= sorted.length
-            b = sorted[j]
-            dx = points[b][0] - points[a][0]
-            dy = points[b][1] - points[a][1]
-            dist2 = (dx * dx) + (dy * dy)
-            dist2 = 16.0 if dist2 < 16.0
-            dist = Math.sqrt(dist2)
-            ux = dx / dist
-            uy = dy / dist
-            rep = 14.0 / dist2
-            fx = ux * rep
-            fy = uy * rep
-            forces[a][0] -= fx
-            forces[a][1] -= fy
-            forces[b][0] += fx
-            forces[b][1] += fy
-          end
+      end
+    else
+      offsets = [1, 7, 19, 43, 97, 211]
+      node_count.times do |a|
+        offsets.each do |offset|
+          b = a + offset
+          break if b >= node_count
+          dx = points[b][0] - points[a][0]
+          dy = points[b][1] - points[a][1]
+          dist2 = (dx * dx) + (dy * dy)
+          dist2 = 16.0 if dist2 < 16.0
+          dist = Math.sqrt(dist2)
+          ux = dx / dist
+          uy = dy / dist
+          rep = 18.0 / dist2
+          fx = ux * rep
+          fy = uy * rep
+          forces[a][0] -= fx
+          forces[a][1] -= fy
+          forces[b][0] += fx
+          forces[b][1] += fy
         end
       end
     end
 
+    centroids = {}
+    members.each do |cid, idxs|
+      sx = 0.0
+      sy = 0.0
+      idxs.each do |idx|
+        sx += points[idx][0]
+        sy += points[idx][1]
+      end
+      centroids[cid] = [sx / idxs.length.to_f, sy / idxs.length.to_f]
+    end
+
     node_count.times do |idx|
-      cid = communities[idx]
-      center = community_centers[cid]
-      forces[idx][0] += (center[0] - points[idx][0]) * 0.004
-      forces[idx][1] += (center[1] - points[idx][1]) * 0.004
+      centroid = centroids[communities[idx]]
+      next if centroid.nil?
+
+      forces[idx][0] += (centroid[0] - points[idx][0]) * COMMUNITY_GRAVITY
+      forces[idx][1] += (centroid[1] - points[idx][1]) * COMMUNITY_GRAVITY
     end
 
     temperature = NODE_INITIAL_TEMP * (1.0 - (iter.to_f / iterations.to_f))
@@ -1094,29 +999,37 @@ def layout_graph_force(adjacency, communities, iterations:, width:, height:, mar
 
       points[idx][0] += fx
       points[idx][1] += fy
-      points[idx][0] = [[points[idx][0], margin].max, width - margin].min
-      points[idx][1] = [[points[idx][1], margin].max, height - margin].min
     end
   end
 
+  raw_points = points.map(&:dup)
   normalize_points_to_canvas!(points, width: width, height: height, margin: margin)
-  points
+  { points: points, raw_points: raw_points }
 end
 
-def community_weighted_degrees(adjacency, members)
-  score = {}
-  members.each do |cid, idxs|
-    idx_set = idxs.each_with_object({}) { |idx, h| h[idx] = true }
-    idxs.each do |idx|
-      degree = 0.0
-      adjacency[idx].each do |neighbor_idx, weight|
-        next unless idx_set[neighbor_idx]
-        degree += weight.to_f
+def node_graph_debug(adjacency, communities)
+  debug = {}
+  adjacency.each_with_index do |neighbors, idx|
+    internal = 0.0
+    external = 0.0
+    neighbors.each do |neighbor_idx, weight|
+      if communities[idx] == communities[neighbor_idx]
+        internal += weight.to_f
+      else
+        external += weight.to_f
       end
-      score[idx] = degree
     end
+
+    total = internal + external
+    debug[idx] = {
+      community_id: communities[idx],
+      degree: neighbors.length,
+      internal_weight: internal,
+      external_weight: external,
+      bridge_score: total <= 0.0 ? 0.0 : external / total
+    }
   end
-  score
+  debug
 end
 
 def label_excerpt(text, max_chars = MAX_LABEL_CHARS)
@@ -1321,7 +1234,7 @@ def alternate_duplicate_label(label)
   ""
 end
 
-def cluster_samples_for_labels(notes, points, members, stats, degree_scores: nil, ordered_cluster_ids: nil)
+def cluster_samples_for_labels(notes, points, members, stats, degree_scores: nil, ordered_cluster_ids: nil, neighbor_samples: nil)
   cluster_ids = ordered_cluster_ids || members.keys.sort
   cluster_ids.each_with_index.map do |cid, order_idx|
     idxs = members[cid]
@@ -1344,7 +1257,8 @@ def cluster_samples_for_labels(notes, points, members, stats, degree_scores: nil
       cluster_id: cid,
       cluster_index: order_idx + 1,
       snippets: snippets,
-      keywords: keywords_from_snippets(snippets, 8)
+      keywords: keywords_from_snippets(snippets, 8),
+      neighbors: neighbor_samples&.fetch(cid, []) || []
     }
   end
 end
@@ -1359,6 +1273,16 @@ def build_label_prompt(cluster_sample, used_labels: [], rejected_labels: [], att
   rejected_xml = rejected_labels.last(12).map do |label|
     %(    <label>#{xml_escape(label)}</label>)
   end.join("\n")
+  neighbors_xml = cluster_sample[:neighbors].map do |neighbor|
+    %(    <neighbor index="#{neighbor[:cluster_index]}"><keywords>#{xml_escape(neighbor[:keywords].join(", "))}</keywords></neighbor>)
+  end.join("\n")
+  neighbors_block = neighbors_xml.empty? ? "" : <<~NEIGHBORS
+
+    Nearest neighboring clusters. Use these to make this label contrastive rather than generic:
+    <neighbor_clusters>
+#{neighbors_xml}
+    </neighbor_clusters>
+  NEIGHBORS
   retry_note = attempt > 1 ? "    - This is retry #{attempt}. The previous answer failed validation; choose a different valid label.\n" : ""
   used_block = used_xml.empty? ? "" : <<~USED
 
@@ -1379,13 +1303,16 @@ def build_label_prompt(cluster_sample, used_labels: [], rejected_labels: [], att
     You are naming one knowledge mountain in a cognition map.
     The model is small, so keep reasoning private and output format strict.
 
-    Return only the label text, nothing else.
+    Return only strict JSON with keys: primaryLabel, subtitle, keywordChips.
     Rules:
     - Prefer a polished Chinese label of 2 to 6 characters.
     - If English is clearly better, use 1 to 3 words.
-    - Prefer short abstract topical themes.
+    - primaryLabel must be specific and contrast this cluster from neighboring clusters.
+    - subtitle should be a concise phrase explaining the cluster focus.
+    - keywordChips must contain exactly 3 short keywords.
+    - Avoid generic labels like 职场智慧 unless no sharper label is possible.
     - Use neutral written style. Avoid slang, sentence fragments, and invented abbreviations.
-    - Do not output reasoning, filenames, URLs, code syntax, XML tags, punctuation wrappers, or explanations.
+    - Do not output reasoning, filenames, URLs, code syntax, XML tags, or explanations outside the JSON object.
     - Do not output special tokens such as <|endoftext|>, <think>, or </think>.
     - Do not use the words Cluster, Mountain, Label, or Note.
     - Avoid generic or broken labels like win, key, need, road, attentio, greatapi.
@@ -1418,6 +1345,7 @@ def build_label_prompt(cluster_sample, used_labels: [], rejected_labels: [], att
     summary every time
     elaborate usability tests
 #{used_block}#{rejected_block}
+#{neighbors_block}
 
     <cluster index="#{cluster_sample[:cluster_index]}">
       <keywords>#{xml_escape(cluster_sample[:keywords].join(", "))}</keywords>
@@ -1426,6 +1354,40 @@ def build_label_prompt(cluster_sample, used_labels: [], rejected_labels: [], att
       </notes>
     </cluster>
   PROMPT
+end
+
+def sanitize_label_details(raw_response, fallback_keywords)
+  parsed = JSON.parse(strip_model_artifacts(raw_response).to_s)
+  primary = sanitize_label(parsed["primaryLabel"] || parsed[:primaryLabel])
+  return nil if primary.empty?
+
+  subtitle = clean_label_fragment(parsed["subtitle"] || parsed[:subtitle]).strip
+  subtitle = subtitle[0, 60]
+  chips_raw = parsed["keywordChips"] || parsed[:keywordChips] || []
+  chips = Array(chips_raw)
+    .map { |chip| clean_label_fragment(chip).strip }
+    .reject(&:empty?)
+    .first(3)
+  fallback_keywords.each do |keyword|
+    break if chips.length >= 3
+    chip = clean_label_fragment(keyword).strip
+    chips << chip unless chip.empty? || chips.include?(chip)
+  end
+
+  {
+    primaryLabel: primary,
+    subtitle: subtitle,
+    keywordChips: chips.first(3)
+  }
+rescue JSON::ParserError, TypeError
+  primary = sanitize_label(raw_response)
+  return nil if primary.empty?
+
+  {
+    primaryLabel: primary,
+    subtitle: "",
+    keywordChips: fallback_keywords.first(3)
+  }
 end
 
 def generate_cluster_labels(cluster_samples)
@@ -1449,12 +1411,12 @@ def generate_cluster_labels(cluster_samples)
           attempt: attempt
         )
         raw_response = chat([
-          { role: ROLE_SYSTEM, content: "You output only the final map label text." },
+          { role: ROLE_SYSTEM, content: "You output only strict JSON for the final map label." },
           { role: ROLE_USER, content: prompt }
         ]).to_s
 
-        label = sanitize_label(raw_response)
-        if label.empty?
+        label = sanitize_label_details(raw_response, cluster_sample[:keywords])
+        if label.nil? || label[:primaryLabel].to_s.empty?
           add_rejected_label(rejected_labels, raw_response)
           log_label_warning(
             "Empty label from LLM for cluster #{cluster_index} (attempt #{attempt}/#{MAX_LABEL_ATTEMPTS})",
@@ -1463,11 +1425,11 @@ def generate_cluster_labels(cluster_samples)
           next
         end
 
-        key = label_key(label)
+        key = label_key(label[:primaryLabel])
         if used_label_keys.include?(key)
-          add_rejected_label(rejected_labels, label)
+          add_rejected_label(rejected_labels, label[:primaryLabel])
           log_label_warning(
-            "Duplicate label from LLM for cluster #{cluster_index}: #{label} (attempt #{attempt}/#{MAX_LABEL_ATTEMPTS})",
+            "Duplicate label from LLM for cluster #{cluster_index}: #{label[:primaryLabel]} (attempt #{attempt}/#{MAX_LABEL_ATTEMPTS})",
             response: raw_response
           )
           next
@@ -1486,15 +1448,20 @@ def generate_cluster_labels(cluster_samples)
     end
 
     if assigned_label.to_s.strip.empty?
-      assigned_label = fallback_label(cluster_sample[:snippets], cluster_index, used_label_keys)
+      primary = fallback_label(cluster_sample[:snippets], cluster_index, used_label_keys)
+      assigned_label = {
+        primaryLabel: primary,
+        subtitle: "",
+        keywordChips: cluster_sample[:keywords].first(3)
+      }
       log_label_warning(
-        "Using fallback label for cluster #{cluster_index}: #{assigned_label}"
+        "Using fallback label for cluster #{cluster_index}: #{primary}"
       )
     end
 
     labels[cluster_index] = assigned_label
-    used_label_keys.add(label_key(assigned_label))
-    used_label_texts << assigned_label
+    used_label_keys.add(label_key(assigned_label[:primaryLabel]))
+    used_label_texts << assigned_label[:primaryLabel]
   end
 
   labels
@@ -1521,15 +1488,58 @@ def prepare_notes_for_map!(notes)
   vector_dim
 end
 
-def build_map_payload(notes, points, assignments, members, final_stats, vector_dim, layout_meta: nil, degree_scores: nil)
+def cluster_neighbor_samples(members, members_sorted, layout_edges, assignments, notes)
+  cluster_index = {}
+  members_sorted.each_with_index { |cid, idx| cluster_index[cid] = idx + 1 }
+  snippets_by_cluster = {}
+  members_sorted.each do |cid|
+    snippets = members[cid].first(MAX_LABEL_SNIPPETS).map { |idx| label_excerpt(notes[idx][:text]) }.reject(&:empty?)
+    snippets_by_cluster[cid] = snippets
+  end
+
+  scores = Hash.new(0.0)
+  layout_edges.each do |edge|
+    a = edge[:source]
+    b = edge[:target]
+    ca = assignments[a]
+    cb = assignments[b]
+    next if ca == cb
+    left, right = ca < cb ? [ca, cb] : [cb, ca]
+    scores[[left, right]] += edge[:weight].to_f
+  end
+
+  out = Hash.new { |h, k| h[k] = [] }
+  scores.each do |(ca, cb), weight|
+    out[ca] << { cluster_id: cb, cluster_index: cluster_index[cb], weight: weight }
+    out[cb] << { cluster_id: ca, cluster_index: cluster_index[ca], weight: weight }
+  end
+
+  out.each do |cid, neighbors|
+    out[cid] = neighbors
+      .sort_by { |neighbor| [-neighbor[:weight], neighbor[:cluster_index]] }
+      .first(4)
+      .map do |neighbor|
+        snippets = snippets_by_cluster[neighbor[:cluster_id]] || []
+        {
+          cluster_index: neighbor[:cluster_index],
+          keywords: keywords_from_snippets(snippets, 6)
+        }
+      end
+  end
+  out
+end
+
+def build_map_payload(notes, points, assignments, members, final_stats, vector_dim, layout_meta: nil, degree_scores: nil, graph_debug: nil, raw_points: nil, layout_edges: nil)
   members_sorted = members.keys.sort_by { |cid| [-members[cid].length, cid] }
+  neighbor_samples = cluster_neighbor_samples(members, members_sorted, layout_edges || [], assignments, notes)
   cluster_samples = cluster_samples_for_labels(
     notes,
     points,
     members,
     final_stats,
     degree_scores: degree_scores,
-    ordered_cluster_ids: members_sorted
+    ordered_cluster_ids: members_sorted,
+    neighbor_samples: neighbor_samples
   )
   cluster_sample_by_id = {}
   cluster_samples.each { |sample| cluster_sample_by_id[sample[:cluster_id]] = sample }
@@ -1544,13 +1554,20 @@ def build_map_payload(notes, points, assignments, members, final_stats, vector_d
     cluster_id_order_map[cid] = cluster_id
 
     snippets = cluster_sample_by_id.fetch(cid, { snippets: [] })[:snippets]
-    label = llm_labels[cluster_index]
+    label_details = llm_labels[cluster_index] || {}
+    label = label_details[:primaryLabel]
     if label.to_s.strip.empty?
       label = fallback_label(snippets, cluster_index, final_label_keys)
+      label_details = {
+        primaryLabel: label,
+        subtitle: "",
+        keywordChips: cluster_sample_by_id.fetch(cid, { keywords: [] })[:keywords].first(3)
+      }
     end
     key = label_key(label)
     if final_label_keys.include?(key)
       label = fallback_label(snippets, cluster_index, final_label_keys)
+      label_details = label_details.merge(primaryLabel: label)
       key = label_key(label)
     end
     final_label_keys.add(key)
@@ -1558,6 +1575,9 @@ def build_map_payload(notes, points, assignments, members, final_stats, vector_d
     {
       id: cluster_id,
       label: label,
+      primaryLabel: label,
+      subtitle: label_details[:subtitle].to_s,
+      keywordChips: Array(label_details[:keywordChips]).first(3),
       centerX: stat[:cx].round(2),
       centerY: stat[:cy].round(2),
       spreadX: (stat[:dx] + 36.0).round(2),
@@ -1568,8 +1588,10 @@ def build_map_payload(notes, points, assignments, members, final_stats, vector_d
 
   notes_payload = notes.each_with_index.map do |n, idx|
     cid = assignments[idx]
+    debug = graph_debug&.fetch(idx, {}) || {}
     {
       id: "#{n[:lookup]}::#{n[:path]}##{n[:chunk]}",
+      index: idx,
       lookup: n[:lookup],
       path: n[:path],
       chunk: n[:chunk],
@@ -1579,7 +1601,25 @@ def build_map_payload(notes, points, assignments, members, final_stats, vector_d
       snippet: map_snippet(n[:text]),
       x: points[idx][0].round(2),
       y: points[idx][1].round(2),
-      clusterId: cluster_id_order_map[cid]
+      rawX: raw_points ? raw_points[idx][0].round(4) : nil,
+      rawY: raw_points ? raw_points[idx][1].round(4) : nil,
+      clusterId: cluster_id_order_map[cid],
+      communityId: debug[:community_id] || cid,
+      degree: debug[:degree] || 0,
+      internalWeight: (debug[:internal_weight] || 0.0).round(4),
+      externalWeight: (debug[:external_weight] || 0.0).round(4),
+      bridgeScore: (debug[:bridge_score] || 0.0).round(4)
+    }
+  end
+
+  edges_payload = Array(layout_edges).map do |edge|
+    {
+      sourceIndex: edge[:source],
+      targetIndex: edge[:target],
+      weight: edge[:weight].round(4),
+      sameCommunity: !!edge[:same_community],
+      bridge: !!edge[:bridge],
+      mutual: !!edge[:mutual]
     }
   end
 
@@ -1590,7 +1630,8 @@ def build_map_payload(notes, points, assignments, members, final_stats, vector_d
     width: MAP_WIDTH,
     height: MAP_HEIGHT,
     clusters: clusters,
-    notes: notes_payload
+    notes: notes_payload,
+    edges: edges_payload
   }
   payload[:layout] = layout_meta if layout_meta
   payload
@@ -1615,12 +1656,13 @@ def build_map_data_with_kmeans(notes, vector_dim:, fallback_reason: nil)
   centers, assignments = merge_small_clusters(points, centers, assignments)
 
   members = build_members_from_assignments(assignments)
-  before_stats = compute_cluster_stats(points, members)
-  spread_centers = spread_cluster_centers(before_stats)
-  reposition_points!(points, members, before_stats, spread_centers)
   final_stats = compute_cluster_stats(points, members)
 
-  layout_meta = { method: "kmeans" }
+  layout_meta = {
+    method: "kmeans",
+    layoutMethod: "global_embedding_projection",
+    communityUsage: "ids_labels_metadata_only"
+  }
   layout_meta[:fallbackReason] = fallback_reason if fallback_reason
   build_map_payload(notes, points, assignments, members, final_stats, vector_dim, layout_meta: layout_meta)
 end
@@ -1631,7 +1673,7 @@ def build_map_data_with_graph(notes, vector_dim:)
   min_edge_weight = graph_edge_min_weight
   iterations = map_layout_iterations
 
-  directed_edges = build_knn_edges_with_sqlite_vec(notes, k: k, vector_dim: vector_dim)
+  directed_edges = build_knn_edges(notes, k: k, vector_dim: vector_dim)
   graph = symmetrize_knn_edges(directed_edges, node_count: notes.length, min_weight: min_edge_weight)
   adjacency = graph[:adjacency]
   edges = graph[:edges]
@@ -1647,25 +1689,46 @@ def build_map_data_with_graph(notes, vector_dim:)
     raise ArgumentError, "Graph community count too high (#{members.length}); check kNN graph connectivity or increase map.communityMinSize"
   end
   STDOUT << "Detected communities: #{members.length}\n"
+  layout_edges = retain_layout_edges(
+    edges,
+    assignments,
+    cross_per_node: MAP_CROSS_COMMUNITY_EDGES_PER_NODE
+  )
+  layout_graph = graph_from_edges(layout_edges, node_count: notes.length)
+  layout_adjacency = layout_graph[:adjacency]
+  bridge_count = layout_edges.count { |edge| edge[:bridge] }
+  STDOUT << "Retained layout edges: #{layout_edges.length} (bridges=#{bridge_count})\n"
   STDOUT << "Running force layout: iterations=#{iterations}\n"
 
-  points = layout_graph_force(
-    adjacency,
+  layout_result = layout_graph_force(
+    layout_adjacency,
     assignments,
     iterations: iterations,
     width: MAP_WIDTH,
     height: MAP_HEIGHT,
     margin: MAP_MARGIN
   )
+  points = layout_result[:points]
+  raw_points = layout_result[:raw_points]
   final_stats = compute_cluster_stats(points, members)
-  degree_scores = community_weighted_degrees(adjacency, members)
+  graph_debug = node_graph_debug(layout_adjacency, assignments)
+  degree_scores = graph_debug.transform_values { |debug| debug[:internal_weight] }
 
   layout_meta = {
     method: "graph",
     knnK: k,
+    retainedCrossCommunityEdgesPerNode: MAP_CROSS_COMMUNITY_EDGES_PER_NODE,
     communityMethod: "weighted_local_moving",
-    layoutMethod: "force_directed",
-    edgeCount: edges.length
+    communityUsage: "ids_labels_metadata_only",
+    layoutMethod: "global_force_directed",
+    edgeCount: edges.length,
+    retainedEdgeCount: layout_edges.length,
+    bridgeEdgeCount: bridge_count,
+    sameCommunityIdealLength: SAME_COMMUNITY_EDGE_IDEAL,
+    crossCommunityIdealLength: CROSS_COMMUNITY_EDGE_IDEAL,
+    sameCommunityAttraction: SAME_COMMUNITY_ATTRACTION,
+    crossCommunityAttraction: CROSS_COMMUNITY_ATTRACTION,
+    communityGravity: COMMUNITY_GRAVITY
   }
   build_map_payload(
     notes,
@@ -1675,7 +1738,10 @@ def build_map_data_with_graph(notes, vector_dim:)
     final_stats,
     vector_dim,
     layout_meta: layout_meta,
-    degree_scores: degree_scores
+    degree_scores: degree_scores,
+    graph_debug: graph_debug,
+    raw_points: raw_points,
+    layout_edges: layout_edges
   )
 end
 
@@ -1694,11 +1760,6 @@ def build_map_data(notes)
       STDOUT << "sqlite-vec unavailable on this platform; falling back to kmeans layout\n"
       return build_map_data_with_kmeans(notes, vector_dim: vector_dim, fallback_reason: e.message)
     end
-  end
-
-  if requested_layout == "graph" && !sqlite_vec_available?
-    STDOUT << "sqlite-vec unavailable on this platform; falling back to kmeans layout\n"
-    return build_map_data_with_kmeans(notes, vector_dim: vector_dim, fallback_reason: "sqlite-vec unavailable")
   end
 
   STDOUT << "Map layout: kmeans\n"
