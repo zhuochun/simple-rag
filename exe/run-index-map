@@ -21,9 +21,17 @@ require "digest"
 require "set"
 require "time"
 require "fileutils"
+require "sqlite3"
 begin
   require "bundler/setup"
 rescue LoadError
+end
+
+SQLITE_VEC_AVAILABLE = begin
+  require "sqlite_vec"
+  true
+rescue LoadError
+  false
 end
 
 require_relative "../lib/config_loader"
@@ -68,6 +76,18 @@ KMEANS_MAX_ITER = 24
 KMEANS_EPSILON = 1e-5
 CLUSTER_LAYOUT_PAD_X = 220.0
 CLUSTER_LAYOUT_PAD_Y = 120.0
+MAP_LAYOUT_DEFAULT = "graph"
+MAP_KNN_K_DEFAULT = 30
+MAP_COMMUNITY_MIN_SIZE_DEFAULT = 8
+MAP_GRAPH_EDGE_MIN_WEIGHT_DEFAULT = 0.0
+MAP_LAYOUT_ITERATIONS_DEFAULT = 650
+NODE_LAYOUT_ITERATION_MAX = 3000
+NODE_LAYOUT_MIN_ITERATIONS = 50
+COMMUNITY_LAYOUT_ITERATIONS = 250
+COMMUNITY_IDEAL_DISTANCE = 260.0
+COMMUNITY_ATTRACTION = 0.012
+COMMUNITY_REPULSION = 9000.0
+NODE_INITIAL_TEMP = 18.0
 
 def config_value(section, key)
   return nil if section.nil?
@@ -90,6 +110,68 @@ end
 
 def map_config_value(key)
   config_value(map_section, key)
+end
+
+def windows_platform?
+  Gem::Platform.local.to_s.include?("mingw-ucrt")
+end
+
+def sqlite_vec_available?
+  SQLITE_VEC_AVAILABLE && !windows_platform?
+end
+
+def map_layout_requested
+  raw = map_config_value(:layout)
+  return nil if raw.nil? || raw.to_s.strip.empty?
+
+  value = raw.to_s.strip.downcase
+  unless %w[graph kmeans].include?(value)
+    raise ArgumentError, %(Invalid map.layout "#{raw}". Expected "graph" or "kmeans")
+  end
+  value
+end
+
+def graph_layout_enabled?
+  requested = map_layout_requested
+  return requested == "graph" unless requested.nil?
+
+  sqlite_vec_available?
+end
+
+def map_integer_config(key, default:, min:, max:)
+  raw = map_config_value(key)
+  value = raw.nil? ? default : Integer(raw)
+  raise ArgumentError, "Invalid map.#{key}: must be >= #{min}" if value < min
+  [value, max].min
+end
+
+def map_float_config(key, default:)
+  raw = map_config_value(key)
+  raw.nil? ? default : Float(raw)
+end
+
+def graph_knn_k(note_count)
+  k = map_integer_config(:knnK, default: MAP_KNN_K_DEFAULT, min: 3, max: 10_000)
+  [k, [note_count - 1, 1].max].min
+end
+
+def graph_community_min_size
+  map_integer_config(:communityMinSize, default: MAP_COMMUNITY_MIN_SIZE_DEFAULT, min: 2, max: 10_000)
+end
+
+def graph_edge_min_weight
+  value = map_float_config(:graphEdgeMinWeight, default: MAP_GRAPH_EDGE_MIN_WEIGHT_DEFAULT)
+  raise ArgumentError, "Invalid map.graphEdgeMinWeight: must be >= 0.0" if value < 0.0
+  [value, 1.0].min
+end
+
+def map_layout_iterations
+  map_integer_config(
+    :layoutIterations,
+    default: MAP_LAYOUT_ITERATIONS_DEFAULT,
+    min: NODE_LAYOUT_MIN_ITERATIONS,
+    max: NODE_LAYOUT_ITERATION_MAX
+  )
 end
 
 def should_start_ollama?
@@ -182,6 +264,138 @@ end
 
 def cosine_distance(a, b)
   1.0 - dot2(a, b)
+end
+
+class GraphDependencyError < StandardError; end
+
+def vec_literal(vec)
+  JSON.generate(vec.map(&:to_f))
+end
+
+def distance_to_weight(distance)
+  cosine = 1.0 - ((distance.to_f * distance.to_f) / 2.0)
+  [[cosine, 0.0].max, 1.0].min
+end
+
+def open_vec_db
+  db = SQLite3::Database.new(":memory:")
+  db.results_as_hash = true
+  begin
+    db.enable_load_extension(true)
+  rescue
+    # ignore: some sqlite3 builds disallow extension loading
+  end
+
+  begin
+    if SQLITE_VEC_AVAILABLE
+      SqliteVec.load(db)
+    else
+      raise GraphDependencyError, "sqlite-vec gem is not installed"
+    end
+  rescue LoadError => e
+    raise GraphDependencyError, "sqlite-vec gem load failed: #{e.message}"
+  rescue => e
+    raise GraphDependencyError, "sqlite-vec extension init failed: #{e.class}: #{e.message}"
+  ensure
+    begin
+      db.enable_load_extension(false)
+    rescue
+      # ignore
+    end
+  end
+
+  begin
+    db.get_first_value("SELECT vec_version()")
+  rescue => e
+    raise GraphDependencyError, "sqlite-vec health check failed: #{e.class}: #{e.message}"
+  end
+
+  db
+end
+
+def build_knn_edges_with_sqlite_vec(notes, k:, vector_dim:)
+  STDOUT << "Building kNN graph with sqlite-vec: notes=#{notes.length}, dim=#{vector_dim}, k=#{k}\n"
+  db = open_vec_db
+  db.execute("CREATE VIRTUAL TABLE vec_notes USING vec0(embedding float[#{vector_dim}])")
+
+  db.transaction do
+    notes.each_with_index do |note, idx|
+      note[:map_idx] = idx
+      db.execute(
+        "INSERT INTO vec_notes(rowid, embedding) VALUES(?, ?)",
+        [idx + 1, vec_literal(note[:embedding])]
+      )
+    end
+  end
+
+  directed = []
+  notes.length.times do |src_idx|
+    query = vec_literal(notes[src_idx][:embedding])
+    rows = db.execute(
+      "SELECT rowid, distance FROM vec_notes WHERE embedding MATCH ? AND k = ? ORDER BY distance",
+      [query, k + 1]
+    )
+    rows.each do |row|
+      dst_idx = (row["rowid"] || row[0]).to_i - 1
+      next if dst_idx == src_idx
+      next if dst_idx < 0 || dst_idx >= notes.length
+
+      directed << [src_idx, dst_idx, distance_to_weight(row["distance"] || row[1])]
+    end
+  end
+  db.close
+
+  STDOUT << "Built directed kNN edges: #{directed.length}\n"
+  directed
+rescue SQLite3::Exception => e
+  message = e.message.to_s.downcase
+  if message.include?("no such module: vec0") ||
+     message.include?("no such function: vec_version") ||
+     message.include?("no such function: vec_distance") ||
+     message.include?("unable to open shared library")
+    raise GraphDependencyError, "sqlite-vec query unavailable: #{e.message}"
+  end
+  raise
+ensure
+  begin
+    db&.close
+  rescue
+    # ignore
+  end
+end
+
+def symmetrize_knn_edges(directed_edges, node_count:, min_weight:)
+  pair_weights = {}
+  directed_edges.each do |src, dst, weight|
+    next if src == dst
+    a, b = src < dst ? [src, dst] : [dst, src]
+    pair_weights[[a, b]] ||= {}
+    pair_weights[[a, b]][[src, dst]] = weight.to_f
+  end
+
+  adjacency = Array.new(node_count) { {} }
+  edges = []
+  pair_weights.each do |(a, b), directed|
+    wab = directed[[a, b]]
+    wba = directed[[b, a]]
+    weight = if wab && wba
+      [wab, wba].max * 1.15
+    else
+      (wab || wba).to_f
+    end
+    weight = [[weight, 0.0].max, 1.0].min
+    next if weight < min_weight
+
+    adjacency[a][b] = weight
+    adjacency[b][a] = weight
+    edges << [a, b, weight]
+  end
+
+  {
+    node_count: node_count,
+    adjacency: adjacency,
+    edges: edges
+  }
 end
 
 def extract_id(file_path)
@@ -554,6 +768,356 @@ def reposition_points!(points, members, before_stats, after_centers)
   end
 end
 
+def build_members_from_assignments(assignments)
+  members = Hash.new { |h, cid| h[cid] = [] }
+  assignments.each_with_index { |cid, idx| members[cid] << idx }
+  members
+end
+
+def merge_small_communities(assignments, adjacency, min_size:)
+  loop do
+    members = build_members_from_assignments(assignments)
+    small = members.select { |_cid, idxs| idxs.length < min_size }
+    break if small.empty?
+
+    changed = false
+    small.keys.sort.each do |cid|
+      idxs = members[cid]
+      next if idxs.nil? || idxs.empty?
+
+      score_by_community = Hash.new(0.0)
+      idxs.each do |idx|
+        adjacency[idx].each do |neighbor_idx, weight|
+          neighbor_cid = assignments[neighbor_idx]
+          next if neighbor_cid == cid
+          score_by_community[neighbor_cid] += weight.to_f
+        end
+      end
+      next if score_by_community.empty?
+
+      target_cid, _best = score_by_community.sort_by { |other_cid, score| [-score, other_cid] }.first
+      idxs.each { |idx| assignments[idx] = target_cid }
+      changed = true
+    end
+
+    break unless changed
+  end
+
+  members = build_members_from_assignments(assignments)
+  ordered = members.keys.sort_by { |cid| [-members[cid].length, cid] }
+  remap = {}
+  ordered.each_with_index { |cid, dense| remap[cid] = dense }
+  assignments.map { |cid| remap[cid] }
+end
+
+def detect_communities_weighted_local_moving(adjacency, min_size:)
+  node_count = adjacency.length
+  assignments = Array.new(node_count) { |idx| idx }
+  epsilon = 1e-9
+
+  30.times do
+    moved = false
+    community_sizes = Hash.new(0)
+    assignments.each { |cid| community_sizes[cid] += 1 }
+
+    (0...node_count).each do |idx|
+      current = assignments[idx]
+      neighbor_scores = Hash.new(0.0)
+      adjacency[idx].each do |neighbor_idx, weight|
+        neighbor_scores[assignments[neighbor_idx]] += weight.to_f
+      end
+      next if neighbor_scores.empty?
+
+      current_score = neighbor_scores[current].to_f / Math.sqrt([community_sizes[current], 1].max)
+      best_cid = current
+      best_score = current_score
+
+      neighbor_scores.keys.sort.each do |candidate_cid|
+        score = neighbor_scores[candidate_cid].to_f / Math.sqrt([community_sizes[candidate_cid], 1].max)
+        if score > best_score + epsilon
+          best_score = score
+          best_cid = candidate_cid
+        end
+      end
+
+      next if best_cid == current
+
+      assignments[idx] = best_cid
+      community_sizes[current] -= 1
+      community_sizes[best_cid] += 1
+      moved = true
+    end
+
+    break unless moved
+  end
+
+  merge_small_communities(assignments, adjacency, min_size: min_size)
+end
+
+def layout_community_centers(adjacency, communities, width:, height:, margin:)
+  members = build_members_from_assignments(communities)
+  community_ids = members.keys.sort
+  return { community_ids.first => [width / 2.0, height / 2.0] } if community_ids.length == 1
+
+  center_x = width / 2.0
+  center_y = height / 2.0
+  centers = {}
+  community_ids.each_with_index do |cid, idx|
+    angle = idx * Math::PI * (3.0 - Math.sqrt(5.0))
+    radius = 56.0 * Math.sqrt(idx + 1)
+    centers[cid] = [center_x + (Math.cos(angle) * radius), center_y + (Math.sin(angle) * radius)]
+  end
+
+  community_edges = Hash.new(0.0)
+  adjacency.each_with_index do |neighbors, i|
+    neighbors.each do |j, weight|
+      next if j <= i
+      ci = communities[i]
+      cj = communities[j]
+      next if ci == cj
+      a, b = ci < cj ? [ci, cj] : [cj, ci]
+      community_edges[[a, b]] += weight.to_f
+    end
+  end
+
+  COMMUNITY_LAYOUT_ITERATIONS.times do |iter|
+    forces = Hash.new { |h, k| h[k] = [0.0, 0.0] }
+
+    community_ids.each_with_index do |ca, i|
+      ((i + 1)...community_ids.length).each do |j|
+        cb = community_ids[j]
+        dx = centers[cb][0] - centers[ca][0]
+        dy = centers[cb][1] - centers[ca][1]
+        dist = Math.sqrt((dx * dx) + (dy * dy))
+        dist = 1.0 if dist < 1.0
+        ux = dx / dist
+        uy = dy / dist
+        repulsion = COMMUNITY_REPULSION / (dist * dist)
+        forces[ca][0] -= ux * repulsion
+        forces[ca][1] -= uy * repulsion
+        forces[cb][0] += ux * repulsion
+        forces[cb][1] += uy * repulsion
+      end
+    end
+
+    community_edges.each do |(ca, cb), weight|
+      dx = centers[cb][0] - centers[ca][0]
+      dy = centers[cb][1] - centers[ca][1]
+      dist = Math.sqrt((dx * dx) + (dy * dy))
+      dist = 1.0 if dist < 1.0
+      ux = dx / dist
+      uy = dy / dist
+      attraction = COMMUNITY_ATTRACTION * weight * Math.log(dist / COMMUNITY_IDEAL_DISTANCE)
+      forces[ca][0] += ux * attraction
+      forces[ca][1] += uy * attraction
+      forces[cb][0] -= ux * attraction
+      forces[cb][1] -= uy * attraction
+    end
+
+    cooling = 1.0 - (iter.to_f / COMMUNITY_LAYOUT_ITERATIONS)
+    max_step = [8.0 * cooling, 0.8].max
+    community_ids.each do |cid|
+      fx, fy = forces[cid]
+      step = Math.sqrt((fx * fx) + (fy * fy))
+      if step > max_step
+        scale = max_step / step
+        fx *= scale
+        fy *= scale
+      end
+      centers[cid][0] += fx
+      centers[cid][1] += fy
+      centers[cid][0] = [[centers[cid][0], margin].max, width - margin].min
+      centers[cid][1] = [[centers[cid][1], margin].max, height - margin].min
+    end
+  end
+
+  centers
+end
+
+def normalize_points_to_canvas!(points, width:, height:, margin:)
+  return if points.empty?
+
+  xs = points.map { |p| p[0] }
+  ys = points.map { |p| p[1] }
+  min_x, max_x = xs.minmax
+  min_y, max_y = ys.minmax
+  span_x = max_x - min_x
+  span_y = max_y - min_y
+
+  available_w = width - (2.0 * margin)
+  available_h = height - (2.0 * margin)
+  if span_x.abs < 1e-9 && span_y.abs < 1e-9
+    cx = width / 2.0
+    cy = height / 2.0
+    points.each_with_index do |point, idx|
+      angle = idx * Math::PI * (3.0 - Math.sqrt(5.0))
+      radius = 2.0 + (idx % 11)
+      point[0] = cx + (Math.cos(angle) * radius)
+      point[1] = cy + (Math.sin(angle) * radius)
+    end
+    return
+  end
+
+  scale_x = span_x.abs < 1e-9 ? Float::INFINITY : (available_w / span_x.to_f)
+  scale_y = span_y.abs < 1e-9 ? Float::INFINITY : (available_h / span_y.to_f)
+  scale = [scale_x, scale_y].min
+  scale = 1.0 if !scale.finite? || scale <= 0.0
+
+  out_w = span_x * scale
+  out_h = span_y * scale
+  offset_x = margin + ((available_w - out_w) / 2.0)
+  offset_y = margin + ((available_h - out_h) / 2.0)
+
+  points.each do |point|
+    point[0] = offset_x + ((point[0] - min_x) * scale)
+    point[1] = offset_y + ((point[1] - min_y) * scale)
+    point[0] = [[point[0], margin].max, width - margin].min
+    point[1] = [[point[1], margin].max, height - margin].min
+  end
+end
+
+def layout_graph_force(adjacency, communities, iterations:, width:, height:, margin:)
+  node_count = adjacency.length
+  members = build_members_from_assignments(communities)
+  community_centers = layout_community_centers(adjacency, communities, width: width, height: height, margin: margin)
+  points = Array.new(node_count) { [width / 2.0, height / 2.0] }
+
+  members.keys.sort.each do |cid|
+    idxs = members[cid].sort
+    center = community_centers[cid]
+    base_radius = [20.0, Math.sqrt(idxs.length) * 7.5].max
+    idxs.each_with_index do |idx, local_idx|
+      angle = (idx * 0.987_654_321) + (local_idx * 2.399_963_229_728_653)
+      radius = base_radius * Math.sqrt((local_idx + 1).to_f / idxs.length.to_f)
+      points[idx][0] = center[0] + (Math.cos(angle) * radius)
+      points[idx][1] = center[1] + (Math.sin(angle) * radius)
+    end
+  end
+
+  edges = []
+  adjacency.each_with_index do |neighbors, i|
+    neighbors.each do |j, w|
+      next unless j > i
+      edges << [i, j, w.to_f]
+    end
+  end
+
+  iterations.times do |iter|
+    forces = Array.new(node_count) { [0.0, 0.0] }
+
+    edges.each do |a, b, w|
+      dx = points[b][0] - points[a][0]
+      dy = points[b][1] - points[a][1]
+      dist = Math.sqrt((dx * dx) + (dy * dy))
+      dist = 1.0 if dist < 1.0
+      ux = dx / dist
+      uy = dy / dist
+      same = communities[a] == communities[b]
+      ideal = same ? 34.0 : 110.0
+      strength = same ? 0.020 : 0.006
+      force = strength * w * (dist - ideal)
+      fx = ux * force
+      fy = uy * force
+      forces[a][0] += fx
+      forces[a][1] += fy
+      forces[b][0] -= fx
+      forces[b][1] -= fy
+    end
+
+    members.each_value do |idxs|
+      sorted = idxs.sort
+      if sorted.length <= 300
+        sorted.each_with_index do |a, i|
+          ((i + 1)...sorted.length).each do |j|
+            b = sorted[j]
+            dx = points[b][0] - points[a][0]
+            dy = points[b][1] - points[a][1]
+            dist2 = (dx * dx) + (dy * dy)
+            dist2 = 16.0 if dist2 < 16.0
+            dist = Math.sqrt(dist2)
+            ux = dx / dist
+            uy = dy / dist
+            rep = 14.0 / dist2
+            fx = ux * rep
+            fy = uy * rep
+            forces[a][0] -= fx
+            forces[a][1] -= fy
+            forces[b][0] += fx
+            forces[b][1] += fy
+          end
+        end
+      else
+        offsets = [1, 7, 19, 43]
+        sorted.each_with_index do |a, idx|
+          offsets.each do |offset|
+            j = idx + offset
+            break if j >= sorted.length
+            b = sorted[j]
+            dx = points[b][0] - points[a][0]
+            dy = points[b][1] - points[a][1]
+            dist2 = (dx * dx) + (dy * dy)
+            dist2 = 16.0 if dist2 < 16.0
+            dist = Math.sqrt(dist2)
+            ux = dx / dist
+            uy = dy / dist
+            rep = 14.0 / dist2
+            fx = ux * rep
+            fy = uy * rep
+            forces[a][0] -= fx
+            forces[a][1] -= fy
+            forces[b][0] += fx
+            forces[b][1] += fy
+          end
+        end
+      end
+    end
+
+    node_count.times do |idx|
+      cid = communities[idx]
+      center = community_centers[cid]
+      forces[idx][0] += (center[0] - points[idx][0]) * 0.004
+      forces[idx][1] += (center[1] - points[idx][1]) * 0.004
+    end
+
+    temperature = NODE_INITIAL_TEMP * (1.0 - (iter.to_f / iterations.to_f))
+    max_step = [temperature, 1.0].max
+    node_count.times do |idx|
+      fx = forces[idx][0]
+      fy = forces[idx][1]
+      step = Math.sqrt((fx * fx) + (fy * fy))
+      if step > max_step
+        scale = max_step / step
+        fx *= scale
+        fy *= scale
+      end
+
+      points[idx][0] += fx
+      points[idx][1] += fy
+      points[idx][0] = [[points[idx][0], margin].max, width - margin].min
+      points[idx][1] = [[points[idx][1], margin].max, height - margin].min
+    end
+  end
+
+  normalize_points_to_canvas!(points, width: width, height: height, margin: margin)
+  points
+end
+
+def community_weighted_degrees(adjacency, members)
+  score = {}
+  members.each do |cid, idxs|
+    idx_set = idxs.each_with_object({}) { |idx, h| h[idx] = true }
+    idxs.each do |idx|
+      degree = 0.0
+      adjacency[idx].each do |neighbor_idx, weight|
+        next unless idx_set[neighbor_idx]
+        degree += weight.to_f
+      end
+      score[idx] = degree
+    end
+  end
+  score
+end
+
 def label_excerpt(text, max_chars = MAX_LABEL_CHARS)
   raw = text.to_s
   raw = strip_model_artifacts(raw)
@@ -756,14 +1320,19 @@ def alternate_duplicate_label(label)
   ""
 end
 
-def cluster_samples_for_labels(notes, points, members, stats)
-  members.keys.sort.each_with_index.map do |cid, order_idx|
+def cluster_samples_for_labels(notes, points, members, stats, degree_scores: nil, ordered_cluster_ids: nil)
+  cluster_ids = ordered_cluster_ids || members.keys.sort
+  cluster_ids.each_with_index.map do |cid, order_idx|
     idxs = members[cid]
     center = stats[cid]
-    ordered = idxs.sort_by do |i|
-      dx = points[i][0] - center[:cx]
-      dy = points[i][1] - center[:cy]
-      (dx * dx) + (dy * dy)
+    ordered = if degree_scores
+      idxs.sort_by { |i| [-degree_scores[i].to_f, i] }
+    else
+      idxs.sort_by do |i|
+        dx = points[i][0] - center[:cx]
+        dy = points[i][1] - center[:cy]
+        (dx * dx) + (dy * dy)
+      end
     end
 
     sample_idxs = ordered.first([ordered.length, MAX_LABEL_SNIPPETS].min)
@@ -930,7 +1499,7 @@ def generate_cluster_labels(cluster_samples)
   labels
 end
 
-def build_map_data(notes)
+def prepare_notes_for_map!(notes)
   raise "No notes available. Run run-index first." if notes.empty?
 
   vector_dim = nil
@@ -948,43 +1517,32 @@ def build_map_data(notes)
     note[:embedding] = normalized
   end
 
-  embeddings = notes.map { |n| n[:embedding] }
-  a_idx, b_idx, c_idx = choose_anchor_indices(embeddings)
-  a = embeddings[a_idx]
-  b = embeddings[b_idx]
-  c = embeddings[c_idx]
+  vector_dim
+end
 
-  raw_x = embeddings.map { |e| dot2(e, a) - dot2(e, b) }
-  raw_y = embeddings.map { |e| dot2(e, c) - 0.5 * (dot2(e, a) + dot2(e, b)) }
-
-  px = normalize_to_canvas(raw_x, MAP_MARGIN, MAP_WIDTH - MAP_MARGIN)
-  py = normalize_to_canvas(raw_y, MAP_MARGIN, MAP_HEIGHT - MAP_MARGIN)
-  points = px.each_with_index.map { |x, i| [x, py[i]] }
-
-  k = desired_cluster_count(notes.length)
-  centers, assignments = kmeans(points, k, "map-kmeans:#{notes.length}:#{vector_dim}")
-  centers, assignments = merge_small_clusters(points, centers, assignments)
-
-  members = Hash.new { |h, cid| h[cid] = [] }
-  assignments.each_with_index { |cid, note_idx| members[cid] << note_idx }
-
-  before_stats = compute_cluster_stats(points, members)
-  spread_centers = spread_cluster_centers(before_stats)
-  reposition_points!(points, members, before_stats, spread_centers)
-  final_stats = compute_cluster_stats(points, members)
-
-  cluster_samples = cluster_samples_for_labels(notes, points, members, final_stats)
+def build_map_payload(notes, points, assignments, members, final_stats, vector_dim, layout_meta: nil, degree_scores: nil)
+  members_sorted = members.keys.sort_by { |cid| [-members[cid].length, cid] }
+  cluster_samples = cluster_samples_for_labels(
+    notes,
+    points,
+    members,
+    final_stats,
+    degree_scores: degree_scores,
+    ordered_cluster_ids: members_sorted
+  )
+  cluster_sample_by_id = {}
+  cluster_samples.each { |sample| cluster_sample_by_id[sample[:cluster_id]] = sample }
   llm_labels = generate_cluster_labels(cluster_samples)
 
   cluster_id_order_map = {}
   final_label_keys = Set.new
-  clusters = members.keys.sort.each_with_index.map do |cid, order_idx|
+  clusters = members_sorted.each_with_index.map do |cid, order_idx|
     stat = final_stats[cid]
     cluster_index = order_idx + 1
     cluster_id = "mountain-#{cluster_index}"
     cluster_id_order_map[cid] = cluster_id
 
-    snippets = cluster_samples[order_idx][:snippets]
+    snippets = cluster_sample_by_id.fetch(cid, { snippets: [] })[:snippets]
     label = llm_labels[cluster_index]
     if label.to_s.strip.empty?
       label = fallback_label(snippets, cluster_index, final_label_keys)
@@ -1024,15 +1582,120 @@ def build_map_data(notes)
     }
   end
 
-  {
+  payload = {
     generatedAt: Time.now.utc.iso8601,
     noteCount: notes_payload.length,
     vectorDim: vector_dim,
     width: MAP_WIDTH,
     height: MAP_HEIGHT,
-    clusters: clusters.sort_by { |c| -c[:noteCount] },
+    clusters: clusters,
     notes: notes_payload
   }
+  payload[:layout] = layout_meta if layout_meta
+  payload
+end
+
+def build_map_data_with_kmeans(notes, vector_dim:, fallback_reason: nil)
+  embeddings = notes.map { |n| n[:embedding] }
+  a_idx, b_idx, c_idx = choose_anchor_indices(embeddings)
+  a = embeddings[a_idx]
+  b = embeddings[b_idx]
+  c = embeddings[c_idx]
+
+  raw_x = embeddings.map { |e| dot2(e, a) - dot2(e, b) }
+  raw_y = embeddings.map { |e| dot2(e, c) - 0.5 * (dot2(e, a) + dot2(e, b)) }
+
+  px = normalize_to_canvas(raw_x, MAP_MARGIN, MAP_WIDTH - MAP_MARGIN)
+  py = normalize_to_canvas(raw_y, MAP_MARGIN, MAP_HEIGHT - MAP_MARGIN)
+  points = px.each_with_index.map { |x, i| [x, py[i]] }
+
+  k = desired_cluster_count(notes.length)
+  centers, assignments = kmeans(points, k, "map-kmeans:#{notes.length}:#{vector_dim}")
+  centers, assignments = merge_small_clusters(points, centers, assignments)
+
+  members = build_members_from_assignments(assignments)
+  before_stats = compute_cluster_stats(points, members)
+  spread_centers = spread_cluster_centers(before_stats)
+  reposition_points!(points, members, before_stats, spread_centers)
+  final_stats = compute_cluster_stats(points, members)
+
+  layout_meta = { method: "kmeans" }
+  layout_meta[:fallbackReason] = fallback_reason if fallback_reason
+  build_map_payload(notes, points, assignments, members, final_stats, vector_dim, layout_meta: layout_meta)
+end
+
+def build_map_data_with_graph(notes, vector_dim:)
+  k = graph_knn_k(notes.length)
+  min_size = graph_community_min_size
+  min_edge_weight = graph_edge_min_weight
+  iterations = map_layout_iterations
+
+  directed_edges = build_knn_edges_with_sqlite_vec(notes, k: k, vector_dim: vector_dim)
+  graph = symmetrize_knn_edges(directed_edges, node_count: notes.length, min_weight: min_edge_weight)
+  adjacency = graph[:adjacency]
+  edges = graph[:edges]
+  STDOUT << "Undirected edges: #{edges.length}\n"
+
+  assignments = detect_communities_weighted_local_moving(adjacency, min_size: min_size)
+  assignments.each_with_index { |cid, idx| notes[idx][:community_id] = cid }
+  members = build_members_from_assignments(assignments)
+  STDOUT << "Detected communities: #{members.length}\n"
+  STDOUT << "Running force layout: iterations=#{iterations}\n"
+
+  points = layout_graph_force(
+    adjacency,
+    assignments,
+    iterations: iterations,
+    width: MAP_WIDTH,
+    height: MAP_HEIGHT,
+    margin: MAP_MARGIN
+  )
+  final_stats = compute_cluster_stats(points, members)
+  degree_scores = community_weighted_degrees(adjacency, members)
+
+  layout_meta = {
+    method: "graph",
+    knnK: k,
+    communityMethod: "weighted_local_moving",
+    layoutMethod: "force_directed",
+    edgeCount: edges.length
+  }
+  build_map_payload(
+    notes,
+    points,
+    assignments,
+    members,
+    final_stats,
+    vector_dim,
+    layout_meta: layout_meta,
+    degree_scores: degree_scores
+  )
+end
+
+def build_map_data(notes)
+  vector_dim = prepare_notes_for_map!(notes)
+  requested_layout = map_layout_requested
+  requested_layout ||= MAP_LAYOUT_DEFAULT
+  STDOUT << "Map layout requested: #{requested_layout}\n"
+  STDOUT << "sqlite-vec available: #{sqlite_vec_available?}\n"
+
+  if graph_layout_enabled?
+    STDOUT << "Map layout: graph\n"
+    begin
+      return build_map_data_with_graph(notes, vector_dim: vector_dim)
+    rescue GraphDependencyError => e
+      STDOUT << "sqlite-vec unavailable on this platform; falling back to kmeans layout\n"
+      return build_map_data_with_kmeans(notes, vector_dim: vector_dim, fallback_reason: e.message)
+    end
+  end
+
+  if requested_layout == "graph" && !sqlite_vec_available?
+    STDOUT << "sqlite-vec unavailable on this platform; falling back to kmeans layout\n"
+    return build_map_data_with_kmeans(notes, vector_dim: vector_dim, fallback_reason: "sqlite-vec unavailable")
+  end
+
+  STDOUT << "Map layout: kmeans\n"
+  build_map_data_with_kmeans(notes, vector_dim: vector_dim)
 end
 
 begin
