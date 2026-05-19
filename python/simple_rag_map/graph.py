@@ -14,8 +14,8 @@ CROSS_COMMUNITY_ATTRACTION = 0.012
 COMMUNITY_GRAVITY = 0.0014
 NODE_INITIAL_TEMP = 18.0
 
-MOUNTAIN_RANGE_COMPACTION = 0.88
-MOUNTAIN_SHAPE_STRENGTH = 0.88
+MOUNTAIN_RANGE_COMPACTION = 1.24
+MOUNTAIN_SHAPE_STRENGTH = 0.93
 MOUNTAIN_MIN_RADIUS_X = 48.0
 MOUNTAIN_MIN_RADIUS_Y = 42.0
 MOUNTAIN_MAX_RADIUS_X = 260.0
@@ -433,7 +433,7 @@ def shape_points_as_mountains(
             jitter = (stable_unit_float(f"node-angle:{idx}") - 0.5) * (0.34 - min(bridge_score, 0.7) * 0.22)
             angle += jitter
             radial_order = math.sqrt((rank[idx] + 0.5) / count)
-            radial = radial_order ** 1.22
+            radial = radial_order ** 1.34
             if bridge_score > 0.0:
                 radial = max(radial, 0.62 + min(bridge_score, 1.0) * 0.26)
 

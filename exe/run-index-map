@@ -89,6 +89,13 @@ SAME_COMMUNITY_ATTRACTION = 0.018
 CROSS_COMMUNITY_ATTRACTION = 0.012
 COMMUNITY_GRAVITY = 0.0014
 NODE_INITIAL_TEMP = 18.0
+MOUNTAIN_RANGE_COMPACTION = 1.24
+MOUNTAIN_SHAPE_STRENGTH = 0.93
+MOUNTAIN_MIN_RADIUS_X = 48.0
+MOUNTAIN_MIN_RADIUS_Y = 42.0
+MOUNTAIN_MAX_RADIUS_X = 260.0
+MOUNTAIN_MAX_RADIUS_Y = 220.0
+MOUNTAIN_BRIDGE_BLEND_MAX = 0.72
 
 def config_value(section, key)
   return nil if section.nil?
@@ -1007,6 +1014,139 @@ def layout_graph_force(adjacency, communities, iterations:, width:, height:, mar
   { points: points, raw_points: raw_points }
 end
 
+def clamp_float(value, min, max)
+  [[value, min].max, max].min
+end
+
+def stable_unit_float(text)
+  raw = Digest::SHA256.hexdigest(text.to_s)[0, 12]
+  raw.to_i(16) / 0xffffffffffff.to_f
+end
+
+def lerp_angle(a, b, t)
+  tau = Math::PI * 2.0
+  delta = (b - a + Math::PI) % tau - Math::PI
+  a + (delta * t)
+end
+
+def community_centers(points, members)
+  centers = {}
+  members.each do |cid, idxs|
+    next if idxs.empty?
+
+    sx = 0.0
+    sy = 0.0
+    idxs.each do |idx|
+      sx += points[idx][0]
+      sy += points[idx][1]
+    end
+    centers[cid] = [sx / idxs.length.to_f, sy / idxs.length.to_f]
+  end
+  centers
+end
+
+def node_external_anchors(adjacency, communities, centers)
+  anchors = {}
+  adjacency.each_with_index do |neighbors, idx|
+    cid = communities[idx]
+    sx = 0.0
+    sy = 0.0
+    total = 0.0
+    neighbors.each do |neighbor_idx, weight|
+      neighbor_cid = communities[neighbor_idx]
+      next if neighbor_cid == cid || !centers.key?(neighbor_cid)
+
+      w = weight.to_f
+      sx += centers[neighbor_cid][0] * w
+      sy += centers[neighbor_cid][1] * w
+      total += w
+    end
+    anchors[idx] = [sx / total, sy / total] if total > 0.0
+  end
+  anchors
+end
+
+def shape_points_as_mountains(points, adjacency, communities, width:, height:, margin:)
+  return { points: [] } if points.empty?
+
+  members = build_members_from_assignments(communities)
+  centers = community_centers(points, members)
+  global_center = [
+    centers.values.sum { |center| center[0] } / [centers.length, 1].max.to_f,
+    centers.values.sum { |center| center[1] } / [centers.length, 1].max.to_f
+  ]
+  centers = centers.transform_values do |center|
+    [
+      global_center[0] + ((center[0] - global_center[0]) * MOUNTAIN_RANGE_COMPACTION),
+      global_center[1] + ((center[1] - global_center[1]) * MOUNTAIN_RANGE_COMPACTION)
+    ]
+  end
+
+  node_scores = node_graph_debug(adjacency, communities)
+  external_anchors = node_external_anchors(adjacency, communities, centers)
+  shaped = points.map(&:dup)
+  tau = Math::PI * 2.0
+
+  members.keys.sort.each do |cid|
+    idxs = members[cid]
+    next if idxs.empty?
+
+    cx, cy = centers[cid]
+    old_center = community_centers(points, cid => idxs)[cid]
+    dx = Math.sqrt(idxs.sum { |idx| (points[idx][0] - old_center[0])**2 } / idxs.length.to_f)
+    dy = Math.sqrt(idxs.sum { |idx| (points[idx][1] - old_center[1])**2 } / idxs.length.to_f)
+    size_radius = Math.sqrt(idxs.length)
+    radius_x = clamp_float([dx * 1.22, size_radius * 7.2, MOUNTAIN_MIN_RADIUS_X].max, MOUNTAIN_MIN_RADIUS_X, MOUNTAIN_MAX_RADIUS_X)
+    radius_y = clamp_float([dy * 1.22, size_radius * 6.2, MOUNTAIN_MIN_RADIUS_Y].max, MOUNTAIN_MIN_RADIUS_Y, MOUNTAIN_MAX_RADIUS_Y)
+    seed = stable_unit_float("community:#{cid}:#{idxs.length}") * tau
+
+    ordered = idxs.sort_by do |idx|
+      score = node_scores[idx] || {}
+      internal = score[:internal_weight].to_f
+      external = score[:external_weight].to_f
+      [-(internal - (external * 0.75)), idx]
+    end
+    rank = {}
+    ordered.each_with_index { |idx, order| rank[idx] = order }
+    count = [idxs.length, 1].max.to_f
+
+    idxs.each do |idx|
+      old_dx = points[idx][0] - old_center[0]
+      old_dy = points[idx][1] - old_center[1]
+      old_dist = Math.sqrt((old_dx * old_dx) + (old_dy * old_dy))
+      base_angle = old_dist > 1e-6 ? Math.atan2(old_dy, old_dx) : idx * Math::PI * (3.0 - Math.sqrt(5.0))
+      score = node_scores[idx] || {}
+      bridge_score = score[:bridge_score].to_f
+      anchor = external_anchors[idx]
+      angle = if anchor
+        target_angle = Math.atan2(anchor[1] - cy, anchor[0] - cx)
+        bridge_blend = [MOUNTAIN_BRIDGE_BLEND_MAX, bridge_score * 0.95].min
+        lerp_angle(base_angle, target_angle, bridge_blend)
+      else
+        base_angle
+      end
+
+      angle += (stable_unit_float("node-angle:#{idx}") - 0.5) * (0.34 - ([bridge_score, 0.7].min * 0.22))
+      radial_order = Math.sqrt((rank[idx] + 0.5) / count)
+      radial = radial_order**1.34
+      radial = [radial, 0.62 + ([bridge_score, 1.0].min * 0.26)].max if bridge_score > 0.0
+
+      lobe = 1.0 + (Math.sin((angle * 3.0) + seed) * 0.105) + (Math.cos((angle * 5.0) - (seed * 0.7)) * 0.065)
+      noise = 0.91 + (stable_unit_float("node-radius:#{idx}") * 0.18)
+      target_x = cx + (Math.cos(angle) * radius_x * radial * lobe * noise)
+      target_y = cy + (Math.sin(angle) * radius_y * radial * (2.0 - lobe) * noise)
+
+      strength = MOUNTAIN_SHAPE_STRENGTH - ([bridge_score, 1.0].min * 0.18)
+      shaped[idx][0] = points[idx][0] * (1.0 - strength) + (target_x * strength)
+      shaped[idx][1] = points[idx][1] * (1.0 - strength) + (target_y * strength)
+      shaped[idx][0] = clamp_float(shaped[idx][0], margin, width - margin)
+      shaped[idx][1] = clamp_float(shaped[idx][1], margin, height - margin)
+    end
+  end
+
+  { points: shaped }
+end
+
 def node_graph_debug(adjacency, communities)
   debug = {}
   adjacency.each_with_index do |neighbors, idx|
@@ -1708,10 +1848,20 @@ def build_map_data_with_graph(notes, vector_dim:)
     height: MAP_HEIGHT,
     margin: MAP_MARGIN
   )
-  points = layout_result[:points]
-  raw_points = layout_result[:raw_points]
-  final_stats = compute_cluster_stats(points, members)
+  force_points = layout_result[:points]
+  raw_points = force_points.map(&:dup)
   graph_debug = node_graph_debug(layout_adjacency, assignments)
+  STDOUT << "Shaping layout into mountain regions\n"
+  mountain_result = shape_points_as_mountains(
+    force_points,
+    layout_adjacency,
+    assignments,
+    width: MAP_WIDTH,
+    height: MAP_HEIGHT,
+    margin: MAP_MARGIN
+  )
+  points = mountain_result[:points]
+  final_stats = compute_cluster_stats(points, members)
   degree_scores = graph_debug.transform_values { |debug| debug[:internal_weight] }
 
   layout_meta = {
@@ -1720,7 +1870,7 @@ def build_map_data_with_graph(notes, vector_dim:)
     retainedCrossCommunityEdgesPerNode: MAP_CROSS_COMMUNITY_EDGES_PER_NODE,
     communityMethod: "weighted_local_moving",
     communityUsage: "ids_labels_metadata_only",
-    layoutMethod: "global_force_directed",
+    layoutMethod: "global_force_directed_mountain_shaped",
     edgeCount: edges.length,
     retainedEdgeCount: layout_edges.length,
     bridgeEdgeCount: bridge_count,
@@ -1728,7 +1878,10 @@ def build_map_data_with_graph(notes, vector_dim:)
     crossCommunityIdealLength: CROSS_COMMUNITY_EDGE_IDEAL,
     sameCommunityAttraction: SAME_COMMUNITY_ATTRACTION,
     crossCommunityAttraction: CROSS_COMMUNITY_ATTRACTION,
-    communityGravity: COMMUNITY_GRAVITY
+    communityGravity: COMMUNITY_GRAVITY,
+    mountainRangeCompaction: MOUNTAIN_RANGE_COMPACTION,
+    mountainShapeStrength: MOUNTAIN_SHAPE_STRENGTH,
+    mountainBridgeBlendMax: MOUNTAIN_BRIDGE_BLEND_MAX
   }
   build_map_payload(
     notes,
