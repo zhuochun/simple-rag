@@ -27,6 +27,7 @@ from .graph import (
     node_graph_debug,
     retain_layout_edges,
     safe_normalize,
+    shape_points_as_mountains,
     symmetrize_knn_edges,
 )
 from .labels import (
@@ -588,8 +589,18 @@ def build_map_data_with_graph(config: Config, notes: list[dict[str, Any]], vecto
     print(f"Retained layout edges: {len(layout_edges)} (bridges={bridge_count})")
     print(f"Running force layout: iterations={iterations}")
     layout_result = layout_graph_force(layout_adjacency, assignments, iterations=iterations, width=MAP_WIDTH, height=MAP_HEIGHT, margin=MAP_MARGIN)
-    points = layout_result["points"]
-    raw_points = layout_result["raw_points"]
+    force_points = layout_result["points"]
+    print("Shaping layout into mountain regions")
+    mountain_result = shape_points_as_mountains(
+        force_points,
+        layout_adjacency,
+        assignments,
+        width=MAP_WIDTH,
+        height=MAP_HEIGHT,
+        margin=MAP_MARGIN,
+    )
+    points = mountain_result["points"]
+    raw_points = force_points
     final_stats = compute_cluster_stats(points, members)
     graph_debug = node_graph_debug(layout_adjacency, assignments)
     degree_scores = {idx: float(debug["internal_weight"]) for idx, debug in graph_debug.items()}
@@ -599,7 +610,7 @@ def build_map_data_with_graph(config: Config, notes: list[dict[str, Any]], vecto
         "retainedCrossCommunityEdgesPerNode": MAP_CROSS_COMMUNITY_EDGES_PER_NODE,
         "communityMethod": "weighted_local_moving",
         "communityUsage": "ids_labels_metadata_only",
-        "layoutMethod": "global_force_directed",
+        "layoutMethod": "global_force_directed_mountain_shaped",
         "edgeCount": len(edges),
         "retainedEdgeCount": len(layout_edges),
         "bridgeEdgeCount": bridge_count,
