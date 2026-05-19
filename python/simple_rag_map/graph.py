@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
+import hashlib
 import math
 from typing import Any
 
@@ -13,6 +14,14 @@ CROSS_COMMUNITY_ATTRACTION = 0.012
 COMMUNITY_GRAVITY = 0.0014
 NODE_INITIAL_TEMP = 18.0
 
+MOUNTAIN_RANGE_COMPACTION = 0.88
+MOUNTAIN_SHAPE_STRENGTH = 0.88
+MOUNTAIN_MIN_RADIUS_X = 48.0
+MOUNTAIN_MIN_RADIUS_Y = 42.0
+MOUNTAIN_MAX_RADIUS_X = 260.0
+MOUNTAIN_MAX_RADIUS_Y = 220.0
+MOUNTAIN_BRIDGE_BLEND_MAX = 0.72
+
 
 def dot(a: list[float], b: list[float]) -> float:
     return sum(x * y for x, y in zip(a, b))
@@ -23,6 +32,20 @@ def safe_normalize(vec: list[float]) -> list[float] | None:
     if norm <= 0.0:
         return None
     return [value / norm for value in vec]
+
+
+def clamp(value: float, low: float, high: float) -> float:
+    return min(max(value, low), high)
+
+
+def stable_unit_float(text: str) -> float:
+    raw = hashlib.sha256(text.encode("utf-8")).hexdigest()[:12]
+    return int(raw, 16) / float(0xFFFFFFFFFFFF)
+
+
+def lerp_angle(a: float, b: float, t: float) -> float:
+    delta = (b - a + math.pi) % (math.tau) - math.pi
+    return a + delta * t
 
 
 def build_knn_edges(notes: list[dict[str, Any]], k: int) -> list[tuple[int, int, float]]:
@@ -330,6 +353,136 @@ def layout_graph_force(
     raw_points = [point.copy() for point in points]
     normalize_points_to_canvas(points, width, height, margin)
     return {"points": points, "raw_points": raw_points}
+
+
+def shape_points_as_mountains(
+    points: list[list[float]],
+    adjacency: list[dict[int, float]],
+    communities: list[int],
+    *,
+    width: int,
+    height: int,
+    margin: int,
+) -> dict[str, list[list[float]]]:
+    """Post-process a global graph layout into mountain-like community regions.
+
+    The force layout is good at preserving graph relationships, but its point clouds often
+    look like diffuse blobs. For the map UI, the visual metaphor is 群山: each community
+    should read as a peak with denser core, soft foothills, and bridge notes leaning toward
+    neighboring peaks. This function intentionally changes display geometry while keeping
+    community assignment and broad inter-community placement intact.
+    """
+    if not points:
+        return {"points": [], "raw_points": []}
+
+    members = build_members_from_assignments(communities)
+    centers = community_centers(points, members)
+    global_center = (
+        sum(center[0] for center in centers.values()) / max(len(centers), 1),
+        sum(center[1] for center in centers.values()) / max(len(centers), 1),
+    )
+    centers = {
+        cid: [
+            global_center[0] + (center[0] - global_center[0]) * MOUNTAIN_RANGE_COMPACTION,
+            global_center[1] + (center[1] - global_center[1]) * MOUNTAIN_RANGE_COMPACTION,
+        ]
+        for cid, center in centers.items()
+    }
+
+    node_scores = node_graph_debug(adjacency, communities)
+    external_anchors = node_external_anchors(adjacency, communities, centers)
+    shaped = [point.copy() for point in points]
+
+    for cid, idxs in sorted(members.items()):
+        if not idxs:
+            continue
+        cx, cy = centers[cid]
+        old_center = community_centers(points, {cid: idxs})[cid]
+        dx = math.sqrt(sum((points[idx][0] - old_center[0]) ** 2 for idx in idxs) / len(idxs))
+        dy = math.sqrt(sum((points[idx][1] - old_center[1]) ** 2 for idx in idxs) / len(idxs))
+        size_radius = math.sqrt(len(idxs))
+        radius_x = clamp(max(dx * 1.22, size_radius * 7.2, MOUNTAIN_MIN_RADIUS_X), MOUNTAIN_MIN_RADIUS_X, MOUNTAIN_MAX_RADIUS_X)
+        radius_y = clamp(max(dy * 1.22, size_radius * 6.2, MOUNTAIN_MIN_RADIUS_Y), MOUNTAIN_MIN_RADIUS_Y, MOUNTAIN_MAX_RADIUS_Y)
+        seed = stable_unit_float(f"community:{cid}:{len(idxs)}") * math.tau
+
+        def core_key(idx: int) -> tuple[float, int]:
+            score = node_scores.get(idx, {})
+            internal = float(score.get("internal_weight", 0.0))
+            external = float(score.get("external_weight", 0.0))
+            return (-(internal - (external * 0.75)), idx)
+
+        ordered = sorted(idxs, key=core_key)
+        rank = {idx: order for order, idx in enumerate(ordered)}
+        count = max(len(idxs), 1)
+
+        for idx in idxs:
+            old_dx = points[idx][0] - old_center[0]
+            old_dy = points[idx][1] - old_center[1]
+            old_dist = math.sqrt((old_dx * old_dx) + (old_dy * old_dy))
+            base_angle = math.atan2(old_dy, old_dx) if old_dist > 1e-6 else idx * math.pi * (3.0 - math.sqrt(5.0))
+            score = node_scores.get(idx, {})
+            bridge_score = float(score.get("bridge_score", 0.0))
+            anchor = external_anchors.get(idx)
+            if anchor is not None:
+                target_angle = math.atan2(anchor[1] - cy, anchor[0] - cx)
+                bridge_blend = min(MOUNTAIN_BRIDGE_BLEND_MAX, bridge_score * 0.95)
+                angle = lerp_angle(base_angle, target_angle, bridge_blend)
+            else:
+                angle = base_angle
+
+            jitter = (stable_unit_float(f"node-angle:{idx}") - 0.5) * (0.34 - min(bridge_score, 0.7) * 0.22)
+            angle += jitter
+            radial_order = math.sqrt((rank[idx] + 0.5) / count)
+            radial = radial_order ** 1.22
+            if bridge_score > 0.0:
+                radial = max(radial, 0.62 + min(bridge_score, 1.0) * 0.26)
+
+            lobe = 1.0 + math.sin((angle * 3.0) + seed) * 0.105 + math.cos((angle * 5.0) - seed * 0.7) * 0.065
+            noise = 0.91 + stable_unit_float(f"node-radius:{idx}") * 0.18
+            target_x = cx + math.cos(angle) * radius_x * radial * lobe * noise
+            target_y = cy + math.sin(angle) * radius_y * radial * (2.0 - lobe) * noise
+
+            strength = MOUNTAIN_SHAPE_STRENGTH - min(bridge_score, 1.0) * 0.18
+            shaped[idx][0] = points[idx][0] * (1.0 - strength) + target_x * strength
+            shaped[idx][1] = points[idx][1] * (1.0 - strength) + target_y * strength
+            shaped[idx][0] = clamp(shaped[idx][0], margin, width - margin)
+            shaped[idx][1] = clamp(shaped[idx][1], margin, height - margin)
+
+    return {"points": shaped, "raw_points": [point.copy() for point in shaped]}
+
+
+def community_centers(points: list[list[float]], members: dict[int, list[int]]) -> dict[int, list[float]]:
+    centers: dict[int, list[float]] = {}
+    for cid, idxs in members.items():
+        centers[cid] = [
+            sum(points[idx][0] for idx in idxs) / len(idxs),
+            sum(points[idx][1] for idx in idxs) / len(idxs),
+        ]
+    return centers
+
+
+def node_external_anchors(
+    adjacency: list[dict[int, float]],
+    communities: list[int],
+    centers: dict[int, list[float]],
+) -> dict[int, list[float]]:
+    anchors: dict[int, list[float]] = {}
+    for idx, neighbors in enumerate(adjacency):
+        cid = communities[idx]
+        sx = 0.0
+        sy = 0.0
+        total = 0.0
+        for neighbor_idx, weight in neighbors.items():
+            neighbor_cid = communities[neighbor_idx]
+            if neighbor_cid == cid or neighbor_cid not in centers:
+                continue
+            w = float(weight)
+            sx += centers[neighbor_cid][0] * w
+            sy += centers[neighbor_cid][1] * w
+            total += w
+        if total > 0.0:
+            anchors[idx] = [sx / total, sy / total]
+    return anchors
 
 
 def node_graph_debug(adjacency: list[dict[int, float]], communities: list[int]) -> dict[int, dict[str, float | int]]:
