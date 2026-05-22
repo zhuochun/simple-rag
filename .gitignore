@@ -60,3 +60,6 @@ config*.json
 .aider*
 .env
 **/*/__pycache__
+
+.playwright-cli/
+output/playwright/

@@ -8,11 +8,15 @@ end
 # Normalize an embedding to unit length
 def normalize_embedding(embedding)
   norm = Math.sqrt(embedding.inject(0.0) { |s, v| s + v * v })
+  return Array.new(embedding.length, 0.0) if norm <= 0.0
   embedding.map { |v| v / norm }
 end
 
 # Generate an integer hash based on embedding sign buckets
 def bucket_key(embedding, dims = 10)
+  return 0 if dims <= 0 || embedding.empty?
+
+  dims = [dims, embedding.length].min
   step = embedding.length / dims
   key = 0
   dims.times do |i|
