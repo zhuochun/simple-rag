@@ -377,9 +377,10 @@ document.addEventListener("DOMContentLoaded", function() {
     ];
 
     const TERRAIN_LEVEL_RATIOS = [
-        0.022, 0.034, 0.05, 0.072, 0.1,
-        0.134, 0.175, 0.224, 0.282, 0.35,
-        0.43, 0.52, 0.62, 0.73, 0.84
+        0.038, 0.05, 0.064, 0.081, 0.102,
+        0.128, 0.158, 0.193, 0.234, 0.282,
+        0.337, 0.4, 0.47, 0.548, 0.634,
+        0.728, 0.83, 0.94
     ];
 
     function clamp(value, min, max) {
@@ -538,29 +539,46 @@ document.addEventListener("DOMContentLoaded", function() {
 
     function drawBridgeEdges() {
         if (!Array.isArray(state.edges) || state.edges.length === 0) return;
+        if (!state.debug.bridges) return;
         const hoveredIndex = state.hovered ? state.hovered.index : null;
         const hasHover = hoveredIndex !== undefined && hoveredIndex !== null;
-        if (!state.debug.bridges && !hasHover) return;
+        const bridgeEdges = state.edges
+            .filter(edge => edge.bridge || edge.sameCommunity === false)
+            .filter(edge => {
+                if (!edgeVisible(edge)) return false;
+                if (!hasHover) return true;
+                return edge.sourceIndex === hoveredIndex || edge.targetIndex === hoveredIndex;
+            })
+            .sort((a, b) => Number(b.weight || 0) - Number(a.weight || 0));
+        const visibleEdges = hasHover ? bridgeEdges.slice(0, 5) : bridgeEdges;
+        if (visibleEdges.length === 0) return;
 
         ctx.save();
         ctx.lineCap = "round";
-        state.edges.forEach(edge => {
-            if (!edge.bridge && edge.sameCommunity !== false) return;
+        ctx.lineJoin = "round";
+        ctx.setLineDash(hasHover ? [5, 5] : [2, 7]);
+        visibleEdges.forEach(edge => {
             const touchesHover = hasHover && (edge.sourceIndex === hoveredIndex || edge.targetIndex === hoveredIndex);
-            if (!state.debug.bridges && !touchesHover) return;
-            if (!edgeVisible(edge)) return;
-
             const a = state.noteByIndex.get(edge.sourceIndex);
             const b = state.noteByIndex.get(edge.targetIndex);
             const pa = worldToScreen(a.x, a.y);
             const pb = worldToScreen(b.x, b.y);
+            const dx = pb.x - pa.x;
+            const dy = pb.y - pa.y;
+            const dist = Math.max(1, Math.sqrt((dx * dx) + (dy * dy)));
+            const bendSign = edge.sourceIndex < edge.targetIndex ? 1 : -1;
+            const bend = clamp(dist * 0.12, 12, 44) * bendSign;
+            const cx = (pa.x + pb.x) / 2 + (-dy / dist) * bend;
+            const cy = (pa.y + pb.y) / 2 + (dx / dist) * bend;
+
             ctx.beginPath();
             ctx.moveTo(pa.x, pa.y);
-            ctx.lineTo(pb.x, pb.y);
-            ctx.strokeStyle = touchesHover ? "rgba(255, 255, 255, 0.62)" : "rgba(210, 220, 235, 0.13)";
-            ctx.lineWidth = Math.max(0.55, Math.min(2.2, 0.55 + (Number(edge.weight || 0) * (touchesHover ? 1.55 : 0.9))));
+            ctx.quadraticCurveTo(cx, cy, pb.x, pb.y);
+            ctx.strokeStyle = touchesHover ? "rgba(245, 249, 255, 0.26)" : "rgba(210, 220, 235, 0.06)";
+            ctx.lineWidth = Math.max(0.45, Math.min(1.15, 0.45 + (Number(edge.weight || 0) * (touchesHover ? 0.75 : 0.38))));
             ctx.stroke();
         });
+        ctx.setLineDash([]);
         ctx.restore();
     }
 
@@ -686,8 +704,8 @@ document.addEventListener("DOMContentLoaded", function() {
         const bounds = mapBounds();
         const padding = 90;
         const cellSize = Math.round(clamp(Math.min(bounds.width, bounds.height) / 96, 14, 22));
-        const sigma = clamp(Math.sqrt(bounds.width * bounds.height) / 36, cellSize * 2.8, 76);
-        const radius = sigma * 3;
+        const sigma = clamp(Math.sqrt(bounds.width * bounds.height) / 48, cellSize * 2.05, 54);
+        const radius = sigma * 2.75;
         const originX = -padding;
         const originY = -padding;
         const cols = Math.ceil((bounds.width + (padding * 2)) / cellSize) + 1;
@@ -760,7 +778,7 @@ document.addEventListener("DOMContentLoaded", function() {
         const terrain = currentTerrain();
         if (!terrain || terrain.max <= 0) return null;
 
-        const threshold = terrain.max * 0.035;
+        const threshold = terrain.max * 0.052;
         let minX = Infinity;
         let minY = Infinity;
         let maxX = -Infinity;
@@ -807,12 +825,12 @@ document.addEventListener("DOMContentLoaded", function() {
             const depth = terrain.contours.length <= 1
                 ? 1
                 : contour.index / (terrain.contours.length - 1);
-            const alpha = 0.018 + (Math.pow(depth, 1.45) * 0.33);
-            const majorBoost = contour.major && depth > 0.28 ? 0.055 : 0;
+            const alpha = 0.026 + (Math.pow(depth, 1.32) * 0.38);
+            const majorBoost = contour.major && depth > 0.22 ? 0.07 : 0;
 
             ctx.beginPath();
-            ctx.strokeStyle = `rgba(232, 238, 250, ${Math.min(0.43, alpha + majorBoost)})`;
-            ctx.lineWidth = 0.42 + (depth * 0.68) + (contour.major && depth > 0.28 ? 0.16 : 0);
+            ctx.strokeStyle = `rgba(232, 238, 250, ${Math.min(0.52, alpha + majorBoost)})`;
+            ctx.lineWidth = 0.46 + (depth * 0.76) + (contour.major && depth > 0.22 ? 0.18 : 0);
 
             contour.segments.forEach(segment => {
                 const a = worldToScreen(segment[0], segment[1]);
