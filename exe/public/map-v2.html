@@ -1,0 +1,763 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Map V2</title>
+    <style>
+        :root {
+            --bg: #101311;
+            --panel: #171b18e8;
+            --line: #334238;
+            --text: #eef4eb;
+            --muted: #a9b7a9;
+            --accent: #d9ead5;
+            --gold: #d4b46a;
+            --water: #7eb6c2;
+        }
+
+        * { box-sizing: border-box; }
+
+        html, body {
+            margin: 0;
+            height: 100%;
+            color: var(--text);
+            font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
+            background:
+                linear-gradient(180deg, #151814 0%, #0f1412 48%, #0b100f 100%);
+        }
+
+        body {
+            display: grid;
+            grid-template-rows: auto minmax(0, 1fr);
+        }
+
+        .top-nav {
+            display: flex;
+            gap: 6px;
+            padding: 10px 14px;
+            background: #121713f2;
+            border-bottom: 1px solid #263329;
+        }
+
+        .top-nav a {
+            color: #dce7d8;
+            text-decoration: none;
+            padding: 6px 10px;
+            border-radius: 7px;
+            font-size: 14px;
+        }
+
+        .top-nav a:hover,
+        .top-nav a.active {
+            background: #263528;
+            color: #ffffff;
+        }
+
+        #layout {
+            min-height: 0;
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) 340px;
+        }
+
+        #stage {
+            position: relative;
+            overflow: hidden;
+            cursor: grab;
+            background:
+                linear-gradient(rgba(255,255,255,0.028) 1px, transparent 1px),
+                linear-gradient(90deg, rgba(255,255,255,0.026) 1px, transparent 1px),
+                radial-gradient(circle at 32% 24%, rgba(126, 182, 194, 0.10), transparent 36%),
+                radial-gradient(circle at 68% 72%, rgba(212, 180, 106, 0.08), transparent 34%);
+            background-size: 36px 36px, 36px 36px, auto, auto;
+        }
+
+        #stage.dragging { cursor: grabbing; }
+
+        #map {
+            width: 100%;
+            height: 100%;
+            display: block;
+            touch-action: none;
+        }
+
+        #status {
+            position: absolute;
+            left: 14px;
+            top: 14px;
+            padding: 6px 10px;
+            border: 1px solid #3a4b3f;
+            border-radius: 999px;
+            color: #dce7d8;
+            background: #101712d9;
+            font-size: 12px;
+            pointer-events: none;
+        }
+
+        #tooltip {
+            position: absolute;
+            z-index: 5;
+            max-width: 290px;
+            padding: 8px 10px;
+            border: 1px solid #405346;
+            border-radius: 7px;
+            background: #111812f0;
+            color: #edf6eb;
+            font-size: 12px;
+            line-height: 1.4;
+            pointer-events: none;
+            opacity: 0;
+            transform: translate(10px, 10px);
+        }
+
+        #tooltip.show { opacity: 1; }
+
+        #side {
+            min-width: 0;
+            min-height: 0;
+            display: flex;
+            flex-direction: column;
+            border-left: 1px solid #263329;
+            background: var(--panel);
+        }
+
+        .section {
+            padding: 12px;
+            border-bottom: 1px solid #29372d;
+        }
+
+        h2 {
+            margin: 0 0 8px;
+            color: #dce8d9;
+            font-size: 12px;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+        }
+
+        #meta,
+        #note-meta {
+            color: var(--muted);
+            font-size: 12px;
+            line-height: 1.55;
+        }
+
+        #paths,
+        #layers {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+        }
+
+        label.toggle {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            min-width: 0;
+            padding: 6px 8px;
+            border: 1px solid #3a4b3f;
+            border-radius: 7px;
+            background: #1c241f;
+            color: #dce7d8;
+            font-size: 12px;
+        }
+
+        input { accent-color: #d9ead5; }
+
+        #note {
+            min-height: 0;
+            overflow: auto;
+            padding: 12px;
+            flex: 1;
+        }
+
+        #note-title {
+            margin: 0 0 8px;
+            color: #f4faef;
+            font-size: 15px;
+        }
+
+        #note-body {
+            margin-top: 10px;
+            color: #e6efe3;
+            white-space: pre-wrap;
+            word-break: break-word;
+            font-size: 13px;
+            line-height: 1.45;
+        }
+
+        .empty {
+            color: var(--muted);
+            font-size: 13px;
+        }
+
+        .btn-row {
+            display: flex;
+            gap: 8px;
+            margin-top: 12px;
+        }
+
+        button {
+            border: 1px solid #4a604f;
+            border-radius: 7px;
+            background: #243128;
+            color: #f2f8ef;
+            padding: 7px 10px;
+            font: inherit;
+            font-size: 12px;
+            font-weight: 700;
+            cursor: pointer;
+        }
+
+        button:hover { background: #2d3d32; }
+
+        @media (max-width: 960px) {
+            #layout {
+                grid-template-columns: 1fr;
+                grid-template-rows: minmax(420px, 58vh) minmax(260px, 1fr);
+            }
+
+            #side {
+                border-left: 0;
+                border-top: 1px solid #263329;
+            }
+        }
+    </style>
+</head>
+<body>
+    <nav class="top-nav">
+        <a href="q.html">Search</a>
+        <a href="graph.html">Graph</a>
+        <a href="map.html">Map</a>
+        <a href="map-v2.html" class="active">Map V2</a>
+        <a href="reader.html">Reader</a>
+        <a href="duplicate.html">Duplicates</a>
+        <a href="random.html">Random</a>
+    </nav>
+    <main id="layout">
+        <section id="stage">
+            <canvas id="map"></canvas>
+            <div id="status">Loading map...</div>
+            <div id="tooltip"></div>
+        </section>
+        <aside id="side">
+            <div class="section">
+                <h2>Map Stats</h2>
+                <div id="meta"></div>
+            </div>
+            <div class="section">
+                <h2>Paths</h2>
+                <div id="paths"></div>
+            </div>
+            <div class="section">
+                <h2>Layers</h2>
+                <div id="layers">
+                    <label class="toggle"><input type="checkbox" data-layer="terrain" checked> Terrain</label>
+                    <label class="toggle"><input type="checkbox" data-layer="dots" checked> Dots</label>
+                    <label class="toggle"><input type="checkbox" data-layer="labels" checked> Labels</label>
+                    <label class="toggle"><input type="checkbox" data-layer="bridges"> Bridges</label>
+                    <label class="toggle"><input type="checkbox" data-layer="semantic"> Semantic</label>
+                </div>
+            </div>
+            <div id="note"><div class="empty">Select a note.</div></div>
+        </aside>
+    </main>
+
+<script>
+document.addEventListener("DOMContentLoaded", () => {
+    const canvas = document.getElementById("map");
+    const ctx = canvas.getContext("2d");
+    const stage = document.getElementById("stage");
+    const status = document.getElementById("status");
+    const tooltip = document.getElementById("tooltip");
+    const meta = document.getElementById("meta");
+    const paths = document.getElementById("paths");
+    const layers = document.getElementById("layers");
+    const notePanel = document.getElementById("note");
+
+    const state = {
+        data: null,
+        notes: [],
+        clusters: [],
+        edges: [],
+        noteByIndex: new Map(),
+        clusterById: new Map(),
+        visibleLookups: new Set(),
+        camera: { x: 0, y: 0, k: 1 },
+        hovered: null,
+        selected: null,
+        dragging: false,
+        moved: false,
+        pointer: { x: 0, y: 0 },
+        layers: { terrain: true, dots: true, labels: true, bridges: false, semantic: false },
+        visibleCache: null,
+        clusterCountCache: null,
+        spatialIndex: null,
+        spatialCellSize: 56,
+        drawQueued: false
+    };
+
+    const colors = ["#8fd4bd", "#d7b665", "#86b5d1", "#d9978d", "#b6d27e", "#b59bd7", "#d4a0c0", "#9fcf9b"];
+
+    function api(path) {
+        return window.location.origin && window.location.origin.startsWith("http") ? `${window.location.origin}${path}` : `http://localhost:4567${path}`;
+    }
+
+    function setStatus(text) { status.textContent = text; }
+    function clamp(value, min, max) { return Math.max(min, Math.min(max, value)); }
+    function invalidateCaches() {
+        state.visibleCache = null;
+        state.clusterCountCache = null;
+        state.spatialIndex = null;
+    }
+
+    function activeNotes() {
+        if (!state.visibleCache) {
+            state.visibleCache = state.notes.filter(note => state.visibleLookups.has(note.lookup));
+        }
+        return state.visibleCache;
+    }
+
+    function clusterCounts() {
+        if (!state.clusterCountCache) {
+            state.clusterCountCache = new Map();
+            activeNotes().forEach(note => {
+                state.clusterCountCache.set(note.clusterId, (state.clusterCountCache.get(note.clusterId) || 0) + 1);
+            });
+        }
+        return state.clusterCountCache;
+    }
+    function worldWidth() { return Number(state.data && state.data.width) || 2600; }
+    function worldHeight() { return Number(state.data && state.data.height) || 1700; }
+    function worldToScreen(x, y) { return { x: x * state.camera.k + state.camera.x, y: y * state.camera.k + state.camera.y }; }
+    function screenToWorld(x, y) { return { x: (x - state.camera.x) / state.camera.k, y: (y - state.camera.y) / state.camera.k }; }
+
+    function resize() {
+        const rect = stage.getBoundingClientRect();
+        const ratio = window.devicePixelRatio || 1;
+        canvas.width = Math.max(1, Math.floor(rect.width * ratio));
+        canvas.height = Math.max(1, Math.floor(rect.height * ratio));
+        canvas.style.width = `${rect.width}px`;
+        canvas.style.height = `${rect.height}px`;
+        ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+        queueDraw();
+    }
+
+    function resetView() {
+        const w = stage.clientWidth || 1;
+        const h = stage.clientHeight || 1;
+        const k = Math.min((w * 0.88) / worldWidth(), (h * 0.86) / worldHeight());
+        state.camera.k = clamp(k, 0.18, 2.8);
+        state.camera.x = (w - worldWidth() * state.camera.k) / 2;
+        state.camera.y = (h - worldHeight() * state.camera.k) / 2;
+    }
+
+    function queueDraw() {
+        if (state.drawQueued) return;
+        state.drawQueued = true;
+        requestAnimationFrame(() => {
+            state.drawQueued = false;
+            draw();
+        });
+    }
+
+    function colorFor(id, alpha) {
+        let hash = 0;
+        String(id || "").split("").forEach(ch => { hash = ((hash << 5) - hash) + ch.charCodeAt(0); hash |= 0; });
+        const hex = colors[Math.abs(hash) % colors.length];
+        const r = parseInt(hex.slice(1, 3), 16);
+        const g = parseInt(hex.slice(3, 5), 16);
+        const b = parseInt(hex.slice(5, 7), 16);
+        return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+    }
+
+    function lineForSegment(segment) {
+        if (!Array.isArray(segment)) return null;
+        if (segment.length >= 4 && Number.isFinite(Number(segment[0]))) return segment;
+        return null;
+    }
+
+    function drawTerrain() {
+        if (!state.layers.terrain || !state.data || !state.data.terrain) return;
+        const terrain = state.data.terrain;
+        const levels = Array.isArray(terrain.levels) ? terrain.levels : [];
+        ctx.save();
+        ctx.lineCap = "round";
+        ctx.lineJoin = "round";
+        levels.forEach((level, index) => {
+            const depth = levels.length <= 1 ? 1 : index / (levels.length - 1);
+            const alpha = 0.035 + Math.pow(depth, 1.45) * 0.36;
+            ctx.beginPath();
+            ctx.strokeStyle = level.major ? `rgba(229, 218, 166, ${alpha + 0.08})` : `rgba(185, 207, 178, ${alpha})`;
+            ctx.lineWidth = (level.major ? 0.8 : 0.45) + depth * 0.7;
+            (level.segments || []).forEach(segment => {
+                const flat = lineForSegment(segment);
+                if (!flat) return;
+                const a = worldToScreen(Number(flat[0]), Number(flat[1]));
+                const b = worldToScreen(Number(flat[2]), Number(flat[3]));
+                ctx.moveTo(a.x, a.y);
+                ctx.lineTo(b.x, b.y);
+            });
+            ctx.stroke();
+        });
+        ctx.restore();
+    }
+
+    function drawBridges() {
+        if (!state.layers.bridges) return;
+        const visible = new Set(activeNotes().map(note => note.index));
+        const edges = state.edges
+            .filter(edge => edge.bridge || edge.sameCommunity === false)
+            .filter(edge => visible.has(edge.sourceIndex) && visible.has(edge.targetIndex))
+            .sort((a, b) => Number(b.weight || 0) - Number(a.weight || 0));
+        ctx.save();
+        ctx.setLineDash([4, 6]);
+        edges.slice(0, 2400).forEach(edge => {
+            const aNote = state.noteByIndex.get(edge.sourceIndex);
+            const bNote = state.noteByIndex.get(edge.targetIndex);
+            if (!aNote || !bNote) return;
+            const a = worldToScreen(aNote.x, aNote.y);
+            const b = worldToScreen(bNote.x, bNote.y);
+            ctx.beginPath();
+            ctx.moveTo(a.x, a.y);
+            ctx.lineTo(b.x, b.y);
+            ctx.strokeStyle = "rgba(213, 224, 210, 0.08)";
+            ctx.lineWidth = 0.45 + Number(edge.weight || 0) * 0.45;
+            ctx.stroke();
+        });
+        ctx.restore();
+    }
+
+    function drawDots() {
+        if (!state.layers.dots) return;
+        const notes = activeNotes();
+        const maxDots = state.camera.k < 0.35 ? 2600 : Number.MAX_SAFE_INTEGER;
+        const step = notes.length > maxDots ? Math.ceil(notes.length / maxDots) : 1;
+        ctx.save();
+        for (let i = 0; i < notes.length; i += step) {
+            const note = notes[i];
+            const p = state.layers.semantic ? worldToScreen((note.semanticX + 1) * worldWidth() / 2, (note.semanticY + 1) * worldHeight() / 2) : worldToScreen(note.x, note.y);
+            const bridge = clamp(Number(note.bridgeScore || 0), 0, 1);
+            const active = state.hovered && state.hovered.index === note.index;
+            const selected = state.selected && state.selected.index === note.index;
+            ctx.beginPath();
+            ctx.arc(p.x, p.y, selected ? 3.4 : active ? 2.7 : 1.25 + bridge * 1.5, 0, Math.PI * 2);
+            ctx.fillStyle = selected ? "rgba(255,255,255,0.95)" : active ? "rgba(255,255,255,0.82)" : colorFor(note.clusterId, 0.48);
+            ctx.fill();
+        }
+        ctx.restore();
+    }
+
+    function drawLabels() {
+        if (!state.layers.labels || state.camera.k < 0.16) return;
+        const placed = [];
+        const counts = clusterCounts();
+        ctx.save();
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        state.clusters.forEach(cluster => {
+            const activeCount = counts.get(cluster.id) || 0;
+            if (activeCount <= 0) return;
+            const anchors = Array.isArray(cluster.labelAnchors) && cluster.labelAnchors.length > 0
+                ? cluster.labelAnchors
+                : [{ x: cluster.peakX ?? cluster.centerX, y: cluster.peakY ?? cluster.centerY, rank: 1 }];
+            anchors.forEach((anchor, anchorIndex) => {
+                const peakX = Number.isFinite(Number(anchor.x)) ? Number(anchor.x) : Number(cluster.centerX);
+                const peakY = Number.isFinite(Number(anchor.y)) ? Number(anchor.y) : Number(cluster.centerY);
+                const p = worldToScreen(peakX, peakY);
+                const isPrimary = anchorIndex === 0;
+                const chips = Array.isArray(cluster.keywordChips) ? cluster.keywordChips.filter(Boolean) : [];
+                const anchorLabel = String(anchor.primaryLabel || "").trim();
+                const label = String(anchorLabel || (isPrimary ? (cluster.primaryLabel || cluster.label || cluster.id) : (chips[anchorIndex - 1] || cluster.primaryLabel || cluster.label || cluster.id))).trim();
+                const subtitle = String(anchor.subtitle || (isPrimary ? cluster.subtitle || "" : "")).trim();
+                const fontSize = isPrimary
+                    ? clamp(10 + Math.sqrt(activeCount) * 0.18, 10, 14)
+                    : clamp(9 + Math.sqrt(activeCount) * 0.10, 9, 11.5);
+            ctx.font = `700 ${fontSize}px "Segoe UI", "Microsoft YaHei", sans-serif`;
+            const width = Math.max(ctx.measureText(label).width, subtitle ? ctx.measureText(subtitle).width * 0.82 : 0);
+            const labelHeight = subtitle && state.camera.k > 0.55 ? fontSize * 2.05 : fontSize + 4;
+            const box = {
+                left: p.x - width / 2 - 7,
+                right: p.x + width / 2 + 7,
+                top: p.y - labelHeight / 2 - 4,
+                bottom: p.y + labelHeight / 2 + 4
+            };
+            if (box.left < 4 || box.right > stage.clientWidth - 4 || placed.some(other => box.left < other.right && box.right > other.left && box.top < other.bottom && box.bottom > other.top)) return;
+            placed.push(box);
+            ctx.shadowColor = "rgba(0, 0, 0, 0.88)";
+            ctx.shadowBlur = isPrimary ? 6 : 4;
+            ctx.lineWidth = isPrimary ? 3 : 2.4;
+            ctx.strokeStyle = "rgba(6, 12, 9, 0.72)";
+            ctx.strokeText(label, p.x, subtitle && state.camera.k > 0.55 ? p.y - fontSize * 0.42 : p.y);
+            ctx.fillStyle = isPrimary ? "rgba(244, 249, 238, 0.88)" : "rgba(224, 236, 218, 0.68)";
+            ctx.fillText(label, p.x, subtitle && state.camera.k > 0.55 ? p.y - fontSize * 0.42 : p.y);
+            if (subtitle && state.camera.k > 0.55) {
+                ctx.font = `500 ${Math.max(9, fontSize - 2)}px "Segoe UI", "Microsoft YaHei", sans-serif`;
+                ctx.lineWidth = 2.4;
+                ctx.strokeText(subtitle, p.x, p.y + fontSize * 0.74);
+                ctx.fillStyle = "rgba(212, 224, 208, 0.58)";
+                ctx.fillText(subtitle, p.x, p.y + fontSize * 0.74);
+            }
+            });
+        });
+        ctx.restore();
+    }
+
+    function draw() {
+        ctx.clearRect(0, 0, stage.clientWidth, stage.clientHeight);
+        drawTerrain();
+        drawBridges();
+        drawDots();
+        drawLabels();
+    }
+
+    function pointerPos(evt) {
+        const rect = canvas.getBoundingClientRect();
+        return { x: evt.clientX - rect.left, y: evt.clientY - rect.top };
+    }
+
+    function nearestNote(x, y) {
+        const world = screenToWorld(x, y);
+        let best = null;
+        let bestD2 = Infinity;
+        const limit = (10 / Math.max(state.camera.k, 0.01)) ** 2;
+        const cellSize = state.spatialCellSize;
+        const index = spatialIndex();
+        const minCx = Math.floor((world.x - Math.sqrt(limit)) / cellSize);
+        const maxCx = Math.floor((world.x + Math.sqrt(limit)) / cellSize);
+        const minCy = Math.floor((world.y - Math.sqrt(limit)) / cellSize);
+        const maxCy = Math.floor((world.y + Math.sqrt(limit)) / cellSize);
+        for (let cx = minCx; cx <= maxCx; cx += 1) {
+            for (let cy = minCy; cy <= maxCy; cy += 1) {
+                const bucket = index.get(`${cx}:${cy}`);
+                if (!bucket) continue;
+                bucket.forEach(note => {
+                    const nx = state.layers.semantic ? (note.semanticX + 1) * worldWidth() / 2 : Number(note.x);
+                    const ny = state.layers.semantic ? (note.semanticY + 1) * worldHeight() / 2 : Number(note.y);
+                    const d2 = ((nx - world.x) ** 2) + ((ny - world.y) ** 2);
+                    if (d2 < bestD2 && d2 <= limit) {
+                        best = note;
+                        bestD2 = d2;
+                    }
+                });
+            }
+        }
+        return best;
+    }
+
+    function spatialIndex() {
+        if (state.spatialIndex) return state.spatialIndex;
+        const index = new Map();
+        const cellSize = state.spatialCellSize;
+        activeNotes().forEach(note => {
+            const x = state.layers.semantic ? (note.semanticX + 1) * worldWidth() / 2 : Number(note.x);
+            const y = state.layers.semantic ? (note.semanticY + 1) * worldHeight() / 2 : Number(note.y);
+            const key = `${Math.floor(x / cellSize)}:${Math.floor(y / cellSize)}`;
+            if (!index.has(key)) index.set(key, []);
+            index.get(key).push(note);
+        });
+        state.spatialIndex = index;
+        return index;
+    }
+
+    function preview(text, max = 300) {
+        const compact = String(text || "").replace(/\s+/g, " ").trim();
+        return compact.length > max ? `${compact.slice(0, max)}...` : compact;
+    }
+
+    function showTooltip(note, x, y) {
+        if (!note) {
+            tooltip.classList.remove("show");
+            return;
+        }
+        const cluster = state.clusterById.get(note.clusterId);
+        tooltip.replaceChildren(
+            document.createTextNode(cluster ? (cluster.primaryLabel || cluster.label || note.clusterId) : note.clusterId),
+            document.createElement("br"),
+            document.createTextNode(preview(note.snippet, 120))
+        );
+        tooltip.style.left = `${x}px`;
+        tooltip.style.top = `${y}px`;
+        tooltip.classList.add("show");
+    }
+
+    function renderNote(note) {
+        if (!note) {
+            notePanel.replaceChildren(Object.assign(document.createElement("div"), { className: "empty", textContent: "Select a note." }));
+            return;
+        }
+        const cluster = state.clusterById.get(note.clusterId);
+        const title = document.createElement("h3");
+        title.id = "note-title";
+        title.textContent = note.title || note.path || "Untitled";
+        const noteMeta = document.createElement("div");
+        noteMeta.id = "note-meta";
+        [
+            ["Path", note.lookup],
+            ["Mountain", cluster ? (cluster.primaryLabel || cluster.label) : note.clusterId],
+            ["Community", note.communityId],
+            ["Bridge", note.bridgeScore],
+            ["Degree", note.degree],
+            ["XY", `${note.x}, ${note.y}`],
+            ["Semantic", `${note.semanticX}, ${note.semanticY}`]
+        ].forEach(([key, value]) => {
+            noteMeta.appendChild(document.createTextNode(`${key}: ${value ?? "-"}`));
+            noteMeta.appendChild(document.createElement("br"));
+        });
+        const body = document.createElement("div");
+        body.id = "note-body";
+        body.textContent = preview(note.snippet, 500);
+        const row = document.createElement("div");
+        row.className = "btn-row";
+        const explore = document.createElement("button");
+        explore.type = "button";
+        explore.textContent = "Explore";
+        explore.addEventListener("click", () => openInSearch(note));
+        row.appendChild(explore);
+        if (note.url) {
+            const source = document.createElement("button");
+            source.type = "button";
+            source.textContent = "Source";
+            source.addEventListener("click", () => window.open(note.url, "_blank", "noopener,noreferrer"));
+            row.appendChild(source);
+        }
+        notePanel.replaceChildren(title, noteMeta, body, row);
+    }
+
+    function openInSearch(note) {
+        const key = `qExploreNote:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`;
+        localStorage.setItem(key, JSON.stringify({
+            ref: { lookup: note.lookup, path: note.path, chunk: note.chunk, hash: note.hash, title: note.title, snippet: note.snippet },
+            fallbackNote: note.snippet,
+            createdAt: Date.now()
+        }));
+        window.open(`q.html?exploreKey=${encodeURIComponent(key)}`, "_blank", "noopener,noreferrer");
+    }
+
+    function renderMeta(data) {
+        meta.replaceChildren();
+        [
+            ["Generated", data.generatedAt ? new Date(data.generatedAt).toLocaleString() : "-"],
+            ["Generator", data.generator || "-"],
+            ["Notes", data.noteCount],
+            ["Mountains", data.clusters.length],
+            ["Vector Dim", data.vectorDim],
+            ["Contours", data.terrain && data.terrain.levels ? data.terrain.levels.length : 0]
+        ].forEach(([key, value]) => {
+            meta.appendChild(document.createTextNode(`${key}: ${value}`));
+            meta.appendChild(document.createElement("br"));
+        });
+    }
+
+    function renderPathFilters() {
+        paths.replaceChildren();
+        const names = Array.from(new Set(state.notes.map(note => note.lookup).filter(Boolean))).sort();
+        state.visibleLookups = new Set(names);
+        names.forEach(name => {
+            const label = document.createElement("label");
+            label.className = "toggle";
+            const input = document.createElement("input");
+            input.type = "checkbox";
+            input.checked = true;
+            input.addEventListener("change", () => {
+                if (input.checked) state.visibleLookups.add(name);
+                else state.visibleLookups.delete(name);
+                invalidateCaches();
+                queueDraw();
+                setStatus(`Showing ${activeNotes().length} notes`);
+            });
+            label.append(input, document.createTextNode(name));
+            paths.appendChild(label);
+        });
+    }
+
+    function bindEvents() {
+        layers.addEventListener("change", evt => {
+            const input = evt.target;
+            if (!input || !input.dataset || !input.dataset.layer) return;
+            state.layers[input.dataset.layer] = input.checked;
+            if (input.dataset.layer === "semantic") state.spatialIndex = null;
+            queueDraw();
+        });
+        canvas.addEventListener("pointerdown", evt => {
+            canvas.setPointerCapture(evt.pointerId);
+            state.dragging = true;
+            state.moved = false;
+            state.pointer = pointerPos(evt);
+            stage.classList.add("dragging");
+        });
+        canvas.addEventListener("pointermove", evt => {
+            const p = pointerPos(evt);
+            const hit = nearestNote(p.x, p.y);
+            state.hovered = hit;
+            showTooltip(hit, p.x, p.y);
+            if (state.dragging) {
+                const dx = p.x - state.pointer.x;
+                const dy = p.y - state.pointer.y;
+                if (Math.abs(dx) > 1 || Math.abs(dy) > 1) state.moved = true;
+                state.camera.x += dx;
+                state.camera.y += dy;
+            }
+            state.pointer = p;
+            queueDraw();
+        });
+        function stopDrag(evt) {
+            const p = pointerPos(evt);
+            stage.classList.remove("dragging");
+            if (state.dragging && !state.moved) {
+                state.selected = nearestNote(p.x, p.y);
+                renderNote(state.selected);
+            }
+            state.dragging = false;
+            queueDraw();
+        }
+        canvas.addEventListener("pointerup", stopDrag);
+        canvas.addEventListener("pointercancel", stopDrag);
+        canvas.addEventListener("wheel", evt => {
+            evt.preventDefault();
+            const p = pointerPos(evt);
+            const old = state.camera.k;
+            const next = clamp(old * (evt.deltaY < 0 ? 1.09 : 0.92), 0.16, 5);
+            const world = screenToWorld(p.x, p.y);
+            state.camera.k = next;
+            state.camera.x = p.x - world.x * next;
+            state.camera.y = p.y - world.y * next;
+            queueDraw();
+        }, { passive: false });
+        window.addEventListener("resize", resize);
+    }
+
+    function load() {
+        setStatus("Loading map data...");
+        fetch(api("/map_data"))
+            .then(resp => {
+                if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+                return resp.json();
+            })
+            .then(data => {
+                state.data = data;
+                state.notes = Array.isArray(data.notes) ? data.notes : [];
+                state.clusters = Array.isArray(data.clusters) ? data.clusters : [];
+                state.edges = Array.isArray(data.edges) ? data.edges : [];
+                state.noteByIndex = new Map(state.notes.map((note, index) => [note.index ?? index, note]));
+                state.clusterById = new Map(state.clusters.map(cluster => [cluster.id, cluster]));
+                invalidateCaches();
+                renderMeta(data);
+                renderPathFilters();
+                resetView();
+                queueDraw();
+                setStatus(`Loaded ${state.notes.length} notes in ${state.clusters.length} mountains`);
+            })
+            .catch(err => {
+                console.error(err);
+                setStatus("Failed to load map data");
+                meta.textContent = "Run run-index-map-v2 config.json, then refresh.";
+            });
+    }
+
+    bindEvents();
+    resize();
+    load();
+});
+</script>
+</body>
+</html>

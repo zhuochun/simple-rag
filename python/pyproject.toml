@@ -5,10 +5,19 @@ description = "Python map-data generator for simple-rag indexes"
 requires-python = ">=3.10"
 dependencies = [
   "numpy>=1.26",
+  "scipy>=1.11",
+  "scikit-learn>=1.4",
+  "umap-learn>=0.5",
+  "python-igraph>=0.11",
+  "leidenalg>=0.10",
+  "scikit-image>=0.22",
+  "orjson>=3.9",
+  "rich>=13.0",
 ]
 
 [project.scripts]
 run-index-map-py = "simple_rag_map.cli:main"
+run-index-map-v2 = "simple_rag_map_v2.cli:main"
 
 [build-system]
 requires = ["hatchling"]

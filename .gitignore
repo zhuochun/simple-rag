@@ -59,6 +59,7 @@ config*.json
 
 .aider*
 .env
+.venv/
 **/*/__pycache__
 
 .playwright-cli/
