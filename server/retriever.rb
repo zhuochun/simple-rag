@@ -185,6 +185,7 @@ def retrieve_by_embedding(lookup_paths, q, store_cache: nil, top_n: nil, paralle
                         "lookup" => p.name,
                         "id" => extract_id(item["path"]),
                         "url" => extract_url(item["path"], p.url),
+                        "text" => item["text"],
                         "reader" => (file_cache[item["path"]] ||= reader_cls.new(item["path"]))
                     }
                 end
@@ -204,6 +205,7 @@ def retrieve_by_embedding(lookup_paths, q, store_cache: nil, top_n: nil, paralle
                             "lookup" => p.name,
                             "id" => extract_id(item["path"]),
                             "url" => extract_url(item["path"], p.url),
+                            "text" => item["text"],
                             "reader" => (file_cache[item["path"]] ||= reader_cls.new(item["path"]))
                         }
                     end
@@ -221,6 +223,7 @@ def retrieve_by_embedding(lookup_paths, q, store_cache: nil, top_n: nil, paralle
                                 "lookup" => p.name,
                                 "id" => extract_id(item["path"]),
                                 "url" => extract_url(item["path"], p.url),
+                                "text" => item["text"],
                                 "reader" => (file_cache[item["path"]] ||= reader_cls.new(item["path"]))
                             }
                         end

@@ -223,7 +223,8 @@ if needs_embedding
 end
 
 entries = retrieve_entries(options[:mode], lookup_paths, query, options[:limit], use_cache: false)
-ordered = QueryHelpers.top_n_by_score(entries, options[:limit])
+unique_by_path = QueryHelpers.best_entry_per_path(entries)
+ordered = QueryHelpers.top_n_by_score(unique_by_path, options[:limit])
 rows = QueryHelpers.serialize_entries(
   ordered,
   concise: options[:concise],

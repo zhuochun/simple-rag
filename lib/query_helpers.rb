@@ -106,12 +106,33 @@ module QueryHelpers
            .sort_by { |item| -(item["score"] || 0.0) }
   end
 
+  def best_entry_per_path(entries)
+    best = {}
+
+    entries.each do |item|
+      path = item["path"].to_s
+      next if path.empty?
+
+      prev = best[path]
+      if prev.nil? || item["score"].to_f > prev["score"].to_f
+        best[path] = item
+      end
+    end
+
+    best.values
+  end
+
   def serialize_entries(entries, concise: false, brief_chars: DEFAULT_BRIEF_CHARS)
     reader_cache = {}
 
     entries.map do |item|
-      reader = reader_cache[item["path"]] ||= item["reader"].load
-      text = reader.get_chunk(item["chunk"])
+      text = nil
+      if item["reader"]
+        reader = reader_cache[item["path"]] ||= item["reader"].load
+        text = reader.get_chunk(item["chunk"])
+      end
+      text = item["text"] if text.nil? || text.to_s.empty?
+      text = "" if text.nil?
 
       row = {
         path: item["path"],
