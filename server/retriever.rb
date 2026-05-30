@@ -145,9 +145,13 @@ def text_limit_for_top_n(top_n)
     [n * TEXT_SEARCH_LIMIT_MULTIPLIER, TEXT_SEARCH_LIMIT_MAX].min
 end
 
-def retrieve_by_embedding(lookup_paths, q, store_cache: nil, top_n: nil, parallel: true)
+def retrieve_by_embedding(lookup_paths, q, store_cache: nil, top_n: nil, parallel: true, use_cache: true)
     begin
-        qe = CACHE.get_or_set(q, method(:embedding).to_proc)
+        qe = if use_cache
+            CACHE.get_or_set(q, method(:embedding).to_proc)
+        else
+            embedding(q)
+        end
         qn = normalize_embedding(qe)
     rescue => e
         STDOUT << "Embedding retrieval skipped: #{e.class}: #{e.message}\n"

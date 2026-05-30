@@ -1,6 +1,11 @@
-
-class TextReader
+class MarkdownReader
     include ChunkUtils
+
+    MAX_WORDS = 1000
+    MIN_WORDS = 10
+
+    FRONTMATTER_START = /\A---\s*$/
+    FRONTMATTER_END = /\A(?:---|\.\.\.)\s*$/
 
     attr_accessor :file, :chunks
 
@@ -10,13 +15,9 @@ class TextReader
         @chunks = []
     end
 
-    MAX_WORDS = 1000
-    MIN_WORDS = 10
-    FRONTMATTER_START = /\A---\s*$/
-    FRONTMATTER_END = /\A(?:---|\.\.\.)\s*$/
-
     def load
         return self if @loaded
+
         unless File.exist?(@file)
             @loaded = true
             return self
@@ -24,17 +25,19 @@ class TextReader
 
         begin
             raw = File.read(@file)
-            body = extract_body_without_frontmatter(raw)
-            filtered = filter_notion_lines(body)
-            cleaned = strip_markdown(filtered)
-            @chunks = build_index_chunks(cleaned)
+            title, status, body = extract_frontmatter_and_body(raw)
+            if skip_by_status?(status)
+                @loaded = true
+                return self
+            end
+            @chunks = build_index_chunks(title, body)
         rescue Errno::ENOENT
-            # file was removed after existence check; skip loading
+            @loaded = true
+            return self
         end
 
         @chunks = filter_small_chunks(@chunks, MIN_WORDS)
         @loaded = true
-
         self
     end
 
@@ -47,43 +50,82 @@ class TextReader
 
     private
 
-    def extract_body_without_frontmatter(raw)
-        return "" if raw.nil? || raw.empty?
+    def extract_frontmatter_and_body(raw)
+        return [nil, nil, raw] if raw.nil? || raw.empty?
 
         lines = raw.lines
-        return raw unless lines[0]&.match?(FRONTMATTER_START)
+        return [nil, nil, raw] unless lines[0]&.match?(FRONTMATTER_START)
 
+        fm_lines = []
         body_start = nil
+
         lines.each_with_index do |line, idx|
             next if idx.zero?
+
             if line.match?(FRONTMATTER_END)
                 body_start = idx + 1
                 break
             end
+
+            fm_lines << line
         end
 
-        return raw if body_start.nil?
-        lines[body_start..]&.join.to_s
+        return [nil, nil, raw] if body_start.nil?
+
+        frontmatter = fm_lines.join
+        title = extract_title_from_frontmatter(frontmatter)
+        status = extract_status_from_frontmatter(frontmatter)
+        body = lines[body_start..]&.join.to_s
+        [title, status, body]
     end
 
-    def skip_notion_metadata_line?(line)
-        stripped = line.lstrip
-        (line.start_with?('- ') && line.include?(':')) ||
-            line.start_with?('  - [[') ||
-            stripped.start_with?('<')
-    end
+    def extract_title_from_frontmatter(frontmatter)
+        return nil if frontmatter.nil? || frontmatter.empty?
 
-    def filter_notion_lines(text)
-        return "" if text.nil? || text.empty?
-
-        kept = []
-        text.each_line do |line|
-            stripped = line.strip
-            next if stripped == "---"
-            next if skip_notion_metadata_line?(line)
-            kept << line
+        frontmatter.each_line do |line|
+            if line =~ /^\s*title\s*:\s*(.+?)\s*$/
+                return unquote_yaml_scalar($1.strip)
+            end
         end
-        kept.join
+
+        nil
+    end
+
+    def unquote_yaml_scalar(value)
+        return "" if value.nil?
+        stripped = value.strip
+        if (stripped.start_with?('"') && stripped.end_with?('"')) ||
+           (stripped.start_with?("'") && stripped.end_with?("'"))
+            stripped = stripped[1...-1]
+        end
+        stripped
+    end
+
+    def extract_status_from_frontmatter(frontmatter)
+        return nil if frontmatter.nil? || frontmatter.empty?
+
+        frontmatter.each_line do |line|
+            if line =~ /^\s*status\s*:\s*(.+?)\s*$/
+                return unquote_yaml_scalar($1.strip)
+            end
+        end
+
+        nil
+    end
+
+    def skip_by_status?(status)
+        return true if status.nil? || status.empty?
+        status.downcase == "seed"
+    end
+
+    def build_index_text(title, body)
+        cleaned = strip_markdown(body)
+        if title && !title.empty?
+            return title if cleaned.empty?
+            "#{title}\n\n#{cleaned}"
+        else
+            cleaned
+        end
     end
 
     def strip_markdown(text)
@@ -96,49 +138,42 @@ class TextReader
         s.gsub!(/!\[[^\]]*\]\([^\)]*\)/, " ")
         s.gsub!(/!\[[^\]]*\]\[[^\]]*\]/, " ")
 
-        # Handle Notion wiki links first, including display text with brackets.
-        s.gsub!(/\[\[([^|\]]+)\|(.*?)\]\]/, '\2')
-        s.gsub!(/\[\[([^\]]+)\]\]/, '\1')
-
         # Keep readable link labels while removing URLs.
         s.gsub!(/\[([^\]]+)\]\([^\)]*\)/, '\1')
         s.gsub!(/\[([^\]]+)\]\[[^\]]*\]/, '\1')
 
-        # Strip HTML tags and bare URLs.
+        # Strip wiki links and HTML.
+        s.gsub!(/\[\[([^\]|]+)\|([^\]]+)\]\]/, '\2')
+        s.gsub!(/\[\[([^\]]+)\]\]/, '\1')
         s.gsub!(%r{<[^>]+>}, " ")
-        s.gsub!(%r{https?://\S+}, " ")
 
-        # Remove markdown punctuation while keeping heading markers.
-        s.gsub!(/^\s*>+\s?/, "")
-        s.gsub!(/^\s*[-*+]\s+/, "")
+        # Remove markdown punctuation while retaining text.
+        s.gsub!(/^\s{0,3}(#{Regexp.union(["#", ">", "-", "*", "+"]).source})\s+/, "")
         s.gsub!(/^\s*\d+\.\s+/, "")
-        s.gsub!(/^\s*\[(?: |x|X)\]\s+/, "")
         s.gsub!(/[`*_~]/, "")
 
-        # Normalize whitespace and collapse unnecessary empty lines.
-        normalized = s.lines.map { |line| line.gsub(/[ \t]+/, " ").strip }
-        compact = []
-        normalized.each do |line|
-            if line.empty?
-                next if compact.empty? || compact.last.empty?
-                compact << ""
-            else
-                compact << line
-            end
-        end
+        # Drop bare URLs and normalize whitespace.
+        s.gsub!(%r{https?://\S+}, " ")
+        s.gsub!(/[ \t]+/, " ")
+        s.gsub!(/\n{3,}/, "\n\n")
 
-        compact.join("\n").strip
+        s.lines.map(&:strip).join("\n").strip
     end
 
-    def build_index_chunks(text)
-        base_chunks = threshold_chunks(text, MAX_WORDS)
-        return [] if base_chunks.empty?
+    def build_index_chunks(title, body)
+        cleaned = strip_markdown(body)
+        base_chunks = threshold_chunks(cleaned, MAX_WORDS)
 
-        h1 = first_heading_1(text)
-        return base_chunks if h1.nil? || h1.empty?
+        # If the file only has frontmatter title and no body, still index the title.
+        if base_chunks.empty?
+            return [] if title.nil? || title.empty?
+            return [title]
+        end
 
-        base_chunks.map do |chunk|
-            chunk.start_with?(h1) ? chunk : "#{h1}\n\n#{chunk}"
+        if title && !title.empty?
+            base_chunks.map { |chunk| "#{title}\n\n#{chunk}" }
+        else
+            base_chunks
         end
     end
 
@@ -157,6 +192,7 @@ class TextReader
         sections.each do |section|
             section_tokens = count_tokens(section)
 
+            # If a single heading section is too large, fall back to paragraph/line/token splitting.
             if section_tokens > max_tokens
                 if current.any?
                     chunks << current.join("\n\n")
@@ -199,20 +235,11 @@ class TextReader
 
         section = current.join("\n").strip
         sections << section unless section.empty?
+
         sections
     end
 
     def heading_line?(line)
         !!(line =~ /^\s{0,3}[#]{1,6}\s+\S+/)
-    end
-
-    def first_heading_1(text)
-        return nil if text.nil? || text.empty?
-
-        text.each_line do |line|
-            stripped = line.strip
-            return stripped if stripped =~ /^#\s+\S+/
-        end
-        nil
     end
 end

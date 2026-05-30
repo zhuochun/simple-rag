@@ -108,12 +108,12 @@ end
 
 def get_reader(name)
     case name.to_s.downcase
-    when "text"
+    when "text", "notion"
         require_relative "text"
         TextReader
-    when "note"
-        require_relative "note"
-        NoteReader
+    when "markdown", "md"
+        require_relative "markdown"
+        MarkdownReader
     when "journal"
         require_relative "journal"
         JournalReader
