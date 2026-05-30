@@ -25,16 +25,22 @@ require_relative "../server/discuss"
 require_relative "../server/duplicate"
 require_relative "../server/article"
 require_relative "../lib/config_loader"
+require_relative "../lib/config_path_resolver"
 require_relative "../lib/ollama_service"
 require_relative "../lib/provider_env_validator"
 require_relative "../lib/query_helpers"
 
-if ARGV.length != 1
-    STDOUT << "Invalid arguments received, need a config file\n"
+if ARGV.length > 1
+    STDOUT << "Invalid arguments received, expected at most one config file path\n"
     exit 1
 end
 
-CONFIG_FILE = File.expand_path(ARGV[0])
+CONFIG_FILE = ConfigPathResolver.resolve_config_path(ARGV[0])
+unless CONFIG_FILE
+    STDOUT << "#{ConfigPathResolver.default_search_message}\n"
+    exit 1
+end
+
 CONFIG_BASE_DIR = File.dirname(CONFIG_FILE)
 
 begin

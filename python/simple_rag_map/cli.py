@@ -18,7 +18,10 @@ from .pipeline import build_map_data, load_all_notes
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(sys.argv[1:] if argv is None else argv)
 
-    config_file = Path(args.config).resolve()
+    config_file = resolve_config_path(args.config)
+    if config_file is None:
+        print(default_config_search_message())
+        return 1
     config_base_dir = config_file.parent
 
     try:
@@ -71,7 +74,12 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         prog="run-index-map-py",
         description="Build map_data.json clusters and optionally generate LLM labels.",
     )
-    parser.add_argument("config", help="Path to config.json")
+    parser.add_argument(
+        "config",
+        nargs="?",
+        default=None,
+        help="Path to config.json (default lookup: ./config.json, then ~/.config/simple-rag/config.json)",
+    )
     parser.add_argument("include_paths", nargs="?", help='Optional path names: learning,kaizen or ["learning","kaizen"]')
     parser.add_argument(
         "--step",
@@ -87,6 +95,32 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         help="Concurrent LLM label requests. Defaults to map.labelWorkers or 4.",
     )
     return parser.parse_args(argv)
+
+
+def default_config_candidates() -> list[Path]:
+    return [
+        (Path.cwd() / "config.json").resolve(),
+        Path("~/.config/simple-rag/config.json").expanduser().resolve(),
+    ]
+
+
+def resolve_config_path(config_arg: str | None) -> Path | None:
+    value = str(config_arg or "").strip()
+    if value:
+        return Path(value).expanduser().resolve()
+    for candidate in default_config_candidates():
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def default_config_search_message() -> str:
+    checked = "\n".join(f"  - {path}" for path in default_config_candidates())
+    return (
+        "No config file provided and no default config found.\n"
+        f"Checked:\n{checked}\n"
+        "Pass an explicit config path."
+    )
 
 
 def parse_include_names(raw: str | None) -> list[str] | None:

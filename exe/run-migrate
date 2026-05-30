@@ -13,17 +13,24 @@ rescue LoadError
 end
 
 require_relative "../lib/config_loader"
+require_relative "../lib/config_path_resolver"
 require_relative "../llm/embedding"
 require_relative "../readers/reader"
 require_relative "../storage/sqlite_index"
 
-if ARGV.length != 1
-  STDOUT << "Invalid arguments received, need a config file\n"
+if ARGV.length > 1
+  STDOUT << "Invalid arguments received, expected at most one config file path\n"
+  exit 1
+end
+
+config_file = ConfigPathResolver.resolve_config_path(ARGV[0])
+unless config_file
+  STDOUT << "#{ConfigPathResolver.default_search_message}\n"
   exit 1
 end
 
 begin
-  CONFIG = ConfigLoader.load_config(ARGV[0])
+  CONFIG = ConfigLoader.load_config(config_file)
 rescue => e
   STDOUT << "Config error: #{e.message}\n"
   exit 1

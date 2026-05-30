@@ -13,6 +13,7 @@ gem install simple-rag-zc
 - Setup Config JSON
   - Copy `example_config.json` to `config.json`, then edit the paths to absolute path.
   - `map.path` is required if you want to use `run-index-map-py` / `map.html`.
+  - All `run-*` executables default to `./config.json`, then `~/.config/simple-rag/config.json` if no config path is provided.
 - Setup Python map generator
   - Python 3.10+ is required for the faster map generator.
   - From the repo root, install the Python package and dependencies:

@@ -10,17 +10,17 @@ end
 
 require_relative "../server/retriever"
 require_relative "../lib/config_loader"
+require_relative "../lib/config_path_resolver"
 require_relative "../lib/ollama_service"
 require_relative "../lib/provider_env_validator"
 require_relative "../lib/query_helpers"
 
-DEFAULT_CONFIG_FILE = "config.json"
 DEFAULT_LIMIT = 10
 VALID_MODES = %w[embedding bm25 hybrid].freeze
 VALID_FORMATS = %w[json jsonl text].freeze
 
 options = {
-  config: DEFAULT_CONFIG_FILE,
+  config: nil,
   limit: DEFAULT_LIMIT,
   mode: "embedding",
   format: "json",
@@ -40,7 +40,7 @@ parser = OptionParser.new do |opts|
   opts.separator ""
   opts.separator "Options:"
 
-  opts.on("-c", "--config FILE", "Config file path (default: #{DEFAULT_CONFIG_FILE})") do |v|
+  opts.on("-c", "--config FILE", "Config file path (default lookup: ./config.json, then ~/.config/simple-rag/config.json)") do |v|
     options[:config] = v
   end
 
@@ -77,8 +77,13 @@ parser = OptionParser.new do |opts|
   end
 end
 
-def print_paths_for_help(config_file)
-  abs_config = File.expand_path(config_file)
+def print_paths_for_help(config_arg)
+  abs_config = ConfigPathResolver.resolve_config_path(config_arg)
+  unless abs_config
+    STDOUT << "\nPaths: #{ConfigPathResolver.default_search_message}\n"
+    return
+  end
+
   unless File.exist?(abs_config)
     STDOUT << "\nPaths: config file not found (#{abs_config})\n"
     return
@@ -187,7 +192,12 @@ if query.empty?
   exit 1
 end
 
-config_file = File.expand_path(options[:config])
+config_file = ConfigPathResolver.resolve_config_path(options[:config])
+unless config_file
+  STDOUT << "#{ConfigPathResolver.default_search_message}\n"
+  exit 1
+end
+
 begin
   config = ConfigLoader.load_config(config_file, with_path_map: true)
 rescue => e

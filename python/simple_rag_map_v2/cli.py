@@ -25,7 +25,11 @@ STAGES = ("all", "graph", "communities", "layout", "terrain", "labels")
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(sys.argv[1:] if argv is None else argv)
     try:
-        config = load_config(args.config, seed=args.seed, label_workers=args.label_workers)
+        config_path = resolve_config_path(args.config)
+        if config_path is None:
+            print(default_config_search_message())
+            return 1
+        config = load_config(str(config_path), seed=args.seed, label_workers=args.label_workers)
         if config.map_v2.labels.enabled and args.stage in {"all", "labels"}:
             missing = missing_key_message(config, ("chat",))
             if missing:
@@ -159,13 +163,44 @@ def run_pipeline(config, paths, *, stage: str, debug: bool):
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(prog="run-index-map-v2", description="Build semantic mountain map_data.json from simple-rag indexes.")
-    parser.add_argument("config", help="Path to config.json")
+    parser.add_argument(
+        "config",
+        nargs="?",
+        default=None,
+        help="Path to config.json (default lookup: ./config.json, then ~/.config/simple-rag/config.json)",
+    )
     parser.add_argument("include_paths", nargs="?", help='Optional path names: learning,kaizen or ["learning","kaizen"]')
     parser.add_argument("--stage", choices=STAGES, default="all")
     parser.add_argument("--debug", action="store_true")
     parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--label-workers", type=int, default=None)
     return parser.parse_args(argv)
+
+
+def default_config_candidates() -> list[Path]:
+    return [
+        (Path.cwd() / "config.json").resolve(),
+        Path("~/.config/simple-rag/config.json").expanduser().resolve(),
+    ]
+
+
+def resolve_config_path(config_arg: str | None) -> Path | None:
+    value = str(config_arg or "").strip()
+    if value:
+        return Path(value).expanduser().resolve()
+    for candidate in default_config_candidates():
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def default_config_search_message() -> str:
+    checked = "\n".join(f"  - {path}" for path in default_config_candidates())
+    return (
+        "No config file provided and no default config found.\n"
+        f"Checked:\n{checked}\n"
+        "Pass an explicit config path."
+    )
 
 
 def write_json(path: Path, data) -> None:
