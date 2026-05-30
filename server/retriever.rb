@@ -28,6 +28,13 @@ TEXT_SEARCH_LIMIT_MAX = 800
 TEXT_SEARCH_LIMIT_MULTIPLIER = 20
 RETRIEVE_THREADS_MAX = 8
 STORE_CACHE_MUTEX = Mutex.new
+RETRIEVE_PROGRESS_LOG = ENV["RAG_RETRIEVE_PROGRESS"].to_s == "1"
+
+def retrieve_progress(message)
+    return unless RETRIEVE_PROGRESS_LOG
+
+    STDOUT << message
+end
 
 def expand_query(q)
     msgs = [
@@ -36,7 +43,7 @@ def expand_query(q)
     ]
 
     query = chat(msgs).strip
-    STDOUT << "Expand query: #{query}\n"
+    retrieve_progress("Expand query: #{query}\n")
 
     query
 end
@@ -152,7 +159,7 @@ def retrieve_by_embedding(lookup_paths, q, store_cache: nil, top_n: nil, paralle
     entries_mutex = Mutex.new
 
     each_lookup_path(lookup_paths, parallel: parallel) do |p|
-        STDOUT << "Reading index: #{p.name}\n"
+        retrieve_progress("Reading index: #{p.name}\n")
         reader_cls = get_reader(p.reader)
         next if reader_cls.nil?
 
@@ -241,7 +248,7 @@ def retrieve_by_embedding(lookup_paths, q, store_cache: nil, top_n: nil, paralle
         end
 
         entries_mutex.synchronize { entries.concat(path_entries) }
-        STDOUT << "Matched num for #{p.name}: #{path_entries.length}\n"
+        retrieve_progress("Matched num for #{p.name}: #{path_entries.length}\n")
     end
 
     entries
@@ -286,7 +293,7 @@ def expand_variants(q)
     ]
 
     variants = chat(msgs).split(',').map(&:strip).reject(&:empty?).uniq.first(6)
-    STDOUT << "Expand variants: #{variants}\n"
+    retrieve_progress("Expand variants: #{variants}\n")
     variants
 end
 
@@ -299,7 +306,7 @@ def retrieve_by_text(lookup_paths, query_or_queries, store_cache: nil, top_n: ni
     entries_mutex = Mutex.new
 
     each_lookup_path(lookup_paths, parallel: parallel) do |p|
-        STDOUT << "Reading text index: #{p.name}\n"
+        retrieve_progress("Reading text index: #{p.name}\n")
 
         reader_cls = get_reader(p.reader)
         next if reader_cls.nil?
@@ -325,7 +332,7 @@ def retrieve_by_text(lookup_paths, query_or_queries, store_cache: nil, top_n: ni
                 end
             end
             entries_mutex.synchronize { entries.concat(path_entries) }
-            STDOUT << "Matched num for #{p.name}: #{path_entries.length}\n"
+            retrieve_progress("Matched num for #{p.name}: #{path_entries.length}\n")
             next
         end
 
@@ -352,7 +359,7 @@ def retrieve_by_text(lookup_paths, query_or_queries, store_cache: nil, top_n: ni
         end
 
         entries_mutex.synchronize { entries.concat(path_entries) }
-        STDOUT << "Matched num for #{p.name}: #{path_entries.length}\n"
+        retrieve_progress("Matched num for #{p.name}: #{path_entries.length}\n")
     end
 
     entries

@@ -60,6 +60,10 @@ run-index-map-py config.json --step labels --label-workers 6
   - Open `http://localhost:4567/random.html` to explore notes randomly
   - Open `http://localhost:4567/graph.html` to explore search results as a graph
   - Open `http://localhost:4567/map.html` to explore knowledge mountains and click dots into `q.html`
+- Run `run-query "your question"` for CLI retrieval (LLM-friendly)
+  - `run-query --help` shows usage and all configured `paths` (`name => dir`)
+  - Modes: `--mode embedding` (default), `--mode bm25`, `--mode hybrid`
+  - Default output is concise brief chunks; use `--full` for complete chunk text
 
 ## Publishing
 

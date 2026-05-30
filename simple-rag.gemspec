@@ -27,7 +27,7 @@ Gem::Specification.new do |spec|
   ]
 
   spec.bindir        = "exe"
-  spec.executables   = ["run-index", "run-server", "run-migrate", "run-index-map-py", "run-index-map-v2"]
+  spec.executables   = ["run-index", "run-server", "run-migrate", "run-index-map-py", "run-index-map-v2", "run-query"]
   spec.require_paths = ["lib"]
 
   spec.add_runtime_dependency "sinatra", "~> 4.1"

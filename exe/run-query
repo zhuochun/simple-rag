@@ -1,0 +1,233 @@
+#!/usr/bin/env ruby
+# encoding: utf-8
+
+require "json"
+require "optparse"
+begin
+  require "bundler/setup"
+rescue LoadError
+end
+
+require_relative "../server/retriever"
+require_relative "../lib/config_loader"
+require_relative "../lib/ollama_service"
+require_relative "../lib/provider_env_validator"
+require_relative "../lib/query_helpers"
+
+DEFAULT_CONFIG_FILE = "config.json"
+DEFAULT_LIMIT = 10
+VALID_MODES = %w[embedding bm25 hybrid].freeze
+VALID_FORMATS = %w[json jsonl text].freeze
+
+options = {
+  config: DEFAULT_CONFIG_FILE,
+  limit: DEFAULT_LIMIT,
+  mode: "embedding",
+  format: "json",
+  concise: true,
+  brief_chars: QueryHelpers::DEFAULT_BRIEF_CHARS,
+  paths: [],
+}
+
+show_help = false
+
+parser = OptionParser.new do |opts|
+  opts.banner = "Usage: run-query [options] \"query text\""
+  opts.separator ""
+  opts.separator "Examples:"
+  opts.separator "  run-query \"habit loop\""
+  opts.separator "  run-query --mode hybrid --paths learning,talks --limit 20 \"systems thinking\""
+  opts.separator ""
+  opts.separator "Options:"
+
+  opts.on("-c", "--config FILE", "Config file path (default: #{DEFAULT_CONFIG_FILE})") do |v|
+    options[:config] = v
+  end
+
+  opts.on("-p", "--paths NAMES", "Comma-separated path names to search") do |v|
+    options[:paths] = v.to_s.split(",").map(&:strip).reject(&:empty?).uniq
+  end
+
+  opts.on("-l", "--limit N", Integer, "Top results limit (default: #{DEFAULT_LIMIT})") do |v|
+    options[:limit] = v
+  end
+
+  opts.on("-m", "--mode MODE", VALID_MODES, "Retrieval mode: #{VALID_MODES.join(', ')}") do |v|
+    options[:mode] = v
+  end
+
+  opts.on("-f", "--format FORMAT", VALID_FORMATS, "Output format: #{VALID_FORMATS.join(', ')}") do |v|
+    options[:format] = v
+  end
+
+  opts.on("--concise", "Concise output with short chunk brief (default)") do
+    options[:concise] = true
+  end
+
+  opts.on("--full", "Full chunk output (include complete text)") do
+    options[:concise] = false
+  end
+
+  opts.on("--brief-chars N", Integer, "Max chars for concise brief (default: #{QueryHelpers::DEFAULT_BRIEF_CHARS})") do |v|
+    options[:brief_chars] = v
+  end
+
+  opts.on("-h", "--help", "Show this help and list searchable paths") do
+    show_help = true
+  end
+end
+
+def print_paths_for_help(config_file)
+  abs_config = File.expand_path(config_file)
+  unless File.exist?(abs_config)
+    STDOUT << "\nPaths: config file not found (#{abs_config})\n"
+    return
+  end
+
+  begin
+    config = ConfigLoader.load_config(abs_config, with_path_map: true)
+  rescue => e
+    STDOUT << "\nPaths: unable to load config (#{e.message})\n"
+    return
+  end
+
+  STDOUT << "\nSearchable paths (name => dir)\n"
+  config.paths.each do |p|
+    marker = p.searchDefault ? " [default]" : ""
+    STDOUT << "- #{p.name} => #{p.dir}#{marker}\n"
+  end
+end
+
+def embedding_key_missing_message(config)
+  provider = ProviderEnvValidator.provider_name(config, :embedding).to_s.downcase
+  env_key = ProviderEnvValidator::REQUIRED_ENV_BY_PROVIDER[provider]
+  return nil if env_key.nil?
+  return nil unless ENV[env_key].to_s.empty?
+
+  <<~MSG.strip
+    Missing API key for embedding provider "#{provider}".
+    Required env var: #{env_key}
+    PowerShell (current session): $env:#{env_key}="YOUR_KEY"
+    cmd.exe (current session): set #{env_key}=YOUR_KEY
+  MSG
+end
+
+def validate_options!(options)
+  raise ArgumentError, "--limit must be > 0" unless options[:limit].to_i > 0
+  raise ArgumentError, "--brief-chars must be > 0" unless options[:brief_chars].to_i > 0
+end
+
+def retrieve_entries(mode, lookup_paths, query, limit)
+  case mode
+  when "embedding"
+    retrieve_by_embedding(lookup_paths, query, top_n: limit)
+  when "bm25"
+    retrieve_by_text(lookup_paths, query, top_n: limit)
+  when "hybrid"
+    store_cache = {}
+    begin
+      embedding_entries = retrieve_by_embedding(lookup_paths, query, store_cache: store_cache, top_n: limit)
+      text_entries = retrieve_by_text(lookup_paths, query, store_cache: store_cache, top_n: limit)
+    ensure
+      close_store_cache(store_cache)
+    end
+
+    QueryHelpers.fuse_entries_with_weighted_rrf(
+      [
+        { name: "embedding", entries: embedding_entries, weight: 1.0 },
+        { name: "bm25", entries: text_entries, weight: 0.75 },
+      ],
+      component_weights: { weighted: 0.7, rrf: 0.3 },
+      rrf_k: 60
+    )
+  else
+    raise ArgumentError, "Unsupported mode: #{mode}"
+  end
+end
+
+def print_output(format, payload, concise)
+  case format
+  when "json"
+    STDOUT << JSON.pretty_generate(payload) << "\n"
+  when "jsonl"
+    payload[:data].each { |row| STDOUT << row.to_json << "\n" }
+  when "text"
+    payload[:data].each_with_index do |row, idx|
+      score = format("%.4f", row[:score].to_f)
+      if concise
+        STDOUT << "#{idx + 1}. [#{row[:lookup]}] #{row[:path]}##{row[:chunk]} score=#{score}\n"
+        STDOUT << "   #{row[:brief]}\n"
+      else
+        STDOUT << "#{idx + 1}. [#{row[:lookup]}] #{row[:path]}##{row[:chunk]} score=#{score}\n"
+        STDOUT << "#{row[:text]}\n\n"
+      end
+    end
+  else
+    raise ArgumentError, "Unsupported format: #{format}"
+  end
+end
+
+begin
+  parser.parse!(ARGV)
+  validate_options!(options)
+rescue OptionParser::ParseError, ArgumentError => e
+  STDOUT << "#{e.message}\n\n#{parser}\n"
+  exit 1
+end
+
+if show_help
+  STDOUT << parser.to_s << "\n"
+  print_paths_for_help(options[:config])
+  exit 0
+end
+
+query = ARGV.join(" ").to_s.strip
+if query.empty?
+  STDOUT << "Query text is required.\n\n#{parser}\n"
+  exit 1
+end
+
+config_file = File.expand_path(options[:config])
+begin
+  config = ConfigLoader.load_config(config_file, with_path_map: true)
+rescue => e
+  STDOUT << "Config error: #{e.message}\n"
+  exit 1
+end
+
+lookup_paths = QueryHelpers.resolve_lookup_paths(config, options[:paths], default_to_search_default: true)
+if lookup_paths.empty?
+  STDOUT << "No lookup paths selected. Check --paths names or config paths.\n"
+  exit 1
+end
+
+needs_embedding = options[:mode] != "bm25"
+if needs_embedding
+  exit 9 unless OllamaService.ensure_started(config)
+
+  key_error = embedding_key_missing_message(config)
+  if key_error
+    STDOUT << "#{key_error}\n"
+    exit 9
+  end
+end
+
+entries = retrieve_entries(options[:mode], lookup_paths, query, options[:limit])
+ordered = QueryHelpers.top_n_by_score(entries, options[:limit])
+rows = QueryHelpers.serialize_entries(
+  ordered,
+  concise: options[:concise],
+  brief_chars: options[:brief_chars]
+)
+
+payload = {
+  query: query,
+  mode: options[:mode],
+  concise: options[:concise],
+  limit: options[:limit],
+  count: rows.length,
+  paths: lookup_paths.map { |p| { name: p.name, dir: p.dir } },
+  data: rows,
+}
+
+print_output(options[:format], payload, options[:concise])
