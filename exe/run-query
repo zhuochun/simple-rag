@@ -122,16 +122,16 @@ def validate_options!(options)
   raise ArgumentError, "--brief-chars must be > 0" unless options[:brief_chars].to_i > 0
 end
 
-def retrieve_entries(mode, lookup_paths, query, limit)
+def retrieve_entries(mode, lookup_paths, query, limit, use_cache: true)
   case mode
   when "embedding"
-    retrieve_by_embedding(lookup_paths, query, top_n: limit)
+    retrieve_by_embedding(lookup_paths, query, top_n: limit, use_cache: use_cache)
   when "bm25"
     retrieve_by_text(lookup_paths, query, top_n: limit)
   when "hybrid"
     store_cache = {}
     begin
-      embedding_entries = retrieve_by_embedding(lookup_paths, query, store_cache: store_cache, top_n: limit)
+      embedding_entries = retrieve_by_embedding(lookup_paths, query, store_cache: store_cache, top_n: limit, use_cache: use_cache)
       text_entries = retrieve_by_text(lookup_paths, query, store_cache: store_cache, top_n: limit)
     ensure
       close_store_cache(store_cache)
@@ -199,13 +199,13 @@ unless config_file
 end
 
 begin
-  config = ConfigLoader.load_config(config_file, with_path_map: true)
+  CONFIG = ConfigLoader.load_config(config_file, with_path_map: true)
 rescue => e
   STDOUT << "Config error: #{e.message}\n"
   exit 1
 end
 
-lookup_paths = QueryHelpers.resolve_lookup_paths(config, options[:paths], default_to_search_default: true)
+lookup_paths = QueryHelpers.resolve_lookup_paths(CONFIG, options[:paths], default_to_search_default: true)
 if lookup_paths.empty?
   STDOUT << "No lookup paths selected. Check --paths names or config paths.\n"
   exit 1
@@ -213,22 +213,27 @@ end
 
 needs_embedding = options[:mode] != "bm25"
 if needs_embedding
-  exit 9 unless OllamaService.ensure_started(config)
+  exit 9 unless OllamaService.ensure_started(CONFIG)
 
-  key_error = embedding_key_missing_message(config)
+  key_error = embedding_key_missing_message(CONFIG)
   if key_error
     STDOUT << "#{key_error}\n"
     exit 9
   end
 end
 
-entries = retrieve_entries(options[:mode], lookup_paths, query, options[:limit])
+entries = retrieve_entries(options[:mode], lookup_paths, query, options[:limit], use_cache: false)
 ordered = QueryHelpers.top_n_by_score(entries, options[:limit])
 rows = QueryHelpers.serialize_entries(
   ordered,
   concise: options[:concise],
   brief_chars: options[:brief_chars]
 )
+if options[:concise] && options[:format] != "text"
+  rows = rows.map do |row|
+    row.reject { |k, _| [:lookup, :id, :url, :chunk].include?(k) }
+  end
+end
 
 payload = {
   query: query,
@@ -236,8 +241,10 @@ payload = {
   concise: options[:concise],
   limit: options[:limit],
   count: rows.length,
-  paths: lookup_paths.map { |p| { name: p.name, dir: p.dir } },
   data: rows,
 }
+unless options[:concise]
+  payload[:paths] = lookup_paths.map { |p| { name: p.name, dir: p.dir } }
+end
 
 print_output(options[:format], payload, options[:concise])
