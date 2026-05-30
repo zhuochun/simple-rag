@@ -244,6 +244,9 @@ end
 
 class SimpleRagServer < Sinatra::Application
     set :server, :webrick if Gem::Platform.local.to_s.include?("mingw-ucrt")
+    set :root, File.expand_path("..", __dir__)
+    set :public_folder, File.expand_path("public", __dir__)
+    set :static, true
 
     # list all the paths that can be searched
     get "/paths" do
