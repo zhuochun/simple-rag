@@ -84,40 +84,45 @@ def collect_sqlite_vector_candidates(items, idx, store, by_source_path, by_sourc
   candidates
 end
 
-def warm_sqlite_vector_indices(db_path_configs, store_cache)
-  db_path_configs.each_value do |config|
-    with_sqlite_store(config, store_cache) do |store|
-      store.warm_vector_index! if store.respond_to?(:warm_vector_index!)
+def with_duplicate_candidate_store(items)
+  store = SqliteIndex.new(":memory:", "duplicate_candidates")
+  store.transaction do
+    items.each do |item|
+      store.upsert_chunk(
+        path: item[:source_path],
+        chunk: item[:chunk],
+        hash: item[:hash],
+        embedding: item[:embedding],
+        bucket: item[:bucket],
+        text: nil
+      )
     end
   end
+
+  yield(store)
+ensure
+  store&.close
 end
 
-def candidate_indices_for_item(items, buckets, idx, db_path_configs, store_cache, by_source_path, by_source_path_chunk)
+def candidate_indices_for_item(items, buckets, idx, candidate_store, by_source_path, by_source_path_chunk)
   candidates = Set.new(collect_bucket_candidates(items, buckets, idx))
-  db_path_configs.each_value do |config|
-    with_sqlite_store(config, store_cache) do |store|
-      collect_sqlite_vector_candidates(items, idx, store, by_source_path, by_source_path_chunk).each do |candidate_idx|
-        candidates.add(candidate_idx)
-      end
-    end
+  collect_sqlite_vector_candidates(items, idx, candidate_store, by_source_path, by_source_path_chunk).each do |candidate_idx|
+    candidates.add(candidate_idx)
   end
 
   candidates.delete(idx)
   candidates.to_a
 end
 
-def build_similarity_graph(items, buckets, threshold, cross_document_only, db_path_configs)
+def build_similarity_graph(items, buckets, threshold, cross_document_only)
   adjacency = Array.new(items.length) { Set.new }
   sim_cache = {}
   pair_seen = Set.new
-  store_cache = {}
   by_source_path, by_source_path_chunk = build_index_maps(items)
 
-  begin
-    warm_sqlite_vector_indices(db_path_configs, store_cache)
-
+  with_duplicate_candidate_store(items) do |candidate_store|
     items.each_with_index do |item, i|
-      neighbor_indices = candidate_indices_for_item(items, buckets, i, db_path_configs, store_cache, by_source_path, by_source_path_chunk)
+      neighbor_indices = candidate_indices_for_item(items, buckets, i, candidate_store, by_source_path, by_source_path_chunk)
       neighbor_indices.each do |j|
         a, b = i < j ? [i, j] : [j, i]
         next if a == b
@@ -134,8 +139,6 @@ def build_similarity_graph(items, buckets, threshold, cross_document_only, db_pa
         sim_cache[[j, i]] = sim
       end
     end
-  ensure
-    close_store_cache(store_cache)
   end
 
   [adjacency, sim_cache]
@@ -233,11 +236,8 @@ end
 
 def find_duplicates(lookup_paths, threshold = 0.9, cross_document_only: false)
   items = []
-  db_path_configs = {}
 
   lookup_paths.each do |p|
-    db_key = "#{File.expand_path(p.db_file)}::#{p.db_table}"
-    db_path_configs[db_key] = p
     with_sqlite_store(p) do |store|
       store.each_item do |it|
         embedding = normalize_embedding(it["embedding"])
@@ -248,10 +248,10 @@ def find_duplicates(lookup_paths, threshold = 0.9, cross_document_only: false)
           url: extract_url(it["path"], p.url),
           source_path: it["path"],
           chunk: it["chunk"].to_i,
+          hash: it["hash"],
           embedding: embedding,
           bucket: bucket,
           text: it["text"],
-          db_key: db_key,
         }
       end
     end
@@ -266,7 +266,7 @@ def find_duplicates(lookup_paths, threshold = 0.9, cross_document_only: false)
     buckets[it[:bucket]] << i
   end
 
-  adjacency, sim_cache = build_similarity_graph(items, buckets, threshold, cross_document_only, db_path_configs)
+  adjacency, sim_cache = build_similarity_graph(items, buckets, threshold, cross_document_only)
   components = connected_components(adjacency)
 
   cluster_indices_list = components.flat_map do |component|

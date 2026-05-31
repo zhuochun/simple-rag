@@ -1,4 +1,5 @@
 require_relative "../server/duplicate"
+require "digest"
 
 def assert_equal(expected, actual)
   raise "Expected #{expected.inspect}, got #{actual.inspect}" unless expected == actual
@@ -11,10 +12,10 @@ def duplicate_item(path, chunk)
     url: path,
     source_path: path,
     chunk: chunk,
+    hash: Digest::SHA256.hexdigest("#{path}##{chunk}"),
     embedding: [1.0, 0.0],
     bucket: 0,
     text: "#{path}##{chunk}",
-    db_key: path,
   }
 end
 
@@ -24,14 +25,11 @@ items = [
 ]
 assert_equal 2, pre_dedup_duplicate_items(items).length
 
-FakeStore = Struct.new(:rows) do
+FakeStore = Struct.new(:rows, :calls) do
   def vector_search(_embedding, _limit)
+    self.calls = calls.to_i + 1
     rows
   end
-end
-
-def with_sqlite_store(store, _cache = nil)
-  yield(store)
 end
 
 items = [
@@ -39,12 +37,14 @@ items = [
   duplicate_item("right.md", 0),
 ]
 buckets = Hash.new { |hash, key| hash[key] = [] }
-configs = {
-  "left" => FakeStore.new([]),
-  "right" => FakeStore.new([{ "path" => "right.md", "chunk" => 0 }]),
-}
+store = FakeStore.new([{ "path" => "right.md", "chunk" => 0 }], 0)
 by_source_path, by_source_path_chunk = build_index_maps(items)
-candidates = candidate_indices_for_item(items, buckets, 0, configs, {}, by_source_path, by_source_path_chunk)
+candidates = candidate_indices_for_item(items, buckets, 0, store, by_source_path, by_source_path_chunk)
 assert_equal [1], candidates
+assert_equal 1, store.calls
+
+adjacency, = build_similarity_graph(items, buckets, 0.99, false)
+assert_equal [1], adjacency[0].to_a
+assert_equal [0], adjacency[1].to_a
 
 puts "duplicate_test: passed"

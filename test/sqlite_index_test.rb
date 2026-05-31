@@ -63,6 +63,22 @@ class SqliteIndexTest
     assert_equal ["stored text"], @store.random_chunks(1).map { |item| item["text"] }
   end
 
+  def test_in_memory_store_supports_vector_search
+    store = SqliteIndex.new(":memory:", "chunks")
+    store.upsert_chunk(
+      path: "memory.md",
+      chunk: 0,
+      hash: Digest::SHA256.hexdigest("memory"),
+      embedding: [1.0, 0.0],
+      bucket: 0,
+      text: nil
+    )
+
+    assert_equal ["memory.md"], store.vector_search([1.0, 0.0], 1).map { |row| row["path"] }
+  ensure
+    store&.close
+  end
+
   def test_serialize_entries_uses_indexed_text_without_loading_reader
     reader = Object.new
     def reader.load
@@ -115,6 +131,7 @@ if $PROGRAM_NAME == __FILE__
     test_text_search_uses_bm25_and_tracks_updates_and_deletes
     test_text_search_supports_tokenized_and_phrase_queries
     test_find_chunk_and_random_chunks_return_indexed_text
+    test_in_memory_store_supports_vector_search
     test_serialize_entries_uses_indexed_text_without_loading_reader
   ]
 

@@ -11,9 +11,9 @@ class SqliteIndex
   attr_reader :db_file, :table
 
   def initialize(db_file, table)
-    @db_file = File.expand_path(db_file)
+    @db_file = db_file.to_s == ":memory:" ? ":memory:" : File.expand_path(db_file)
     @table = validate_table_name(table)
-    ensure_db_dir!
+    ensure_db_dir! unless @db_file == ":memory:"
 
     @db = SQLite3::Database.new(@db_file)
     @db.results_as_hash = true
@@ -146,19 +146,31 @@ class SqliteIndex
     sample_size = count.to_i
     return [] if sample_size <= 0
 
-    samples = []
+    sample_rowids = []
     seen = 0
-    @db.execute("SELECT path, chunk, hash, bucket, text FROM #{quoted_table}") do |row|
+    @db.execute("SELECT rowid FROM #{quoted_table}") do |row|
       seen += 1
-      item = decode_text_row(row)
-      if samples.length < sample_size
-        samples << item
+      rowid = row["rowid"] || row[0]
+      if sample_rowids.length < sample_size
+        sample_rowids << rowid
       else
         replacement = rand(seen)
-        samples[replacement] = item if replacement < sample_size
+        sample_rowids[replacement] = rowid if replacement < sample_size
       end
     end
-    samples
+
+    rows_by_rowid = {}
+    sample_rowids.each_slice(200) do |slice|
+      placeholders = Array.new(slice.length, "?").join(", ")
+      @db.execute(
+        "SELECT rowid, path, chunk, hash, bucket, text FROM #{quoted_table} WHERE rowid IN (#{placeholders})",
+        slice
+      ) do |row|
+        rows_by_rowid[row["rowid"] || row[0]] = decode_text_row(row)
+      end
+    end
+
+    sample_rowids.filter_map { |rowid| rows_by_rowid[rowid] }
   end
 
   def text_search_any(queries, limit: nil, phrase: false)
