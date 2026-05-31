@@ -82,4 +82,23 @@ hybrid = QueryHelpers.fuse_entries_with_weighted_rrf(
 )
 assert_equal "docs/shared.md", hybrid.first["path"]
 
+search_plus = QueryHelpers.fuse_entries_with_weighted_rrf(
+  [
+    {
+      name: "embedding",
+      weight: 1.0,
+      entries: [
+        { "path" => "docs/vector.md", "chunk" => 0, "score" => 0.8 },
+      ],
+    },
+    *QueryHelpers.text_fusion_lists([
+      { "path" => "docs/original-text.md", "chunk" => 0, "lookup" => "docs", "score" => 2.0 },
+    ], name: "bm25", weight: 0.75),
+    *QueryHelpers.text_fusion_lists([
+      { "path" => "docs/variant-text.md", "chunk" => 0, "lookup" => "docs", "score" => 2.0 },
+    ], name: "variants", weight: 0.5),
+  ]
+)
+assert_equal ["docs/vector.md", "docs/original-text.md", "docs/variant-text.md"], search_plus.map { |item| item["path"] }
+
 puts "retriever_test: passed"

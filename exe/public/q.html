@@ -481,9 +481,6 @@
                 responseContainer.innerHTML = '';
                 retrievedNotes = [];
 
-                if (extras.expanded) {
-                    responseContainer.appendChild(createMetaCard('Expanded Query:', extras.expanded, 'expanded'));
-                }
                 if (extras.variants && extras.variants.length > 0) {
                     responseContainer.appendChild(createMetaCard('Variants:', extras.variants.join(', '), 'variants'));
                 }
@@ -584,8 +581,8 @@
                 })
                 .then(response => response.json())
                 .then(resp => {
-                    renderResults(resp.data || [], { expanded: resp.expanded, variants: resp.variants });
-                    setStatus('Search+ complete with expanded query context.');
+                    renderResults(resp.data || [], { variants: resp.variants });
+                    setStatus('Search+ complete with original query and keyword variants.');
                 })
                 .catch(() => {
                     setStatus('Failed to perform Search+.', true);
