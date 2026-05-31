@@ -16,9 +16,8 @@ gem install simple-rag-zc
   - Copy `example_config.json` to `config.json`, then edit the paths to absolute path.
   - All `run-*` executables default to `./config.json`, then `~/.config/simple-rag/config.json` if no config path is provided.
   
-- Optional migration from JSONL to SQLite tables
+- SQLite index is required
   - Set per-path `db` as `sqlite_file_path@table_name`
-  - Run `run-migrate config.json` to migrate every path that has both `out` and `db`
 
 - Run `run-index config.json` *Required
   - To generate embeddings for all files. It takes a while on the first time.

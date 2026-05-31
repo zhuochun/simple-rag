@@ -51,10 +51,8 @@ module ConfigLoader
     path.db_file = db_file
     path.db_table = db_table
 
-    has_out = !path.out.nil? && !path.out.to_s.strip.empty?
-    has_db = !db_file.nil?
-    unless has_out || has_db
-      raise ArgumentError, %(Path "#{path_name}" must set either "out" or "db".)
+    unless db_file && db_table
+      raise ArgumentError, %(Path "#{path_name}" must set "db" as #{DB_FORMAT}. JSONL "out" indexing has been removed.)
     end
 
     path

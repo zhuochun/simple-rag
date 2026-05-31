@@ -7,7 +7,6 @@ require_relative "cache"
 require_relative "../llm/llm"
 require_relative "../llm/embedding"
 require_relative "../readers/reader"
-require_relative "../storage/file_index"
 require_relative "../storage/sqlite_index"
 
 AGENT_PROMPT = <<~PROMPT
@@ -168,12 +167,31 @@ def retrieve_by_embedding(lookup_paths, q, store_cache: nil, top_n: nil, paralle
         next if reader_cls.nil?
 
         path_entries = []
-        if p.db_file && p.db_table
-            with_sqlite_store(p, store_cache) do |store|
-                file_cache = {}
-                matched_candidates = 0
+        with_sqlite_store(p, store_cache) do |store|
+            file_cache = {}
+            matched_candidates = 0
 
-                store.vector_search(qn, k).each do |item|
+            store.vector_search(qn, k).each do |item|
+                matched_candidates += 1
+                score = dot_product(qn, normalize_embedding(item["embedding"]))
+                next if score < p.threshold
+
+                path_entries << {
+                    "path" => item["path"],
+                    "chunk" => item["chunk"],
+                    "score" => score,
+                    "lookup" => p.name,
+                    "id" => extract_id(item["path"]),
+                    "url" => extract_url(item["path"], p.url),
+                    "text" => item["text"],
+                    "reader" => (file_cache[item["path"]] ||= reader_cls.new(item["path"]))
+                }
+            end
+
+            # Fallback path when vector extension/index is unavailable.
+            if matched_candidates.zero?
+                neighbor_buckets = neighbor_keys(bucket_key(qn)).uniq
+                store.each_item_by_buckets(neighbor_buckets) do |item|
                     matched_candidates += 1
                     score = dot_product(qn, normalize_embedding(item["embedding"]))
                     next if score < p.threshold
@@ -190,11 +208,9 @@ def retrieve_by_embedding(lookup_paths, q, store_cache: nil, top_n: nil, paralle
                     }
                 end
 
-                # Fallback path when vector extension/index is unavailable.
+                # Backward compatibility for legacy rows that do not have bucket populated.
                 if matched_candidates.zero?
-                    neighbor_buckets = neighbor_keys(bucket_key(qn)).uniq
-                    store.each_item_by_buckets(neighbor_buckets) do |item|
-                        matched_candidates += 1
+                    store.each_item_without_bucket do |item|
                         score = dot_product(qn, normalize_embedding(item["embedding"]))
                         next if score < p.threshold
 
@@ -209,48 +225,7 @@ def retrieve_by_embedding(lookup_paths, q, store_cache: nil, top_n: nil, paralle
                             "reader" => (file_cache[item["path"]] ||= reader_cls.new(item["path"]))
                         }
                     end
-
-                    # Backward compatibility for legacy rows that do not have bucket populated.
-                    if matched_candidates.zero?
-                        store.each_item_without_bucket do |item|
-                            score = dot_product(qn, normalize_embedding(item["embedding"]))
-                            next if score < p.threshold
-
-                            path_entries << {
-                                "path" => item["path"],
-                                "chunk" => item["chunk"],
-                                "score" => score,
-                                "lookup" => p.name,
-                                "id" => extract_id(item["path"]),
-                                "url" => extract_url(item["path"], p.url),
-                                "text" => item["text"],
-                                "reader" => (file_cache[item["path"]] ||= reader_cls.new(item["path"]))
-                            }
-                        end
-                    end
                 end
-            end
-        else
-            index = load_index_cache(p)
-            next unless index
-
-            file_cache = {}
-            bucket_ids = neighbor_keys(bucket_key(qn)).flat_map { |k| index.buckets[k] }.uniq
-            bucket_ids.each do |idx|
-                item = index.items[idx]
-
-                score = dot_product(qn, item[:embedding])
-                next if score < p.threshold
-
-                path_entries << {
-                    "path" => item[:path],
-                    "chunk" => item[:chunk],
-                    "score" => score,
-                    "lookup" => p.name,
-                    "id" => extract_id(item[:path]),
-                    "url" => extract_url(item[:path], p.url),
-                    "reader" => (file_cache[item[:path]] ||= reader_cls.new(item[:path]))
-                }
             end
         end
 
@@ -320,49 +295,22 @@ def retrieve_by_text(lookup_paths, query_or_queries, store_cache: nil, top_n: ni
 
         file_cache = {}
         path_entries = []
-        if p.db_file && p.db_table
-            with_sqlite_store(p, store_cache) do |store|
-                store.text_search_any(queries, limit: limit_per_path).each do |item|
-                    reader = file_cache[item["path"]] ||= reader_cls.new(item["path"])
-                    if item["text"].nil?
-                        text = reader.load.get_chunk(item["chunk"])
-                        next unless text && queries.any? { |q| text.include?(q) }
-                    end
-
-                    item["score"] = 1.0
-                    item["lookup"] = p.name
-                    item["id"] = extract_id(item["path"])
-                    item["url"] = extract_url(item["path"], p.url)
-                    item["reader"] = reader
-
-                    path_entries << item
+        with_sqlite_store(p, store_cache) do |store|
+            store.text_search_any(queries, limit: limit_per_path).each do |item|
+                reader = file_cache[item["path"]] ||= reader_cls.new(item["path"])
+                if item["text"].nil?
+                    text = reader.load.get_chunk(item["chunk"])
+                    next unless text && queries.any? { |q| text.include?(q) }
                 end
+
+                item["score"] = 1.0
+                item["lookup"] = p.name
+                item["id"] = extract_id(item["path"])
+                item["url"] = extract_url(item["path"], p.url)
+                item["reader"] = reader
+
+                path_entries << item
             end
-            entries_mutex.synchronize { entries.concat(path_entries) }
-            retrieve_progress("Matched num for #{p.name}: #{path_entries.length}\n")
-            next
-        end
-
-        index_file = File.expand_path(p.out)
-        next unless File.exist?(index_file)
-
-        matched = 0
-        File.foreach(index_file) do |line|
-            break if limit_per_path && matched >= limit_per_path
-
-            item = JSON.parse(line)
-            reader = file_cache[item["path"]] ||= reader_cls.new(item["path"]).load
-            chunk_text = reader.get_chunk(item["chunk"])
-            next unless chunk_text && queries.any? { |q| chunk_text.include?(q) }
-
-            item["score"] = 1.0
-            item["lookup"] = p.name
-            item["id"] = extract_id(item["path"])
-            item["url"] = extract_url(item["path"], p.url)
-            item["reader"] = reader
-
-            path_entries << item
-            matched += 1
         end
 
         entries_mutex.synchronize { entries.concat(path_entries) }

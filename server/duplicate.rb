@@ -3,7 +3,6 @@ require "set"
 require_relative "../llm/embedding"
 require_relative "../readers/reader"
 require_relative "retriever" # for extract_id, extract_url, with_sqlite_store
-require_relative "../storage/file_index"
 require_relative "../storage/sqlite_index"
 
 DUP_VECTOR_SEARCH_K = 64
@@ -254,45 +253,25 @@ def find_duplicates(lookup_paths, threshold = 0.9, cross_document_only: false)
     reader_cls = get_reader(p.reader)
     next unless reader_cls
 
-    if p.db_file && p.db_table
-      db_key = "#{File.expand_path(p.db_file)}::#{p.db_table}"
-      db_path_configs[db_key] = p
-      with_sqlite_store(p) do |store|
-        store.each_item do |it|
-          embedding = normalize_embedding(it["embedding"])
-          bucket = it["bucket"] || bucket_key(embedding)
-          items << {
-            path: p.name,
-            id: extract_id(it["path"]),
-            url: extract_url(it["path"], p.url),
-            source_path: it["path"],
-            chunk: it["chunk"].to_i,
-            reader_cls: reader_cls,
-            embedding: embedding,
-            bucket: bucket,
-            text: it["text"],
-            db_key: db_key,
-          }
-        end
+    db_key = "#{File.expand_path(p.db_file)}::#{p.db_table}"
+    db_path_configs[db_key] = p
+    with_sqlite_store(p) do |store|
+      store.each_item do |it|
+        embedding = normalize_embedding(it["embedding"])
+        bucket = it["bucket"] || bucket_key(embedding)
+        items << {
+          path: p.name,
+          id: extract_id(it["path"]),
+          url: extract_url(it["path"], p.url),
+          source_path: it["path"],
+          chunk: it["chunk"].to_i,
+          reader_cls: reader_cls,
+          embedding: embedding,
+          bucket: bucket,
+          text: it["text"],
+          db_key: db_key,
+        }
       end
-      next
-    end
-
-    index = load_index_cache(p)
-    next unless index
-    index.items.each do |it|
-      items << {
-        path: p.name,
-        id: extract_id(it[:path]),
-        url: extract_url(it[:path], p.url),
-        source_path: it[:path],
-        chunk: it[:chunk].to_i,
-        reader_cls: reader_cls,
-        embedding: it[:embedding],
-        bucket: it[:bucket],
-        text: nil,
-        db_key: nil,
-      }
     end
   end
 

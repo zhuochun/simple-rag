@@ -113,24 +113,8 @@ def find_indexed_note_ref(lookup, path, chunk, hash = nil)
         hash_value.empty? || item_hash.to_s == hash_value
     end
 
-    if path_cfg.db_file && path_cfg.db_table
-        with_sqlite_store(path_cfg) do |store|
-            store.each_item do |row|
-                next unless row["path"].to_s == path
-                next unless row["chunk"].to_i == chunk_idx
-                next unless hash_matches.call(row["hash"])
-
-                return [path_cfg, path, chunk_idx]
-            end
-        end
-    else
-        return nil if path_cfg.out.nil? || path_cfg.out.to_s.strip.empty?
-
-        index_file = File.expand_path(path_cfg.out)
-        return nil unless File.exist?(index_file)
-
-        File.foreach(index_file) do |line|
-            row = JSON.parse(line)
+    with_sqlite_store(path_cfg) do |store|
+        store.each_item do |row|
             next unless row["path"].to_s == path
             next unless row["chunk"].to_i == chunk_idx
             next unless hash_matches.call(row["hash"])
@@ -351,36 +335,18 @@ class SimpleRagServer < Sinatra::Application
             next unless reader_cls
 
             file_cache = {}
-            if p.db_file && p.db_table
-                with_sqlite_store(p) do |store|
-                    store.random_chunk_refs(count).each do |it|
-                        reader = file_cache[it["path"]] ||= reader_cls.new(it["path"]).load
-                        samples << {
-                            path: p.name,
-                            lookup: p.name,
-                            id: extract_id(it["path"]),
-                            url: extract_url(it["path"], p.url),
-                            text: reader.get_chunk(it["chunk"]),
-                            score: 0,
-                        }
-                    end
+            with_sqlite_store(p) do |store|
+                store.random_chunk_refs(count).each do |it|
+                    reader = file_cache[it["path"]] ||= reader_cls.new(it["path"]).load
+                    samples << {
+                        path: p.name,
+                        lookup: p.name,
+                        id: extract_id(it["path"]),
+                        url: extract_url(it["path"], p.url),
+                        text: reader.get_chunk(it["chunk"]),
+                        score: 0,
+                    }
                 end
-                next
-            end
-
-            index = load_index_cache(p)
-            next unless index
-
-            index.items.sample(count).each do |it|
-                reader = file_cache[it[:path]] ||= reader_cls.new(it[:path]).load
-                samples << {
-                    path: p.name,
-                    lookup: p.name,
-                    id: extract_id(it[:path]),
-                    url: extract_url(it[:path], p.url),
-                    text: reader.get_chunk(it[:chunk]),
-                    score: 0,
-                }
             end
         end
 

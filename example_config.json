@@ -1,34 +1,33 @@
 {
-    "chat": {
-        "provider": "openrouter",
-        "url": "https://openrouter.ai/api/v1/chat/completions",
-        "model": "gpt-3.5-turbo"
-    },
-    "embedding": {
-        "provider": "openrouter",
-        "url": "https://openrouter.ai/api/v1/embeddings",
-        "model": "text-embedding-3-small"
-    },
-    "jina": {
-        "token": "",
-        "cacheDir": ""
-    },
-    "map": {
-        "path": "map_data.json",
-        "includePaths": ["temp"]
-    },
-    "dismissedDuplicatesFile": "dismissed.txt",
-    "paths": [
-        {
-            "name": "temp",
-            "reader": "text",
-            "threshold": 0.3,
-            "dir": "D:\\Studies\\tmp\\learning",
-            "out": "D:\\Studies\\tmp\\learning\\learning.dt",
-            "db": "D:\\Studies\\tmp\\learning\\learning.sqlite@learning_index",
-            "nameMatch": "talks-*.md",
-            "url": "",
-            "searchDefault": false
-        }
-    ]
+  "chat": {
+    "provider": "openrouter",
+    "url": "https://openrouter.ai/api/v1/chat/completions",
+    "model": "gpt-3.5-turbo"
+  },
+  "embedding": {
+    "provider": "openrouter",
+    "url": "https://openrouter.ai/api/v1/embeddings",
+    "model": "text-embedding-3-small"
+  },
+  "jina": {
+    "token": "",
+    "cacheDir": ""
+  },
+  "map": {
+    "path": "map_data.json",
+    "includePaths": ["temp"]
+  },
+  "dismissedDuplicatesFile": "dismissed.txt",
+  "paths": [
+    {
+      "name": "temp",
+      "reader": "text",
+      "threshold": 0.3,
+      "dir": "D:\\Studies\\tmp\\learning",
+      "db": "D:\\Studies\\tmp\\learning\\learning.sqlite@learning_index",
+      "nameMatch": "talks-*.md",
+      "url": "",
+      "searchDefault": false
+    }
+  ]
 }
