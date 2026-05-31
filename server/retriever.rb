@@ -6,25 +6,14 @@ require "thread"
 require_relative "cache"
 require_relative "../llm/llm"
 require_relative "../llm/embedding"
-require_relative "../readers/reader"
 require_relative "../storage/sqlite_index"
-
-AGENT_PROMPT = <<~PROMPT
-You rewrite a user query for semantic search over markdown documents.
-
-Rules:
-- Keep the same intent.
-- Use clear, plain words.
-- Add useful context terms from the user text (topic, entity, version, time).
-- Do not answer the question.
-- Output exactly one line, no quotes, no labels, no extra text.
-PROMPT
 
 VECTOR_SEARCH_K = 512
 VECTOR_SEARCH_K_MIN = 64
 VECTOR_SEARCH_K_MULTIPLIER = 12
 TEXT_SEARCH_LIMIT_MAX = 800
 TEXT_SEARCH_LIMIT_MULTIPLIER = 20
+TEXT_SEARCH_RRF_K = 60
 RETRIEVE_THREADS_MAX = 8
 STORE_CACHE_MUTEX = Mutex.new
 RETRIEVE_PROGRESS_LOG = ENV["RAG_RETRIEVE_PROGRESS"].to_s == "1"
@@ -33,18 +22,6 @@ def retrieve_progress(message)
     return unless RETRIEVE_PROGRESS_LOG
 
     STDOUT << message
-end
-
-def expand_query(q)
-    msgs = [
-        { role: ROLE_SYSTEM, content: AGENT_PROMPT },
-        { role: ROLE_USER, content: q },
-    ]
-
-    query = chat(msgs).strip
-    retrieve_progress("Expand query: #{query}\n")
-
-    query
 end
 
 def with_sqlite_store(path_config, store_cache = nil)
@@ -112,6 +89,7 @@ def each_lookup_path(lookup_paths, parallel: true)
     paths.each { |p| queue << p }
 
     workers = retrieve_worker_count(paths.length)
+    errors = Queue.new
     threads = workers.times.map do
         Thread.new do
             loop do
@@ -123,11 +101,15 @@ def each_lookup_path(lookup_paths, parallel: true)
                 break if path.nil?
                 yield(path)
             rescue => e
-                STDOUT << "Path retrieval failed (#{path&.name || "unknown"}): #{e.class}: #{e.message}\n"
+                errors << [path, e]
             end
         end
     end
     threads.each(&:join)
+    unless errors.empty?
+        path, error = errors.pop
+        raise RuntimeError, "Path retrieval failed (#{path&.name || "unknown"}): #{error.class}: #{error.message}"
+    end
 end
 
 def vector_search_k_for_top_n(top_n)
@@ -163,17 +145,11 @@ def retrieve_by_embedding(lookup_paths, q, store_cache: nil, top_n: nil, paralle
 
     each_lookup_path(lookup_paths, parallel: parallel) do |p|
         retrieve_progress("Reading index: #{p.name}\n")
-        reader_cls = get_reader(p.reader)
-        next if reader_cls.nil?
 
         path_entries = []
         with_sqlite_store(p, store_cache) do |store|
-            file_cache = {}
-            matched_candidates = 0
-
             store.vector_search(qn, k).each do |item|
-                matched_candidates += 1
-                score = dot_product(qn, normalize_embedding(item["embedding"]))
+                score = item["score"].to_f
                 next if score < p.threshold
 
                 path_entries << {
@@ -183,49 +159,8 @@ def retrieve_by_embedding(lookup_paths, q, store_cache: nil, top_n: nil, paralle
                     "lookup" => p.name,
                     "id" => extract_id(item["path"]),
                     "url" => extract_url(item["path"], p.url),
-                    "text" => item["text"],
-                    "reader" => (file_cache[item["path"]] ||= reader_cls.new(item["path"]))
+                    "text" => item["text"]
                 }
-            end
-
-            # Fallback path when vector extension/index is unavailable.
-            if matched_candidates.zero?
-                neighbor_buckets = neighbor_keys(bucket_key(qn)).uniq
-                store.each_item_by_buckets(neighbor_buckets) do |item|
-                    matched_candidates += 1
-                    score = dot_product(qn, normalize_embedding(item["embedding"]))
-                    next if score < p.threshold
-
-                    path_entries << {
-                        "path" => item["path"],
-                        "chunk" => item["chunk"],
-                        "score" => score,
-                        "lookup" => p.name,
-                        "id" => extract_id(item["path"]),
-                        "url" => extract_url(item["path"], p.url),
-                        "text" => item["text"],
-                        "reader" => (file_cache[item["path"]] ||= reader_cls.new(item["path"]))
-                    }
-                end
-
-                # Backward compatibility for legacy rows that do not have bucket populated.
-                if matched_candidates.zero?
-                    store.each_item_without_bucket do |item|
-                        score = dot_product(qn, normalize_embedding(item["embedding"]))
-                        next if score < p.threshold
-
-                        path_entries << {
-                            "path" => item["path"],
-                            "chunk" => item["chunk"],
-                            "score" => score,
-                            "lookup" => p.name,
-                            "id" => extract_id(item["path"]),
-                            "url" => extract_url(item["path"], p.url),
-                            "text" => item["text"],
-                            "reader" => (file_cache[item["path"]] ||= reader_cls.new(item["path"]))
-                        }
-                    end
-                end
             end
         end
 
@@ -279,7 +214,7 @@ def expand_variants(q)
     variants
 end
 
-def retrieve_by_text(lookup_paths, query_or_queries, store_cache: nil, top_n: nil, parallel: true)
+def retrieve_by_text(lookup_paths, query_or_queries, store_cache: nil, top_n: nil, parallel: true, phrase: false)
     queries = normalize_search_terms(query_or_queries)
     return [] if queries.empty?
 
@@ -290,24 +225,15 @@ def retrieve_by_text(lookup_paths, query_or_queries, store_cache: nil, top_n: ni
     each_lookup_path(lookup_paths, parallel: parallel) do |p|
         retrieve_progress("Reading text index: #{p.name}\n")
 
-        reader_cls = get_reader(p.reader)
-        next if reader_cls.nil?
-
-        file_cache = {}
         path_entries = []
         with_sqlite_store(p, store_cache) do |store|
-            store.text_search_any(queries, limit: limit_per_path).each do |item|
-                reader = file_cache[item["path"]] ||= reader_cls.new(item["path"])
-                if item["text"].nil?
-                    text = reader.load.get_chunk(item["chunk"])
-                    next unless text && queries.any? { |q| text.include?(q) }
-                end
-
-                item["score"] = 1.0
+            store.text_search_any(queries, limit: limit_per_path, phrase: phrase).each_with_index do |item, idx|
+                item["score"] = item["score"].to_f
+                item["_sort_score"] = 1.0 / (TEXT_SEARCH_RRF_K + idx + 1)
                 item["lookup"] = p.name
                 item["id"] = extract_id(item["path"])
                 item["url"] = extract_url(item["path"], p.url)
-                item["reader"] = reader
+                item["_text_rank_group"] = [File.expand_path(p.db_file), p.db_table]
 
                 path_entries << item
             end

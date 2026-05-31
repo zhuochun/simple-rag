@@ -1,31 +1,46 @@
 require "digest"
+require "thread"
 
 class MemCache
-    attr_accessor :data
+    DEFAULT_MAX_SIZE = 256
 
-    def initialize
+    def initialize(max_size: DEFAULT_MAX_SIZE)
         @data = {}
+        @max_size = max_size.to_i
+        @mutex = Mutex.new
     end
 
     def set(data, val)
-        hash = Digest::SHA256.hexdigest(data)
-        @data[hash] = val
+        hash = digest(data)
+        @mutex.synchronize { store(hash, val) }
     end
 
     def get(data)
-        hash = Digest::SHA256.hexdigest(data)
-        @data[hash]
+        hash = digest(data)
+        @mutex.synchronize { @data[hash] }
     end
 
     def get_or_set(data, fn)
-        hash = Digest::SHA256.hexdigest(data)
-        return @data[hash] if @data[hash]
-
-        STDOUT << "Set then get cache #{hash}\n"
+        hash = digest(data)
+        cached = @mutex.synchronize { @data[hash] if @data.key?(hash) }
+        return cached unless cached.nil?
 
         val = fn.call(data)
+        @mutex.synchronize { store(hash, val) }
+        val
+    end
+
+    private
+
+    def digest(data)
+        Digest::SHA256.hexdigest(data.to_s)
+    end
+
+    def store(hash, val)
+        @data.delete(hash)
         @data[hash] = val
-        return val
+        @data.shift while @max_size > 0 && @data.length > @max_size
+        val
     end
 end
 

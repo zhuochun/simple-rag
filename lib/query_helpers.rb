@@ -18,21 +18,6 @@ module QueryHelpers
     names.map { |name| config.path_map[name] }.compact
   end
 
-  def merge_entries_by_chunk(entries)
-    unique = {}
-
-    entries.each do |entry|
-      key = [entry["path"], entry["chunk"]]
-      if unique[key]
-        unique[key]["score"] = (unique[key]["score"] || 0.0) + (entry["score"] || 0.0)
-      else
-        unique[key] = entry
-      end
-    end
-
-    unique.values
-  end
-
   def min_max_normalize_score(score, min_score, max_score)
     value = score.to_f
     if max_score > min_score
@@ -89,9 +74,20 @@ module QueryHelpers
       row["score"] = (weighted_ratio * weighted_norm) + (rrf_ratio * rrf_norm)
       row.delete("_weighted_score")
       row.delete("_rrf_score")
+      row.delete("_sort_score")
     end
 
     rows.sort_by { |item| -(item["score"] || 0.0) }
+  end
+
+  def text_fusion_lists(entries, name: "bm25", weight: 0.75)
+    Array(entries).group_by { |item| item["_text_rank_group"] || item["lookup"] }.map do |group, group_entries|
+      {
+        name: "#{name}:#{group}",
+        entries: group_entries,
+        weight: weight,
+      }
+    end
   end
 
   def top_n_by_score(entries, top_n)
@@ -99,11 +95,11 @@ module QueryHelpers
     return [] if n <= 0 || entries.empty?
 
     if entries.length <= n
-      return entries.sort_by { |item| -(item["score"] || 0.0) }
+      return entries.sort_by { |item| -sort_score(item) }
     end
 
-    entries.max_by(n) { |item| item["score"] || 0.0 }
-           .sort_by { |item| -(item["score"] || 0.0) }
+    entries.max_by(n) { |item| sort_score(item) }
+           .sort_by { |item| -sort_score(item) }
   end
 
   def best_entry_per_path(entries)
@@ -114,7 +110,7 @@ module QueryHelpers
       next if path.empty?
 
       prev = best[path]
-      if prev.nil? || item["score"].to_f > prev["score"].to_f
+      if prev.nil? || sort_score(item) > sort_score(prev)
         best[path] = item
       end
     end
@@ -123,16 +119,8 @@ module QueryHelpers
   end
 
   def serialize_entries(entries, concise: false, brief_chars: DEFAULT_BRIEF_CHARS)
-    reader_cache = {}
-
     entries.map do |item|
-      text = nil
-      if item["reader"]
-        reader = reader_cache[item["path"]] ||= item["reader"].load
-        text = reader.get_chunk(item["chunk"])
-      end
-      text = item["text"] if text.nil? || text.to_s.empty?
-      text = "" if text.nil?
+      text = item["text"].to_s
 
       row = {
         path: item["path"],
@@ -160,5 +148,9 @@ module QueryHelpers
 
     shortened = compact[0, max_chars - 3].to_s.rstrip
     "#{shortened}..."
+  end
+
+  def sort_score(item)
+    item.fetch("_sort_score", item["score"] || 0.0).to_f
   end
 end

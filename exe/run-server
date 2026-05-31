@@ -1,11 +1,11 @@
 #!/usr/bin/env ruby
 # encoding: utf-8
 
-# Query and answer questions based on an index file
+# Query and answer questions based on SQLite indexes.
 #
 # Usage: run-server config.json
 #
-# Requires OpenAI API Key stored in DOT_OPENAI_KEY
+# Requires provider API keys for configured providers.
 
 require "json"
 require "set"
@@ -83,10 +83,6 @@ def map_data_file_path
     path.absolute? ? path.to_s : File.expand_path(raw, CONFIG_BASE_DIR)
 end
 
-def merge_entries_by_chunk(entries)
-    QueryHelpers.merge_entries_by_chunk(entries)
-end
-
 def fuse_entries_with_weighted_rrf(lists, component_weights: { weighted: 0.7, rrf: 0.3 }, rrf_k: 60)
     QueryHelpers.fuse_entries_with_weighted_rrf(lists, component_weights: component_weights, rrf_k: rrf_k)
 end
@@ -108,19 +104,9 @@ def find_indexed_note_ref(lookup, path, chunk, hash = nil)
     path_cfg = CONFIG.path_map[lookup]
     return nil unless path_cfg
 
-    hash_value = hash.to_s
-    hash_matches = lambda do |item_hash|
-        hash_value.empty? || item_hash.to_s == hash_value
-    end
-
     with_sqlite_store(path_cfg) do |store|
-        store.each_item do |row|
-            next unless row["path"].to_s == path
-            next unless row["chunk"].to_i == chunk_idx
-            next unless hash_matches.call(row["hash"])
-
-            return [path_cfg, path, chunk_idx]
-        end
+        row = store.find_chunk(path, chunk_idx, hash: hash)
+        return [path_cfg, row] if row
     end
 
     nil
@@ -131,6 +117,15 @@ end
 missing_key_msg = ProviderEnvValidator.missing_key_message(CONFIG)
 if missing_key_msg
     STDOUT << "#{missing_key_msg}\n"
+    exit 9
+end
+
+begin
+    CONFIG.paths.each do |path_cfg|
+        with_sqlite_store(path_cfg) { |store| store.warm_vector_index! }
+    end
+rescue => e
+    STDOUT << "SQLite vector index error: #{e.message}\n"
     exit 9
 end
 
@@ -187,19 +182,10 @@ class SimpleRagServer < Sinatra::Application
             next({ error: "Map note not found in configured index" }.to_json)
         end
 
-        path_cfg, path, chunk_idx = ref
-        reader_cls = get_reader(path_cfg.reader)
-        unless reader_cls
-            status 500
-            next({ error: "Reader not found for #{path_cfg.reader}" }.to_json)
-        end
-
-        begin
-            text = reader_cls.new(path).load.get_chunk(chunk_idx)
-        rescue => e
-            status 500
-            next({ error: "Failed to load note: #{e.class}: #{e.message}" }.to_json)
-        end
+        path_cfg, row = ref
+        path = row["path"]
+        chunk_idx = row["chunk"]
+        text = row["text"]
 
         if text.nil? || text.to_s.strip.empty?
             status 404
@@ -226,13 +212,25 @@ class SimpleRagServer < Sinatra::Application
         top_n = (data["topN"] || 20).to_i
         q = data["q"]
 
-        entries = retrieve_by_embedding(lookup_paths, q, top_n: top_n)
-        if q.to_s.strip.length < 5 && q.to_s.split(/\s+/).length < 5
-            entries.concat(retrieve_by_text(lookup_paths, q, top_n: top_n))
-            entries = merge_entries_by_chunk(entries)
+        store_cache = {}
+        embedding_entries = []
+        text_entries = []
+        begin
+            embedding_entries = retrieve_by_embedding(lookup_paths, q, store_cache: store_cache, top_n: top_n)
+            text_entries = retrieve_by_text(lookup_paths, q, store_cache: store_cache, top_n: top_n)
+        ensure
+            close_store_cache(store_cache)
         end
 
-        ordered = top_n_by_score(entries, top_n)
+        fused = fuse_entries_with_weighted_rrf(
+            [
+                { name: "embedding", entries: embedding_entries, weight: 1.0 },
+                *QueryHelpers.text_fusion_lists(text_entries, name: "bm25", weight: 0.75),
+            ],
+            component_weights: { weighted: 0.7, rrf: 0.3 },
+            rrf_k: 60
+        )
+        ordered = top_n_by_score(fused, top_n)
         { data: serialize_entries(ordered) }.to_json
     end
 
@@ -251,7 +249,7 @@ class SimpleRagServer < Sinatra::Application
         variant_entries = []
         begin
             base_entries = retrieve_by_embedding(lookup_paths, data["q"], store_cache: store_cache, top_n: top_n)
-            variant_entries = retrieve_by_text(lookup_paths, variants, store_cache: store_cache, top_n: top_n) unless variants.empty?
+            variant_entries = retrieve_by_text(lookup_paths, variants, store_cache: store_cache, top_n: top_n, phrase: true) unless variants.empty?
         ensure
             close_store_cache(store_cache)
         end
@@ -259,7 +257,7 @@ class SimpleRagServer < Sinatra::Application
         fused = fuse_entries_with_weighted_rrf(
             [
                 { name: "base", entries: base_entries, weight: 1.0 },
-                { name: "variants", entries: variant_entries, weight: 0.75 },
+                *QueryHelpers.text_fusion_lists(variant_entries, name: "variants", weight: 0.75),
             ],
             component_weights: { weighted: 0.7, rrf: 0.3 },
             rrf_k: 60
@@ -331,19 +329,14 @@ class SimpleRagServer < Sinatra::Application
 
         samples = []
         lookup_paths.each do |p|
-            reader_cls = get_reader(p.reader)
-            next unless reader_cls
-
-            file_cache = {}
             with_sqlite_store(p) do |store|
-                store.random_chunk_refs(count).each do |it|
-                    reader = file_cache[it["path"]] ||= reader_cls.new(it["path"]).load
+                store.random_chunks(count).each do |it|
                     samples << {
                         path: p.name,
                         lookup: p.name,
                         id: extract_id(it["path"]),
                         url: extract_url(it["path"], p.url),
-                        text: reader.get_chunk(it["chunk"]),
+                        text: it["text"],
                         score: 0,
                     }
                 end
@@ -447,8 +440,6 @@ class SimpleRagServer < Sinatra::Application
         retrievals = []
         notes = []
         notes_seen = Set.new
-        reader_cache = {}
-
         store_cache = {}
         begin
             groups.each do |group|
@@ -456,8 +447,7 @@ class SimpleRagServer < Sinatra::Application
                 ordered = top_n_by_score(entries, 5)
 
                 retrievals << ordered.map do |item|
-                    reader = reader_cache[item["path"]] ||= item["reader"].load
-                    text = reader.get_chunk(item["chunk"])
+                    text = item["text"]
                     if text && notes_seen.add?(text)
                         notes << text
                     end

@@ -140,7 +140,7 @@ def retrieve_entries(mode, lookup_paths, query, limit, use_cache: true)
     QueryHelpers.fuse_entries_with_weighted_rrf(
       [
         { name: "embedding", entries: embedding_entries, weight: 1.0 },
-        { name: "bm25", entries: text_entries, weight: 0.75 },
+        *QueryHelpers.text_fusion_lists(text_entries, name: "bm25", weight: 0.75),
       ],
       component_weights: { weighted: 0.7, rrf: 0.3 },
       rrf_k: 60

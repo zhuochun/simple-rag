@@ -1,7 +1,6 @@
 require "json"
 require "set"
 require_relative "../llm/embedding"
-require_relative "../readers/reader"
 require_relative "retriever" # for extract_id, extract_url, with_sqlite_store
 require_relative "../storage/sqlite_index"
 
@@ -18,22 +17,11 @@ end
 def pre_dedup_duplicate_items(items)
   dedup = {}
   items.each do |it|
-    key = it[:source_path]
+    key = [it[:source_path], it[:chunk]]
     existing = dedup[key]
     if existing
       existing[:lookup_paths] |= [it[:path]]
       existing[:all_chunks] |= [it[:chunk]]
-      # Prefer the earliest chunk as canonical representative for stable output.
-      if it[:chunk] < existing[:chunk]
-        existing[:path] = it[:path]
-        existing[:id] = it[:id]
-        existing[:url] = it[:url]
-        existing[:chunk] = it[:chunk]
-        existing[:embedding] = it[:embedding]
-        existing[:bucket] = it[:bucket]
-        existing[:text] = it[:text]
-        existing[:db_key] = it[:db_key]
-      end
       next
     end
 
@@ -105,19 +93,17 @@ def warm_sqlite_vector_indices(db_path_configs, store_cache)
 end
 
 def candidate_indices_for_item(items, buckets, idx, db_path_configs, store_cache, by_source_path, by_source_path_chunk)
-  item = items[idx]
-  db_key = item[:db_key]
-  return collect_bucket_candidates(items, buckets, idx) unless db_key
-
-  config = db_path_configs[db_key]
-  return collect_bucket_candidates(items, buckets, idx) unless config
-
-  vector_candidates = with_sqlite_store(config, store_cache) do |store|
-    collect_sqlite_vector_candidates(items, idx, store, by_source_path, by_source_path_chunk)
+  candidates = Set.new(collect_bucket_candidates(items, buckets, idx))
+  db_path_configs.each_value do |config|
+    with_sqlite_store(config, store_cache) do |store|
+      collect_sqlite_vector_candidates(items, idx, store, by_source_path, by_source_path_chunk).each do |candidate_idx|
+        candidates.add(candidate_idx)
+      end
+    end
   end
-  return vector_candidates unless vector_candidates.empty?
 
-  collect_bucket_candidates(items, buckets, idx)
+  candidates.delete(idx)
+  candidates.to_a
 end
 
 def build_similarity_graph(items, buckets, threshold, cross_document_only, db_path_configs)
@@ -250,9 +236,6 @@ def find_duplicates(lookup_paths, threshold = 0.9, cross_document_only: false)
   db_path_configs = {}
 
   lookup_paths.each do |p|
-    reader_cls = get_reader(p.reader)
-    next unless reader_cls
-
     db_key = "#{File.expand_path(p.db_file)}::#{p.db_table}"
     db_path_configs[db_key] = p
     with_sqlite_store(p) do |store|
@@ -265,7 +248,6 @@ def find_duplicates(lookup_paths, threshold = 0.9, cross_document_only: false)
           url: extract_url(it["path"], p.url),
           source_path: it["path"],
           chunk: it["chunk"].to_i,
-          reader_cls: reader_cls,
           embedding: embedding,
           bucket: bucket,
           text: it["text"],
@@ -292,7 +274,6 @@ def find_duplicates(lookup_paths, threshold = 0.9, cross_document_only: false)
   end
 
   clusters = []
-  reader_cache = {}
   cluster_indices_list.each do |cluster_indices|
     if cross_document_only
       unique_sources = cluster_indices.map { |cidx| items[cidx][:source_path] }.uniq
@@ -306,18 +287,11 @@ def find_duplicates(lookup_paths, threshold = 0.9, cross_document_only: false)
         sim_cache[[cidx, oidx]] || dot_product(items[cidx][:embedding], items[oidx][:embedding])
       end
 
-      text = it[:text]
-      if text.nil?
-        reader_key = [it[:reader_cls], it[:source_path]]
-        reader = reader_cache[reader_key] ||= it[:reader_cls].new(it[:source_path]).load
-        text = reader.get_chunk(it[:chunk])
-      end
-
       {
         path: it[:path],
         id: it[:id],
         url: it[:url],
-        text: text,
+        text: it[:text],
         source_path: it[:source_path],
         chunk: it[:chunk],
         bucket: it[:bucket],

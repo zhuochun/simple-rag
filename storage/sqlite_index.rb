@@ -6,6 +6,7 @@ require "sqlite3"
 class SqliteIndex
   TABLE_NAME_PATTERN = /\A[A-Za-z_][A-Za-z0-9_]*\z/
   VECTOR_K_DEFAULT = 512
+  VECTOR_DISTANCE_METRIC = "cosine"
 
   attr_reader :db_file, :table
 
@@ -20,6 +21,8 @@ class SqliteIndex
     @vector_dim_cache = nil
     @vector_dim_loaded = false
     @vector_available = setup_vector_extension
+    raise RuntimeError, vector_unavailable_message unless @vector_available
+
     ensure_schema!
   end
 
@@ -48,32 +51,13 @@ class SqliteIndex
         text = excluded.text
     SQL
 
-    sync_vector_row(row)
+    rowid = @db.get_first_value("SELECT rowid FROM #{quoted_table} WHERE path = ? AND chunk = ?", [row["path"], row["chunk"]])
+    sync_fts_row(rowid, row)
+    sync_vector_row(rowid, row)
   end
 
   def each_item
     @db.execute("SELECT path, chunk, hash, embedding, bucket, text FROM #{quoted_table}") do |row|
-      yield decode_row(row)
-    end
-  end
-
-  def each_item_by_buckets(bucket_keys)
-    keys = bucket_keys.map(&:to_i).uniq
-    return if keys.empty?
-
-    keys.each_slice(200) do |slice|
-      placeholders = Array.new(slice.length, "?").join(", ")
-      @db.execute(
-        "SELECT path, chunk, hash, embedding, bucket, text FROM #{quoted_table} WHERE bucket IN (#{placeholders})",
-        slice
-      ) do |row|
-        yield decode_row(row)
-      end
-    end
-  end
-
-  def each_item_without_bucket
-    @db.execute("SELECT path, chunk, hash, embedding, bucket, text FROM #{quoted_table} WHERE bucket IS NULL") do |row|
       yield decode_row(row)
     end
   end
@@ -83,22 +67,16 @@ class SqliteIndex
   end
 
   def vector_search(query_embedding, k = VECTOR_K_DEFAULT)
-    unless @vector_available
-      log_vector_unavailable_once
-      return []
-    end
-    ensure_vector_index_from_existing!
-    unless vector_enabled?
-      log_vector_unavailable_once
-      return []
-    end
-
     query = parse_embedding(query_embedding)
     return [] if query.empty?
-    return [] if vector_dim.to_i != query.length
+
+    dim = vector_dim.to_i
+    return [] if dim <= 0 && row_count.zero?
+    raise RuntimeError, "SQLite vector index is missing for #{@db_file} table #{@table}. Rebuild the database with run-index." if dim <= 0
+    raise ArgumentError, "Vector dimension mismatch: existing=#{dim}, query=#{query.length}" if dim != query.length
 
     sql = <<~SQL
-      SELECT i.path, i.chunk, i.hash, i.embedding, i.bucket, i.text, v.distance
+      SELECT i.path, i.chunk, i.hash, i.bucket, i.text, v.distance
       FROM #{quoted_vector_table} v
       JOIN #{quoted_table} i ON i.rowid = v.rowid
       WHERE v.embedding MATCH ? AND k = ?
@@ -106,26 +84,18 @@ class SqliteIndex
     SQL
 
     @db.execute(sql, [dump_embedding(query), k.to_i]).map do |row|
-      item = decode_row(row)
+      item = decode_text_row(row)
       item["distance"] = row["distance"]
+      item["score"] = 1.0 - row["distance"].to_f
       item
     end
   end
 
   def warm_vector_index!
-    unless @vector_available
-      log_vector_unavailable_once
-      return false
-    end
+    return true if row_count.zero?
+    raise RuntimeError, "SQLite vector index is missing for #{@db_file} table #{@table}. Rebuild the database with run-index." unless vector_enabled?
 
-    ensure_vector_index_from_existing!
-    enabled = vector_enabled?
-    log_vector_unavailable_once unless enabled
-    enabled
-  rescue
-    @vector_available = false
-    log_vector_unavailable_once
-    false
+    true
   end
 
   def chunk_hash_lookup_for_path(path)
@@ -135,13 +105,6 @@ class SqliteIndex
       lookup[chunk] = row["hash"]
     end
     lookup
-  end
-
-  def embedding_for_hash(hash)
-    row = @db.get_first_row("SELECT embedding FROM #{quoted_table} WHERE hash = ? LIMIT 1", [hash])
-    return nil if row.nil?
-
-    parse_embedding(row["embedding"] || row[0])
   end
 
   def embeddings_for_hashes(hashes)
@@ -168,25 +131,51 @@ class SqliteIndex
     out
   end
 
-  def random_chunk_refs(count)
-    @db.execute(
-      "SELECT path, chunk FROM #{quoted_table} ORDER BY RANDOM() LIMIT ?",
-      [count.to_i]
-    ).map do |row|
-      {
-        "path" => row["path"],
-        "chunk" => row["chunk"].to_i
-      }
+  def find_chunk(path, chunk, hash: nil)
+    sql = "SELECT path, chunk, hash, bucket, text FROM #{quoted_table} WHERE path = ? AND chunk = ?"
+    binds = [path.to_s, chunk.to_i]
+    unless hash.nil? || hash.to_s.empty?
+      sql += " AND hash = ?"
+      binds << hash.to_s
     end
+    row = @db.get_first_row(sql, binds)
+    row && decode_text_row(row)
   end
 
-  def text_search_any(queries, limit: nil)
+  def random_chunks(count)
+    sample_size = count.to_i
+    return [] if sample_size <= 0
+
+    samples = []
+    seen = 0
+    @db.execute("SELECT path, chunk, hash, bucket, text FROM #{quoted_table}") do |row|
+      seen += 1
+      item = decode_text_row(row)
+      if samples.length < sample_size
+        samples << item
+      else
+        replacement = rand(seen)
+        samples[replacement] = item if replacement < sample_size
+      end
+    end
+    samples
+  end
+
+  def text_search_any(queries, limit: nil, phrase: false)
     terms = Array(queries).map(&:to_s).map(&:strip).reject(&:empty?).uniq
     return [] if terms.empty?
 
-    clauses = terms.map { "INSTR(text, ?) > 0" }.join(" OR ")
-    sql = "SELECT path, chunk, hash, bucket, text FROM #{quoted_table} WHERE text IS NOT NULL AND (#{clauses})"
-    binds = terms
+    fts_query = build_fts_query(terms, phrase: phrase)
+    return [] if fts_query.empty?
+
+    sql = <<~SQL
+      SELECT i.path, i.chunk, i.hash, i.bucket, i.text, -#{quoted_fts_table}.rank AS score
+      FROM #{quoted_fts_table}
+      JOIN #{quoted_table} i ON i.rowid = #{quoted_fts_table}.rowid
+      WHERE #{quoted_fts_table} MATCH ?
+      ORDER BY #{quoted_fts_table}.rank
+    SQL
+    binds = [fts_query]
     if limit && limit.to_i > 0
       sql += " LIMIT ?"
       binds << limit.to_i
@@ -212,7 +201,7 @@ class SqliteIndex
     end
 
     stale_where = "path NOT IN (SELECT path FROM #{quoted_keep_paths_table})"
-    delete_vector_rows_by_where(stale_where)
+    delete_index_rows_by_where(stale_where)
     @db.execute("DELETE FROM #{quoted_table} WHERE #{stale_where}")
   end
 
@@ -236,9 +225,8 @@ class SqliteIndex
     SQL
 
     @db.execute("CREATE INDEX IF NOT EXISTS #{quoted_identifier("#{table}_hash_idx")} ON #{quoted_table}(hash)")
-    @db.execute("CREATE INDEX IF NOT EXISTS #{quoted_identifier("#{table}_bucket_idx")} ON #{quoted_table}(bucket)")
-    @db.execute("CREATE INDEX IF NOT EXISTS #{quoted_identifier("#{table}_path_idx")} ON #{quoted_table}(path)")
     ensure_meta_schema!
+    ensure_fts_schema!
   end
 
   def normalize_row(item)
@@ -281,7 +269,8 @@ class SqliteIndex
       "chunk" => row["chunk"].to_i,
       "hash" => row["hash"],
       "bucket" => row["bucket"],
-      "text" => row["text"]
+      "text" => row["text"],
+      "score" => row["score"]
     }
   end
 
@@ -300,22 +289,11 @@ class SqliteIndex
   def delete_chunks(path, chunks)
     return if chunks.empty?
 
-    delete_vector_rows_by_where_clause("path = ?", [path], chunks)
+    delete_index_rows_by_where_clause("path = ?", [path], chunks)
 
     chunks.each_slice(200) do |slice|
       placeholders = Array.new(slice.length, "?").join(", ")
       @db.execute("DELETE FROM #{quoted_table} WHERE path = ? AND chunk IN (#{placeholders})", [path, *slice])
-    end
-  end
-
-  def delete_paths(paths)
-    return if paths.empty?
-
-    delete_vector_rows_by_paths(paths)
-
-    paths.each_slice(100) do |slice|
-      placeholders = Array.new(slice.length, "?").join(", ")
-      @db.execute("DELETE FROM #{quoted_table} WHERE path IN (#{placeholders})", slice)
     end
   end
 
@@ -343,6 +321,14 @@ class SqliteIndex
 
   def quoted_vector_table
     quoted_identifier(vector_table)
+  end
+
+  def fts_table
+    "#{@table}__fts"
+  end
+
+  def quoted_fts_table
+    quoted_identifier(fts_table)
   end
 
   def meta_table
@@ -428,6 +414,24 @@ class SqliteIndex
     SQL
   end
 
+  def ensure_fts_schema!
+    @db.execute(<<~SQL)
+      CREATE VIRTUAL TABLE IF NOT EXISTS #{quoted_fts_table}
+      USING fts5(text)
+    SQL
+  rescue => e
+    raise RuntimeError, "Failed to initialize SQLite FTS5 index for #{@db_file}: #{e.message}"
+  end
+
+  def sync_fts_row(rowid, row)
+    return if rowid.nil?
+
+    @db.execute(
+      "INSERT OR REPLACE INTO #{quoted_fts_table}(rowid, text) VALUES(?, ?)",
+      [rowid.to_i, row["text"].to_s]
+    )
+  end
+
   def vector_dim
     return @vector_dim_cache if @vector_dim_loaded
 
@@ -442,8 +446,8 @@ class SqliteIndex
   end
 
   def ensure_vector_table_for_dim!(dim)
-    return false unless @vector_available
-    return false if dim.nil? || dim.to_i <= 0
+    raise RuntimeError, vector_unavailable_message unless @vector_available
+    raise ArgumentError, "Vector embedding must not be empty" if dim.nil? || dim.to_i <= 0
 
     existing = vector_dim
     if existing && existing > 0 && existing != dim.to_i
@@ -452,9 +456,8 @@ class SqliteIndex
 
     @db.execute(<<~SQL)
       CREATE VIRTUAL TABLE IF NOT EXISTS #{quoted_vector_table}
-      USING vec0(embedding float[#{dim.to_i}])
+      USING vec0(embedding float[#{dim.to_i}] distance_metric=#{VECTOR_DISTANCE_METRIC})
     SQL
-
     @db.execute(
       "INSERT INTO #{quoted_meta_table}(key, value) VALUES('vector_dim', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
       [dim.to_i.to_s]
@@ -462,54 +465,25 @@ class SqliteIndex
     @vector_dim_cache = dim.to_i
     @vector_dim_loaded = true
     true
-  rescue
-    @vector_available = false
-    false
+  rescue => e
+    @vector_error = "vector index initialization failed (#{e.class}: #{e.message})"
+    raise RuntimeError, @vector_error
   end
 
-  def ensure_vector_index_from_existing!
-    return unless @vector_available
-    return if vector_dim.to_i > 0
-
-    sample = @db.get_first_row("SELECT embedding FROM #{quoted_table} LIMIT 1")
-    return if sample.nil?
-
-    sample_emb = parse_embedding(sample["embedding"] || sample[0])
-    return if sample_emb.empty?
-    return unless ensure_vector_table_for_dim!(sample_emb.length)
-
-    @db.execute("SELECT rowid, embedding FROM #{quoted_table}") do |row|
-      emb = parse_embedding(row["embedding"] || row[1])
-      next if emb.empty?
-
-      @db.execute(
-        "INSERT OR REPLACE INTO #{quoted_vector_table}(rowid, embedding) VALUES(?, ?)",
-        [(row["rowid"] || row[0]).to_i, dump_embedding(emb)]
-      )
-    end
-  rescue
-    @vector_available = false
-  end
-
-  def sync_vector_row(row)
+  def sync_vector_row(rowid, row)
     emb = parse_embedding(row["embedding"])
-    return if emb.empty?
-    return unless ensure_vector_table_for_dim!(emb.length)
+    raise ArgumentError, "Vector embedding must not be empty" if emb.empty?
+    ensure_vector_table_for_dim!(emb.length)
+    raise RuntimeError, "Canonical SQLite row is missing after upsert" if rowid.nil?
 
-    rowid = @db.get_first_value("SELECT rowid FROM #{quoted_table} WHERE path = ? AND chunk = ?", [row["path"], row["chunk"]])
-    return if rowid.nil?
-
-    @db.execute(
-      "INSERT OR REPLACE INTO #{quoted_vector_table}(rowid, embedding) VALUES(?, ?)",
-      [rowid.to_i, dump_embedding(emb)]
-    )
-  rescue
-    @vector_available = false
+    @db.execute("DELETE FROM #{quoted_vector_table} WHERE rowid = ?", [rowid.to_i])
+    @db.execute("INSERT INTO #{quoted_vector_table}(rowid, embedding) VALUES(?, ?)", [rowid.to_i, dump_embedding(emb)])
+  rescue => e
+    @vector_error = "vector row sync failed (#{e.class}: #{e.message})"
+    raise RuntimeError, @vector_error
   end
 
-  def delete_vector_rows_by_where_clause(where_sql, where_binds, chunks)
-    return unless vector_enabled?
-
+  def delete_index_rows_by_where_clause(where_sql, where_binds, chunks)
     chunks.each_slice(200) do |slice|
       placeholders = Array.new(slice.length, "?").join(", ")
       rowids = @db.execute(
@@ -517,7 +491,15 @@ class SqliteIndex
         [*where_binds, *slice]
       ).map { |r| r["rowid"] || r[0] }.compact
       delete_vector_rows(rowids)
+      delete_fts_rows(rowids)
     end
+  end
+
+  def delete_index_rows_by_where(where_sql)
+    delete_vector_rows_by_where(where_sql)
+    @db.execute(
+      "DELETE FROM #{quoted_fts_table} WHERE rowid IN (SELECT rowid FROM #{quoted_table} WHERE #{where_sql})"
+    )
   end
 
   def delete_vector_rows_by_where(where_sql)
@@ -526,43 +508,48 @@ class SqliteIndex
     @db.execute(
       "DELETE FROM #{quoted_vector_table} WHERE rowid IN (SELECT rowid FROM #{quoted_table} WHERE #{where_sql})"
     )
-  rescue
-    @vector_available = false
-  end
-
-  def delete_vector_rows_by_paths(paths)
-    return unless vector_enabled?
-
-    paths.each_slice(100) do |slice|
-      placeholders = Array.new(slice.length, "?").join(", ")
-      rowids = @db.execute(
-        "SELECT rowid FROM #{quoted_table} WHERE path IN (#{placeholders})",
-        slice
-      ).map { |r| r["rowid"] || r[0] }.compact
-      delete_vector_rows(rowids)
-    end
+  rescue => e
+    @vector_error = "vector row delete failed (#{e.class}: #{e.message})"
+    raise RuntimeError, @vector_error
   end
 
   def delete_vector_rows(rowids)
     return if rowids.empty?
+    return unless vector_enabled?
 
     rowids.each_slice(200) do |slice|
       placeholders = Array.new(slice.length, "?").join(", ")
       @db.execute("DELETE FROM #{quoted_vector_table} WHERE rowid IN (#{placeholders})", slice)
     end
-  rescue
-    @vector_available = false
+  rescue => e
+    @vector_error = "vector row delete failed (#{e.class}: #{e.message})"
+    raise RuntimeError, @vector_error
+  end
+
+  def delete_fts_rows(rowids)
+    return if rowids.empty?
+
+    rowids.each_slice(200) do |slice|
+      placeholders = Array.new(slice.length, "?").join(", ")
+      @db.execute("DELETE FROM #{quoted_fts_table} WHERE rowid IN (#{placeholders})", slice)
+    end
   end
 
   def quoted_identifier(identifier)
     %("#{identifier}")
   end
 
-  def log_vector_unavailable_once
-    return if @vector_unavailable_logged
+  def build_fts_query(terms, phrase:)
+    values = if phrase
+      terms
+    else
+      terms.flat_map { |term| term.scan(/[\p{L}\p{N}_]+/u) }.uniq
+    end
+    values.map { |term| %("#{term.gsub('"', '""')}") }.join(" OR ")
+  end
 
-    @vector_unavailable_logged = true
+  def vector_unavailable_message
     details = @vector_error ? " Cause: #{@vector_error}." : ""
-    warn "sqlite vector search is unavailable for #{@db_file}. Install the sqlite-vec Ruby gem, run via `bundle exec`, or set DOT_SQLITE_VEC_EXTENSION as a fallback, then restart.#{details}"
+    "sqlite vector search is unavailable for #{@db_file}. Install the sqlite-vec Ruby gem, run via `bundle exec`, or set DOT_SQLITE_VEC_EXTENSION as a fallback, then restart.#{details}"
   end
 end

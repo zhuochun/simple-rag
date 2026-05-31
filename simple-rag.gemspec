@@ -22,9 +22,10 @@ Gem::Specification.new do |spec|
     "server/**/*",
     "storage/**/*",
     "python/**/*",
+    "vendor/sqlite-vec/**/*",
     "exe/public/**/*",
     "exe/*"
-  ]
+  ].reject { |file| file.include?("/__pycache__/") || file.end_with?(".pyc") }
 
   spec.bindir        = "exe"
   spec.executables   = ["run-index", "run-server", "run-index-map-py", "run-index-map-v2", "run-query"]

@@ -154,6 +154,7 @@ def index_path_sqlite(path, out, status_cb, log_cb, allow_empty_prune:)
   begin
     files.each do |file|
       indexed_files += 1
+      scanned_files.add(file)
       status_cb.call("Indexing #{indexed_files} files, created=#{created}, skipped=#{skipped}, errors=#{error_count}")
       begin
         chunks = normalize_index_chunks(reader_class.new(file).load.chunks)
@@ -241,9 +242,6 @@ def index_path_sqlite(path, out, status_cb, log_cb, allow_empty_prune:)
         pending_rows.each { |row| store.upsert_chunk(row) }
         store.delete_stale_chunks(file, valid_chunks)
       end
-
-      scanned_files.add(file)
-
       if (indexed_files - 1) % 50 == 0
         out << (indexed_files - 1)
       else
