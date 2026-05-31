@@ -92,13 +92,18 @@ if missing_key_msg
   exit 9
 end
 
-def scan_files(path, out, status_cb)
+def each_scanned_file(path, out, status_cb)
+  return enum_for(__method__, path, out, status_cb) unless block_given?
+
   status_cb.call("Scanning dir")
   name_match = path.nameMatch || "*.{md,markdown}"
   dir_blob = File.join(File.expand_path(path.dir), "**", name_match)
-  files = Dir[dir_blob]
-  out << "Scan dir: #{dir_blob}, Found: #{files.length}\n"
-  files
+  out << "Scan dir: #{dir_blob}\n"
+  Dir.glob(dir_blob) do |file|
+    next unless File.file?(file)
+
+    yield file
+  end
 end
 
 def reader_class_or_exit(path, out)
@@ -132,31 +137,24 @@ def index_path_sqlite(path, out, status_cb, log_cb, allow_empty_prune:)
 
   out << "Read existing sqlite index: #{path.db_file}@#{path.db_table}, time: @#{Time.now}\n"
   store = SqliteIndex.new(path.db_file, path.db_table)
-  hash_index = store.hash_set
-  chunk_hash_lookup = store.path_chunk_hash_lookup
-  out << "Found index hashes: #{hash_index.length}\n"
+  out << "Found index rows: #{store.row_count}\n"
 
-  files = scan_files(path, out, status_cb)
+  files = each_scanned_file(path, out, status_cb)
   reader_class = reader_class_or_exit(path, out)
   error_count = 0
   prune_skipped = false
-
-  if files.empty? && !allow_empty_prune
-    out << "Empty scan guard: skipping stale prune for #{path.name}. Re-run with --allow-empty-prune to allow pruning on empty scan.\n"
-    status_cb.call("Empty scan guard active; prune skipped")
-    prune_skipped = true
-  end
+  indexed_files = 0
 
   out << "Building index @#{Time.now}\n["
-  status_cb.call("Indexing 0/#{files.length} files, created=0, skipped=0, errors=0")
+  status_cb.call("Indexing files, created=0, skipped=0, errors=0")
   skipped = 0
   created = 0
   scanned_files = Set.new
-  embedding_cache = {}
 
   begin
-    files.each_with_index do |file, file_idx|
-      status_cb.call("Indexing #{file_idx}/#{files.length} files, created=#{created}, skipped=#{skipped}, errors=#{error_count}")
+    files.each do |file|
+      indexed_files += 1
+      status_cb.call("Indexing #{indexed_files} files, created=#{created}, skipped=#{skipped}, errors=#{error_count}")
       begin
         chunks = normalize_index_chunks(reader_class.new(file).load.chunks)
       rescue => e
@@ -169,28 +167,50 @@ def index_path_sqlite(path, out, status_cb, log_cb, allow_empty_prune:)
 
       valid_chunks = Set.new
       pending_rows = []
-      file_chunk_hashes = (chunk_hash_lookup[file] ||= {})
+      file_chunk_hashes = store.chunk_hash_lookup_for_path(file)
+      chunk_rows = []
+      changed_hashes = Set.new
 
       chunks.each_with_index do |chunk, chunk_idx|
         begin
           hash = Digest::SHA256.hexdigest(chunk)
+          chunk_rows << [chunk_idx, chunk, hash]
           valid_chunks.add(chunk_idx)
+          next if file_chunk_hashes[chunk_idx] == hash
 
+          changed_hashes.add(hash)
+        rescue => e
+          error_count += 1
+          out << "\nError indexing file=#{file}, chunk=#{chunk_idx}: #{e.class}: #{e.message}\n"
+          out << "Hash: #{hash}\n" if defined?(hash)
+          out << "Backtrace: #{e.backtrace&.first}\n"
+          log_cb.call("[#{path.name}] Error indexing #{file} chunk #{chunk_idx}: #{e.class}: #{e.message}")
+          next
+        end
+      end
+
+      begin
+        existing_embeddings = store.embeddings_for_hashes(changed_hashes.to_a)
+      rescue => e
+        error_count += 1
+        out << "\nError loading existing embeddings for file=#{file}: #{e.class}: #{e.message}\n"
+        out << "Backtrace: #{e.backtrace&.first}\n"
+        log_cb.call("[#{path.name}] Error loading existing embeddings for #{file}: #{e.class}: #{e.message}")
+        existing_embeddings = {}
+      end
+
+      chunk_rows.each do |chunk_idx, chunk, hash|
+        begin
           if file_chunk_hashes[chunk_idx] == hash
             skipped += 1
             next
           end
 
-          emb = embedding_cache[hash]
+          emb = existing_embeddings[hash]
           if emb.nil?
-            if hash_index.include?(hash)
-              emb = store.embedding_for_hash(hash)
-            else
-              emb = embedding(chunk)
-              hash_index.add(hash)
-              created += 1
-            end
-            embedding_cache[hash] = emb if emb
+            emb = embedding(chunk)
+            created += 1
+            existing_embeddings[hash] = emb
           end
 
           raise "Embedding missing for hash=#{hash}" if emb.nil?
@@ -222,17 +242,22 @@ def index_path_sqlite(path, out, status_cb, log_cb, allow_empty_prune:)
         store.delete_stale_chunks(file, valid_chunks)
       end
 
-      file_chunk_hashes.delete_if { |chunk_idx, _| !valid_chunks.include?(chunk_idx.to_i) }
       scanned_files.add(file)
 
-      if file_idx % 50 == 0
-        out << file_idx
+      if (indexed_files - 1) % 50 == 0
+        out << (indexed_files - 1)
       else
         out << "."
       end
     end
 
-    if files.empty? && allow_empty_prune
+    if indexed_files == 0 && !allow_empty_prune
+      out << "Empty scan guard: skipping stale prune for #{path.name}. Re-run with --allow-empty-prune to allow pruning on empty scan.\n"
+      status_cb.call("Empty scan guard active; prune skipped")
+      prune_skipped = true
+    end
+
+    if indexed_files == 0 && allow_empty_prune
       out << "\nallow-empty-prune enabled: pruning all rows in table #{path.db_table} due to empty scan.\n"
     end
 
@@ -247,7 +272,7 @@ def index_path_sqlite(path, out, status_cb, log_cb, allow_empty_prune:)
 
   out << "]\nDone @#{Time.now}, Created: #{created}, Skipped: #{skipped}, Errors: #{error_count}\n"
   status_cb.call("Done. created=#{created}, skipped=#{skipped}, errors=#{error_count}")
-  { created: created, skipped: skipped, errors: error_count, files: files.length, prune_skipped: prune_skipped }
+  { created: created, skipped: skipped, errors: error_count, files: indexed_files, prune_skipped: prune_skipped }
 end
 
 def index_path(path, out, status_cb, log_cb, allow_empty_prune:)

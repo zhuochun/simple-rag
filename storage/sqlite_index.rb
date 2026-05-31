@@ -128,23 +128,11 @@ class SqliteIndex
     false
   end
 
-  def hash_set
-    hashes = Set.new
-    @db.execute("SELECT hash FROM #{quoted_table}") do |row|
-      key = row["hash"]
-      hashes.add(key) unless key.nil?
-    end
-    hashes
-  end
-
-  def path_chunk_hash_lookup
+  def chunk_hash_lookup_for_path(path)
     lookup = {}
-    @db.execute("SELECT path, chunk, hash FROM #{quoted_table}") do |row|
-      path = row["path"]
-      next if path.nil?
-
+    @db.execute("SELECT chunk, hash FROM #{quoted_table} WHERE path = ?", [path]) do |row|
       chunk = row["chunk"].to_i
-      (lookup[path] ||= {})[chunk] = row["hash"]
+      lookup[chunk] = row["hash"]
     end
     lookup
   end
@@ -154,6 +142,30 @@ class SqliteIndex
     return nil if row.nil?
 
     parse_embedding(row["embedding"] || row[0])
+  end
+
+  def embeddings_for_hashes(hashes)
+    keys = Array(hashes).map(&:to_s).reject(&:empty?).uniq
+    return {} if keys.empty?
+
+    out = {}
+    keys.each_slice(200) do |slice|
+      placeholders = Array.new(slice.length, "?").join(", ")
+      @db.execute(
+        "SELECT hash, embedding FROM #{quoted_table} WHERE hash IN (#{placeholders})",
+        slice
+      ) do |row|
+        key = row["hash"]
+        next if key.nil? || out.key?(key)
+        begin
+          out[key] = parse_embedding(row["embedding"] || row[1])
+        rescue
+          # Skip malformed rows; caller can regenerate the embedding.
+          next
+        end
+      end
+    end
+    out
   end
 
   def random_chunk_refs(count)
@@ -191,10 +203,17 @@ class SqliteIndex
   end
 
   def delete_stale_paths(valid_paths)
-    keep = valid_paths.to_set
-    existing = @db.execute("SELECT DISTINCT path FROM #{quoted_table}").map { |r| r["path"] }
-    stale = existing.reject { |path| keep.include?(path) }
-    delete_paths(stale)
+    ensure_temp_keep_paths_table!
+    @db.execute("DELETE FROM #{quoted_keep_paths_table}")
+
+    Array(valid_paths).map(&:to_s).reject(&:empty?).uniq.each_slice(200) do |slice|
+      placeholders = Array.new(slice.length, "(?)").join(", ")
+      @db.execute("INSERT OR IGNORE INTO #{quoted_keep_paths_table}(path) VALUES #{placeholders}", slice)
+    end
+
+    stale_where = "path NOT IN (SELECT path FROM #{quoted_keep_paths_table})"
+    delete_vector_rows_by_where(stale_where)
+    @db.execute("DELETE FROM #{quoted_table} WHERE #{stale_where}")
   end
 
   def row_count
@@ -393,6 +412,22 @@ class SqliteIndex
     SQL
   end
 
+  def keep_paths_table
+    "__keep_paths"
+  end
+
+  def quoted_keep_paths_table
+    quoted_identifier(keep_paths_table)
+  end
+
+  def ensure_temp_keep_paths_table!
+    @db.execute(<<~SQL)
+      CREATE TEMP TABLE IF NOT EXISTS #{quoted_keep_paths_table} (
+        path TEXT PRIMARY KEY
+      )
+    SQL
+  end
+
   def vector_dim
     return @vector_dim_cache if @vector_dim_loaded
 
@@ -483,6 +518,16 @@ class SqliteIndex
       ).map { |r| r["rowid"] || r[0] }.compact
       delete_vector_rows(rowids)
     end
+  end
+
+  def delete_vector_rows_by_where(where_sql)
+    return unless vector_enabled?
+
+    @db.execute(
+      "DELETE FROM #{quoted_vector_table} WHERE rowid IN (SELECT rowid FROM #{quoted_table} WHERE #{where_sql})"
+    )
+  rescue
+    @vector_available = false
   end
 
   def delete_vector_rows_by_paths(paths)
