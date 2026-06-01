@@ -135,7 +135,7 @@ class MarkdownReader
     def build_index_chunks(title, body, max_tokens = MAX_WORDS)
         effective_title, normalized_body, heading_level_offset = normalize_single_heading_1(title, body)
         content_max_tokens = max_tokens
-        if heading_level_offset == -1
+        if effective_title && !effective_title.empty?
             content_max_tokens = [max_tokens - count_tokens(effective_title), 1].max
         end
         base_chunks = threshold_chunks(normalized_body, content_max_tokens, heading_level_offset)

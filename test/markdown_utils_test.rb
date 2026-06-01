@@ -24,6 +24,10 @@ class MarkdownUtilsTest
     assert_equal "Heading", strip_markdown("# Heading")
   end
 
+  def test_strip_markdown_link_urls_handles_parentheses
+    assert_equal "label", strip_markdown("[label](https://example.com/a_(b))")
+  end
+
   private
 
   def assert_equal(expected, actual)
@@ -35,6 +39,7 @@ if $PROGRAM_NAME == __FILE__
   tests = %w[
     test_strip_markdown_removes_task_list_markers
     test_strip_markdown_can_preserve_heading_markers
+    test_strip_markdown_link_urls_handles_parentheses
   ]
 
   tests.each do |name|

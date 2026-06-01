@@ -11,7 +11,7 @@ class TextReaderTest
   end
 
   def test_heading_sections_split_and_repeat_first_h1
-    assert_fixture_chunks("with_headings", 6)
+    assert_fixture_chunks("with_headings", 8)
   end
 
   def test_fenced_code_headings_do_not_split_sections
@@ -23,6 +23,14 @@ class TextReaderTest
     text = "# Start\n#{tokens(198)}\n\n## Tail\none"
 
     assert_equal ["# Start\n#{tokens(198)}"], reader.send(:threshold_chunks, text, 200)
+  end
+
+  def test_oversized_section_repeats_heading_within_max
+    reader = TextReader.new("unused")
+    chunks = reader.send(:build_index_chunks, "## Next\n#{tokens(205)}", 100)
+
+    assert chunks.all? { |chunk| chunk.start_with?("## Next\n") }
+    assert chunks.all? { |chunk| reader.count_tokens(chunk) <= 100 }
   end
 
   private
@@ -57,6 +65,10 @@ class TextReaderTest
   def assert_equal(expected, actual)
     raise "Expected #{expected.inspect}, got #{actual.inspect}" unless expected == actual
   end
+
+  def assert(value)
+    raise "Expected truthy value" unless value
+  end
 end
 
 if $PROGRAM_NAME == __FILE__
@@ -65,6 +77,7 @@ if $PROGRAM_NAME == __FILE__
     test_heading_sections_split_and_repeat_first_h1
     test_fenced_code_headings_do_not_split_sections
     test_heading_chunks_discard_small_trailing_chunk
+    test_oversized_section_repeats_heading_within_max
   ]
 
   tests.each do |name|

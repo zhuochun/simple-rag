@@ -108,58 +108,76 @@ class TextReader
     end
 
     def build_index_chunks(text, max_tokens = MAX_WORDS)
-        base_chunks = threshold_chunks(text, max_tokens)
-        return [] if base_chunks.empty?
-
         h1 = first_heading_1(text)
+        cleaned_h1 = strip_markdown(h1)
+        base_chunks = threshold_chunks(text, max_tokens, cleaned_h1)
+        return [] if base_chunks.empty?
         return base_chunks if h1.nil? || h1.empty?
 
-        cleaned_h1 = strip_markdown(h1)
         base_chunks.map do |chunk|
             chunk.start_with?(cleaned_h1) ? chunk : "#{cleaned_h1}\n\n#{chunk}"
         end
     end
 
-    def threshold_chunks(text, max_tokens)
+    def threshold_chunks(text, max_tokens, repeated_heading = nil)
         return [] if text.nil? || text.empty?
 
         sections = split_by_headings(text).map { |section| strip_markdown(section) }
         sections.reject!(&:empty?)
 
         if sections.length <= 1
-            return split_chunk_by_tokens(sections.first.to_s, max_tokens)
+            section = sections.first.to_s
+            return split_oversized_section(section, content_max_tokens(section, max_tokens, repeated_heading))
         end
 
         chunks = []
         current = []
-        current_tokens = 0
 
         sections.each do |section|
+            section_max_tokens = content_max_tokens(section, max_tokens, repeated_heading)
             section_tokens = count_tokens(section)
 
-            if section_tokens > max_tokens
+            if section_tokens > section_max_tokens
                 if current.any?
                     chunks << current.join("\n\n")
                     current = []
-                    current_tokens = 0
                 end
-                chunks.concat(split_chunk_by_tokens(section, max_tokens))
+                chunks.concat(split_oversized_section(section, section_max_tokens))
                 next
             end
 
-            extra_tokens = current.empty? ? 0 : 1
-            if current.any? && (current_tokens + section_tokens + extra_tokens > max_tokens)
+            combined = (current + [section]).join("\n\n")
+            if current.any? && content_max_tokens(combined, max_tokens, repeated_heading) < count_tokens(combined)
                 chunks << current.join("\n\n")
                 current = [section]
-                current_tokens = section_tokens
             else
                 current << section
-                current_tokens += section_tokens + extra_tokens
             end
         end
 
         chunks << current.join("\n\n") if current.any?
         discard_small_trailing_chunk(chunks, max_tokens)
+    end
+
+    def content_max_tokens(chunk, max_tokens, repeated_heading)
+        return max_tokens if repeated_heading.nil? || repeated_heading.empty? || chunk.start_with?(repeated_heading)
+
+        [max_tokens - count_tokens(repeated_heading), 1].max
+    end
+
+    def split_oversized_section(section, max_tokens)
+        return [section] if count_tokens(section) <= max_tokens
+
+        heading, body = section.split("\n", 2)
+        return split_chunk_by_tokens(section, max_tokens) unless heading_line?(heading)
+
+        available_tokens = max_tokens - count_tokens(heading)
+        return split_chunk_by_tokens(section, max_tokens) if available_tokens <= 0
+
+        body_chunks = split_chunk_by_tokens(body.to_s.strip, available_tokens)
+        return [heading] if body_chunks.empty?
+
+        body_chunks.map { |body_chunk| "#{heading}\n#{body_chunk}" }
     end
 
     def split_by_headings(text)

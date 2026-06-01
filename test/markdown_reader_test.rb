@@ -15,7 +15,7 @@ class MarkdownReaderTest
   end
 
   def test_headings_split_before_cleanup_and_preserve_heading_path
-    assert_fixture_chunks("with_headings", 7)
+    assert_fixture_chunks("with_headings", 8)
   end
 
   def test_oversized_heading_section_repeats_heading_path
@@ -23,7 +23,7 @@ class MarkdownReaderTest
   end
 
   def test_no_headings_fall_back_to_token_threshold_chunks
-    assert_fixture_chunks("without_headings", 4)
+    assert_fixture_chunks("without_headings", 5)
   end
 
   def test_fenced_code_headings_do_not_split_sections
@@ -39,6 +39,14 @@ class MarkdownReaderTest
     text = "# Start\n#{tokens(199)}\n\n## Tail\none"
 
     assert_equal ["Start\n\n#{tokens(199)}"], reader.send(:threshold_chunks, text, 200)
+  end
+
+  def test_frontmatter_title_is_budgeted_within_max
+    reader = MarkdownReader.new("unused")
+    chunks = reader.send(:build_index_chunks, "Frontmatter Title", tokens(205), 100)
+
+    assert chunks.all? { |chunk| chunk.start_with?("Frontmatter Title\n\n") }
+    assert chunks.all? { |chunk| reader.count_tokens(chunk) <= 100 }
   end
 
   private
@@ -65,6 +73,10 @@ class MarkdownReaderTest
   def assert_equal(expected, actual)
     raise "Expected #{expected.inspect}, got #{actual.inspect}" unless expected == actual
   end
+
+  def assert(value)
+    raise "Expected truthy value" unless value
+  end
 end
 
 if $PROGRAM_NAME == __FILE__
@@ -76,6 +88,7 @@ if $PROGRAM_NAME == __FILE__
     test_fenced_code_headings_do_not_split_sections
     test_attached_heading_hashes_are_preserved
     test_heading_chunks_discard_small_trailing_chunk
+    test_frontmatter_title_is_budgeted_within_max
   ]
 
   tests.each do |name|

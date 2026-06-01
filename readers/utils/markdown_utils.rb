@@ -31,7 +31,7 @@ module MarkdownUtils
     end
 
     def strip_markdown_link_urls(text)
-        text.gsub(/\[([^\]]+)\]\([^\)]*\)/, '\1')
+        text.gsub(/\[([^\]]+)\]\((?:[^()]|\([^()]*\))*\)/, '\1')
     end
 
     def parse_opening_fence(line)
