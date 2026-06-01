@@ -1,6 +1,10 @@
+require_relative "utils/chunk_utils"
+require_relative "utils/markdown_utils"
+
 class JournalReader
     SKIP_HEADINGS = ["\u7CBE\u529B", "\u611F\u6069"]
     include ChunkUtils
+    include MarkdownUtils
 
     MAX_WORDS = 1000
     MIN_WORDS = 10
@@ -99,18 +103,6 @@ class JournalReader
     end
 
     def clean_line(line)
-        line.gsub(/\[([^\]]+)\]\(([^\)]+)\)/, '\\1')
-    end
-
-    def parse_opening_fence(line)
-        match = line.match(/^\s{0,3}(`{3,}|~{3,})/)
-        return nil unless match
-
-        { marker: match[1][0], length: match[1].length }
-    end
-
-    def closing_fence?(line, fence)
-        marker = Regexp.escape(fence[:marker])
-        !!(line =~ /^\s{0,3}#{marker}{#{fence[:length]},}\s*$/)
+        strip_markdown(line, preserve_heading_markers: true, compact_blank_lines: false)
     end
 end

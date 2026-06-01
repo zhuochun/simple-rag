@@ -1,6 +1,10 @@
 
+require_relative "utils/chunk_utils"
+require_relative "utils/markdown_utils"
+
 class TextReader
     include ChunkUtils
+    include MarkdownUtils
 
     attr_accessor :file, :chunks
 
@@ -100,47 +104,7 @@ class TextReader
     end
 
     def strip_markdown(text)
-        return "" if text.nil? || text.empty?
-
-        s = text.dup
-
-        # Strip reference-style link declarations and markdown images.
-        s.gsub!(/^\s*\[[^\]]+\]:\s+\S+.*$/, "")
-        s.gsub!(/!\[[^\]]*\]\([^\)]*\)/, " ")
-        s.gsub!(/!\[[^\]]*\]\[[^\]]*\]/, " ")
-
-        # Handle Notion wiki links first, including display text with brackets.
-        s.gsub!(/\[\[([^|\]]+)\|(.*?)\]\]/, '\2')
-        s.gsub!(/\[\[([^\]]+)\]\]/, '\1')
-
-        # Keep readable link labels while removing URLs.
-        s.gsub!(/\[([^\]]+)\]\([^\)]*\)/, '\1')
-        s.gsub!(/\[([^\]]+)\]\[[^\]]*\]/, '\1')
-
-        # Strip HTML tags and bare URLs.
-        s.gsub!(%r{<[^>]+>}, " ")
-        s.gsub!(%r{https?://\S+}, " ")
-
-        # Remove markdown punctuation while keeping heading markers.
-        s.gsub!(/^[ \t]*>+[ \t]?/, "")
-        s.gsub!(/^[ \t]*[-*+][ \t]+/, "")
-        s.gsub!(/^[ \t]*\d+\.[ \t]+/, "")
-        s.gsub!(/^[ \t]*\[(?: |x|X)\][ \t]+/, "")
-        s.gsub!(/[`*_~]/, "")
-
-        # Normalize whitespace and collapse unnecessary empty lines.
-        normalized = s.lines.map { |line| line.gsub(/[ \t]+/, " ").strip }
-        compact = []
-        normalized.each do |line|
-            if line.empty?
-                next if compact.empty? || compact.last.empty?
-                compact << ""
-            else
-                compact << line
-            end
-        end
-
-        compact.join("\n").strip
+        super(text, preserve_heading_markers: true, compact_blank_lines: true)
     end
 
     def build_index_chunks(text, max_tokens = MAX_WORDS)
@@ -195,7 +159,7 @@ class TextReader
         end
 
         chunks << current.join("\n\n") if current.any?
-        chunks
+        discard_small_trailing_chunk(chunks, max_tokens)
     end
 
     def split_by_headings(text)
@@ -234,18 +198,6 @@ class TextReader
 
     def heading_line?(line)
         !!(line =~ /^\s{0,3}[#]{1,6}\s+\S+/)
-    end
-
-    def parse_opening_fence(line)
-        match = line.match(/^\s{0,3}(`{3,}|~{3,})/)
-        return nil unless match
-
-        { marker: match[1][0], length: match[1].length }
-    end
-
-    def closing_fence?(line, fence)
-        marker = Regexp.escape(fence[:marker])
-        !!(line =~ /^\s{0,3}#{marker}{#{fence[:length]},}\s*$/)
     end
 
     def first_heading_1(text)

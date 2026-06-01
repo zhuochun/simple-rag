@@ -34,7 +34,18 @@ class MarkdownReaderTest
     assert_fixture_chunks("attached_heading_hashes", 1000)
   end
 
+  def test_heading_chunks_discard_small_trailing_chunk
+    reader = MarkdownReader.new("unused")
+    text = "# Start\n#{tokens(199)}\n\n## Tail\none"
+
+    assert_equal ["Start\n\n#{tokens(199)}"], reader.send(:threshold_chunks, text, 200)
+  end
+
   private
+
+  def tokens(count)
+    (1..count).map { |index| "token#{index}" }.join(" ")
+  end
 
   def assert_fixture_chunks(name, max_tokens)
     markdown = File.read(File.join(FIXTURE_DIR, "#{name}.md"))
@@ -64,6 +75,7 @@ if $PROGRAM_NAME == __FILE__
     test_no_headings_fall_back_to_token_threshold_chunks
     test_fenced_code_headings_do_not_split_sections
     test_attached_heading_hashes_are_preserved
+    test_heading_chunks_discard_small_trailing_chunk
   ]
 
   tests.each do |name|

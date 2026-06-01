@@ -18,7 +18,18 @@ class TextReaderTest
     assert_fixture_chunks("fenced_code_headings", 1000)
   end
 
+  def test_heading_chunks_discard_small_trailing_chunk
+    reader = TextReader.new("unused")
+    text = "# Start\n#{tokens(198)}\n\n## Tail\none"
+
+    assert_equal ["# Start\n#{tokens(198)}"], reader.send(:threshold_chunks, text, 200)
+  end
+
   private
+
+  def tokens(count)
+    (1..count).map { |index| "token#{index}" }.join(" ")
+  end
 
   def assert_load_chunks(name)
     expected = fixture_chunks(name)
@@ -53,6 +64,7 @@ if $PROGRAM_NAME == __FILE__
     test_load_filters_notion_metadata_and_strips_markdown
     test_heading_sections_split_and_repeat_first_h1
     test_fenced_code_headings_do_not_split_sections
+    test_heading_chunks_discard_small_trailing_chunk
   ]
 
   tests.each do |name|

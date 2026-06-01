@@ -1,5 +1,9 @@
+require_relative "utils/chunk_utils"
+require_relative "utils/markdown_utils"
+
 class MarkdownReader
     include ChunkUtils
+    include MarkdownUtils
 
     MAX_WORDS = 1000
     MIN_WORDS = 10
@@ -128,38 +132,6 @@ class MarkdownReader
         end
     end
 
-    def strip_markdown(text)
-        return "" if text.nil? || text.empty?
-
-        s = text.dup
-
-        # Strip reference-style link declarations and markdown images.
-        s.gsub!(/^\s*\[[^\]]+\]:\s+\S+.*$/, "")
-        s.gsub!(/!\[[^\]]*\]\([^\)]*\)/, " ")
-        s.gsub!(/!\[[^\]]*\]\[[^\]]*\]/, " ")
-
-        # Keep readable link labels while removing URLs.
-        s.gsub!(/\[([^\]]+)\]\([^\)]*\)/, '\1')
-        s.gsub!(/\[([^\]]+)\]\[[^\]]*\]/, '\1')
-
-        # Strip wiki links and HTML.
-        s.gsub!(/\[\[([^\]|]+)\|([^\]]+)\]\]/, '\2')
-        s.gsub!(/\[\[([^\]]+)\]\]/, '\1')
-        s.gsub!(%r{<[^>]+>}, " ")
-
-        # Remove markdown punctuation while retaining text.
-        s.gsub!(/^\s{0,3}(#{Regexp.union(["#", ">", "-", "*", "+"]).source})\s+/, "")
-        s.gsub!(/^\s*\d+\.\s+/, "")
-        s.gsub!(/[`*_~]/, "")
-
-        # Drop bare URLs and normalize whitespace.
-        s.gsub!(%r{https?://\S+}, " ")
-        s.gsub!(/[ \t]+/, " ")
-        s.gsub!(/\n{3,}/, "\n\n")
-
-        s.lines.map(&:strip).join("\n").strip
-    end
-
     def build_index_chunks(title, body, max_tokens = MAX_WORDS)
         effective_title, normalized_body, heading_level_offset = normalize_single_heading_1(title, body)
         content_max_tokens = max_tokens
@@ -257,7 +229,7 @@ class MarkdownReader
         end
 
         chunks << current.join("\n\n") if current.any?
-        chunks
+        discard_small_trailing_chunk(chunks, max_tokens)
     end
 
     def split_by_headings(text, heading_level_offset = 0)
@@ -302,18 +274,6 @@ class MarkdownReader
 
     def section_has_body?(section)
         section[:lines].any? { |line| !line.strip.empty? }
-    end
-
-    def parse_opening_fence(line)
-        match = line.match(/^\s{0,3}(`{3,}|~{3,})/)
-        return nil unless match
-
-        { marker: match[1][0], length: match[1].length }
-    end
-
-    def closing_fence?(line, fence)
-        marker = Regexp.escape(fence[:marker])
-        !!(line =~ /^\s{0,3}#{marker}{#{fence[:length]},}\s*$/)
     end
 
     def parse_heading(line)
