@@ -16,7 +16,6 @@ dependencies = [
 ]
 
 [project.scripts]
-run-index-map-py = "simple_rag_map.cli:main"
 run-index-map-v2 = "simple_rag_map_v2.cli:main"
 
 [build-system]

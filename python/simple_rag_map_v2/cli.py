@@ -16,7 +16,7 @@ from .layout import community_centers, mountain_layout, reframe_layout, semantic
 from .schema import build_payload, json_dumps
 from .terrain import build_terrain, cluster_peak_anchors
 from .vectors import validate_and_normalize
-from simple_rag_map.llm import ensure_ollama_started, missing_key_message, should_start_ollama
+from .llm import ensure_ollama_started, missing_key_message, should_start_ollama
 
 
 STAGES = ("all", "graph", "communities", "layout", "terrain", "labels")

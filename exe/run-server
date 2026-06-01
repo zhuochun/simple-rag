@@ -82,10 +82,6 @@ def map_data_file_path
     path.absolute? ? path.to_s : File.expand_path(raw, CONFIG_BASE_DIR)
 end
 
-def fuse_entries_with_weighted_rrf(lists, component_weights: { weighted: 0.7, rrf: 0.3 }, rrf_k: 60)
-    QueryHelpers.fuse_entries_with_weighted_rrf(lists, component_weights: component_weights, rrf_k: rrf_k)
-end
-
 def top_n_by_score(entries, top_n)
     QueryHelpers.top_n_by_score(entries, top_n)
 end
@@ -163,7 +159,7 @@ class SimpleRagServer < Sinatra::Application
         end
         unless File.exist?(path)
             status 404
-            next({ error: "Map data not found. Run run-index-map-py or run-index-map-v2 first. expected=#{path}" }.to_json)
+            next({ error: "Map data not found. Run run-index-map-v2 first. expected=#{path}" }.to_json)
         end
 
         begin
@@ -293,7 +289,7 @@ class SimpleRagServer < Sinatra::Application
             with_sqlite_store(p) do |store|
                 store.random_chunks(count).each do |it|
                     samples << {
-                        path: p.name,
+                        path: it["path"],
                         lookup: p.name,
                         id: extract_id(it["path"]),
                         url: extract_url(it["path"], p.url),
@@ -347,7 +343,7 @@ class SimpleRagServer < Sinatra::Application
         end
     end
 
-    # fetch URL content only, and cache it with the same format used by read_url
+    # fetch URL content and cache it
     post "/reader/fetch_url" do
         content_type :json
 
@@ -392,52 +388,6 @@ class SimpleRagServer < Sinatra::Application
         { extraction: extraction, groups: groups }.to_json
     end
 
-    # read a URL, extract concepts and compare with existing notes
-    post "/read_url" do
-        content_type :json
-
-        data = JSON.parse(request.body.read)
-        url = data["url"]
-        lookup_paths = resolve_lookup_paths(data["paths"])
-
-        article = fetch_article(url) rescue ""
-        extraction = extract_article(article)
-        groups = split_extraction_groups(extraction)
-
-        retrievals = []
-        notes = []
-        notes_seen = Set.new
-        store_cache = {}
-        begin
-            groups.each do |group|
-                entries = retrieve_by_embedding(lookup_paths, group, store_cache: store_cache, top_n: 5)
-                ordered = top_n_by_score(entries, 5)
-
-                retrievals << ordered.map do |item|
-                    text = item["text"]
-                    if text && notes_seen.add?(text)
-                        notes << text
-                    end
-
-                    {
-                        path: item["path"],
-                        lookup: item["lookup"],
-                        id: item["id"],
-                        url: item["url"],
-                        text: text,
-                        score: item["score"],
-                    }
-                end
-            end
-        ensure
-            close_store_cache(store_cache)
-        end
-
-        argument = argue_new_content(notes, extraction)
-        save_article_result(url, article, extraction, argument)
-
-        { extraction: extraction, argument: argument, retrievals: retrievals }.to_json
-    end
 end
 
 SimpleRagServer.run!

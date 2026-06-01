@@ -8,7 +8,7 @@ from pathlib import Path
 import re
 from typing import Any
 
-from simple_rag_map import llm
+from . import llm
 
 
 STOP_WORDS = {

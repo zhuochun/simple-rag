@@ -9,7 +9,7 @@ from typing import Any
 from urllib import error, request
 from urllib.parse import urlparse, urlunparse
 
-from .config import Config, config_value, provider_name
+from .config import Config
 
 
 ROLE_SYSTEM = "system"
@@ -28,6 +28,18 @@ class HttpResult:
     body: str
     headers: dict[str, str]
     url: str
+
+
+def config_value(config: Config, section: str, key: str, default: Any = None) -> Any:
+    section_data = config.raw.get(section)
+    if not isinstance(section_data, dict):
+        return default
+    return section_data.get(key, default)
+
+
+def provider_name(config: Config, section: str) -> str:
+    provider = config_value(config, section, "provider", "")
+    return str(provider).strip().lower()
 
 
 def missing_key_message(config: Config, sections: tuple[str, ...] = ("chat", "embedding")) -> str | None:

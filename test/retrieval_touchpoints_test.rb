@@ -29,6 +29,7 @@ assert_includes server, 'RETRIEVER.retrieve_q(lookup_paths, data["q"]'
 assert_includes server, 'RETRIEVER.retrieve_q_plus(lookup_paths, data["q"]'
 assert_includes server, 'RETRIEVER.validate_inputs!(lookup_paths, note, top_n)'
 assert_includes server, 'OllamaService.ensure_started(CONFIG, sections: [:embedding])'
+refute_includes server, 'post "/read_url"'
 refute_includes server, 'post "/synthesize"'
 
 assert_includes query_cli, "build_retriever.retrieve_q(lookup_paths, query"

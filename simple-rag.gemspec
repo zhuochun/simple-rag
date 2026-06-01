@@ -28,7 +28,7 @@ Gem::Specification.new do |spec|
   ].reject { |file| file.include?("/__pycache__/") || file.end_with?(".pyc") }
 
   spec.bindir        = "exe"
-  spec.executables   = ["run-index", "run-server", "run-index-map-py", "run-index-map-v2", "run-query"]
+  spec.executables   = ["run-index", "run-server", "run-index-map-v2", "run-query"]
   spec.require_paths = ["lib"]
 
   spec.add_runtime_dependency "sinatra", "~> 4.1"

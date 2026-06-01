@@ -915,7 +915,7 @@ graph.html Expand -> similar
 
 Remove the Synthesize UI action and `/synthesize` endpoint.
 
-Keep `/similar`, `/random`, and `/read_url` on their existing chunk-shaped
+Keep `/similar` and `/random` on their existing chunk-shaped
 retrieval behavior. They are not migrated to file-level aggregation in this
 rewrite.
 

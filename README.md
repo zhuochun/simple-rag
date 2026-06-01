@@ -56,26 +56,25 @@ python -m pip install -e python
   - Optional include-only paths:
     - set `map.includePaths` in config.json (array of `paths[].name`)
     - or call `run-index-map-v2 config.json journal,learning`
-  - For faster iteration, run the two stages separately:
+  - For faster iteration, run graph-only output first:
 
 ```bash
-run-index-map-py config.json --step clusters
-run-index-map-py config.json --step labels
+run-index-map-v2 config.json --stage graph
 ```
 
-  - Or run both stages in one command:
+  - Or run the full pipeline:
 
 ```bash
-run-index-map-py config.json --step all
+run-index-map-v2 config.json --stage all
 ```
 
   - Label generation uses concurrent LLM requests. Tune it with either `map.labelWorkers` in `config.json` or `--label-workers`:
 
 ```bash
-run-index-map-py config.json --step labels --label-workers 6
+run-index-map-v2 config.json --stage labels --label-workers 6
 ```
 
-- Open `http://localhost:4567/map.html` to explore knowledge mountains and click dots into `q.html`
+- Open `http://localhost:4567/map-v2.html` to explore knowledge mountains and click dots into `q.html`
 
 ## Publishing
 

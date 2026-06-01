@@ -11,12 +11,6 @@ Organize related points into groups separated by blank lines.
 Return the result in concise markdown bullet points.
 PROMPT
 
-ARGUE_PROMPT = <<~PROMPT
-Given an article and some existing notes, highlight information that is new,
-opposing or strongly reinforcing compared to the notes. Respond in concise
-markdown bullet points.
-PROMPT
-
 # Fetch article markdown using Jina Reader
 # url: string
 # Returns markdown text
@@ -140,16 +134,3 @@ def split_extraction_groups(extraction)
   extraction.to_s.strip.split(/\n\s*\n+/).map(&:strip).reject(&:empty?)
 end
 
-# Compare article with existing notes to highlight new or opposing info
-# notes: array of markdown strings
-# article: extracted article concepts
-# Returns markdown bullet points summarizing differences
-
-def argue_new_content(notes, article)
-  msgs = [{ role: ROLE_SYSTEM, content: ARGUE_PROMPT }]
-  body = "Notes:\n"
-  notes.each { |n| body << "<note>\n#{n}\n</note>\n" }
-  body << "\nArticle:\n#{article}"
-  msgs << { role: ROLE_USER, content: body }
-  chat(msgs)
-end

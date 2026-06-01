@@ -12,11 +12,7 @@ require_relative "retrieval_pipeline"
 VECTOR_SEARCH_K = 512
 VECTOR_SEARCH_K_MIN = 64
 VECTOR_SEARCH_K_MULTIPLIER = 12
-TEXT_SEARCH_LIMIT_MAX = 800
-TEXT_SEARCH_LIMIT_MULTIPLIER = 20
-TEXT_SEARCH_RRF_K = 60
 RETRIEVE_THREADS_MAX = 8
-STORE_CACHE_MUTEX = Mutex.new
 RETRIEVE_PROGRESS_LOG = ENV["RAG_RETRIEVE_PROGRESS"].to_s == "1"
 
 def retrieve_progress(message)
@@ -25,43 +21,13 @@ def retrieve_progress(message)
     STDOUT << message
 end
 
-def with_sqlite_store(path_config, store_cache = nil)
-    if store_cache
-        key = [path_config.db_file, path_config.db_table]
-        store = nil
-        STORE_CACHE_MUTEX.synchronize do
-            store = store_cache[key]
-            unless store
-                store = SqliteIndex.new(path_config.db_file, path_config.db_table)
-                store_cache[key] = store
-            end
-        end
-        return yield(store)
-    end
-
+def with_sqlite_store(path_config)
     store = SqliteIndex.new(path_config.db_file, path_config.db_table)
     begin
         yield(store)
     ensure
         store.close
     end
-end
-
-def close_store_cache(store_cache)
-    return unless store_cache
-
-    store_cache.each_value do |store|
-        begin
-            store.close
-        rescue
-            # ignore close errors
-        end
-    end
-    store_cache.clear
-end
-
-def normalize_search_terms(query_or_queries)
-    Array(query_or_queries).flatten.map(&:to_s).map(&:strip).reject(&:empty?).uniq
 end
 
 def retrieve_worker_count(path_count)
@@ -120,14 +86,7 @@ def vector_search_k_for_top_n(top_n)
     [[n * VECTOR_SEARCH_K_MULTIPLIER, VECTOR_SEARCH_K_MIN].max, VECTOR_SEARCH_K].min
 end
 
-def text_limit_for_top_n(top_n)
-    n = top_n.to_i
-    return nil if n <= 0
-
-    [n * TEXT_SEARCH_LIMIT_MULTIPLIER, TEXT_SEARCH_LIMIT_MAX].min
-end
-
-def retrieve_by_embedding(lookup_paths, q, store_cache: nil, top_n: nil, parallel: true, use_cache: true)
+def retrieve_by_embedding(lookup_paths, q, top_n: nil, parallel: true, use_cache: true)
     begin
         qe = if use_cache
             CACHE.get_or_set(q, method(:embedding).to_proc)
@@ -148,7 +107,7 @@ def retrieve_by_embedding(lookup_paths, q, store_cache: nil, top_n: nil, paralle
         retrieve_progress("Reading index: #{p.name}\n")
 
         path_entries = []
-        with_sqlite_store(p, store_cache) do |store|
+        with_sqlite_store(p) do |store|
             store.vector_search(qn, k).each do |item|
                 score = item["score"].to_f
                 next if score < p.threshold
@@ -187,38 +146,6 @@ def extract_url(file_path, url)
     else
         "file://#{file_path}"
     end
-end
-
-def retrieve_by_text(lookup_paths, query_or_queries, store_cache: nil, top_n: nil, parallel: true, phrase: false)
-    queries = normalize_search_terms(query_or_queries)
-    return [] if queries.empty?
-
-    limit_per_path = text_limit_for_top_n(top_n)
-    entries = []
-    entries_mutex = Mutex.new
-
-    each_lookup_path(lookup_paths, parallel: parallel) do |p|
-        retrieve_progress("Reading text index: #{p.name}\n")
-
-        path_entries = []
-        with_sqlite_store(p, store_cache) do |store|
-            store.text_search_any(queries, limit: limit_per_path, phrase: phrase).each_with_index do |item, idx|
-                item["score"] = item["score"].to_f
-                item["_sort_score"] = 1.0 / (TEXT_SEARCH_RRF_K + idx + 1)
-                item["lookup"] = p.name
-                item["id"] = extract_id(item["path"])
-                item["url"] = extract_url(item["path"], p.url)
-                item["_text_rank_group"] = [File.expand_path(p.db_file), p.db_table]
-
-                path_entries << item
-            end
-        end
-
-        entries_mutex.synchronize { entries.concat(path_entries) }
-        retrieve_progress("Matched num for #{p.name}: #{path_entries.length}\n")
-    end
-
-    entries
 end
 
 def cached_embedding(query)
