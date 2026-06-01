@@ -5,9 +5,6 @@ class MarkdownReader
     include ChunkUtils
     include MarkdownUtils
 
-    MAX_WORDS = 1000
-    MIN_WORDS = 10
-
     FRONTMATTER_START = /\A---\s*$/
     FRONTMATTER_END = /\A(?:---|\.\.\.)\s*$/
 
@@ -40,7 +37,7 @@ class MarkdownReader
             return self
         end
 
-        @chunks = filter_small_chunks(@chunks, MIN_WORDS)
+        @chunks = filter_small_chunks(@chunks)
         @loaded = true
         self
     end
@@ -132,7 +129,7 @@ class MarkdownReader
         end
     end
 
-    def build_index_chunks(title, body, max_tokens = MAX_WORDS)
+    def build_index_chunks(title, body, max_tokens = ChunkUtils::MAX_TOKENS)
         effective_title, normalized_body, heading_level_offset = normalize_single_heading_1(title, body)
         content_max_tokens = max_tokens
         if effective_title && !effective_title.empty?

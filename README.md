@@ -34,7 +34,8 @@ gem install simple-rag-zc
 - Run `run-query "your question"` for CLI retrieval (LLM-friendly)
   - `run-query --help` shows usage and all configured `paths` (`name => dir`)
   - Uses the same standard retrieval pipeline as the web UI **Search** action
-  - Default output is concise file results with anchor chunks; use `--full` for complete chunk text and debug details
+  - Default JSON output is a flat locator list with `path`, rounded `score`, anchor `chunk`, and brief `text`
+  - Use `--full` for complete chunk text and retrieval debug details
 
 ## Setup Map Generator
 

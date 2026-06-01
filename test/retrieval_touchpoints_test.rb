@@ -17,6 +17,7 @@ def refute_includes(text, expected)
 end
 
 server = read_repo("exe/run-server")
+index_cli = read_repo("exe/run-index")
 query_cli = read_repo("exe/run-query")
 query_ui = read_repo("exe/public/q.html")
 graph_ui = read_repo("exe/public/graph.html")
@@ -31,8 +32,13 @@ assert_includes server, 'OllamaService.ensure_started(CONFIG, sections: [:embedd
 refute_includes server, 'post "/synthesize"'
 
 assert_includes query_cli, "build_retriever.retrieve_q(lookup_paths, query"
-assert_includes query_cli, "anchor_chunk: concise_chunk(file[:anchor_chunk]"
+assert_includes query_cli, "QueryHelpers.compact_file_results(payload[:data]"
+assert_includes query_cli, "JSON.pretty_generate(concise ? payload[:data] : payload)"
 refute_includes query_cli, "--mode"
+
+assert_includes index_cli, "Readers own chunking through ChunkUtils"
+refute_includes index_cli, "normalize_index_chunks"
+refute_includes index_cli, "INDEX_MAX_EMBED_TOKENS"
 
 assert_includes query_ui, "const anchor = item.anchor_chunk || {};"
 assert_includes query_ui, "resp.keyword_variants"

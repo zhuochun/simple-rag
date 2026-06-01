@@ -115,22 +115,6 @@ def reader_class_or_exit(path, out)
   reader_class
 end
 
-class IndexChunkSplitter
-  include ChunkUtils
-end
-
-INDEX_CHUNK_SPLITTER = IndexChunkSplitter.new
-INDEX_MAX_EMBED_TOKENS = cfg(:embedding, "max_tokens", 512).to_i
-INDEX_MIN_EMBED_TOKENS = cfg(:embedding, "min_tokens", ChunkUtils::DEFAULT_MIN_TOKENS).to_i
-
-def normalize_index_chunks(chunks)
-  chunks.flat_map do |chunk|
-    INDEX_CHUNK_SPLITTER.split_chunk_by_tokens(chunk, INDEX_MAX_EMBED_TOKENS)
-  end.then do |split_chunks|
-    INDEX_CHUNK_SPLITTER.filter_small_chunks(split_chunks, INDEX_MIN_EMBED_TOKENS)
-  end
-end
-
 def index_path_sqlite(path, out, status_cb, log_cb, allow_empty_prune:)
   out << "Read path name: #{path.name}, reader: #{path.reader}\n"
   status_cb.call("Reading index")
@@ -157,7 +141,8 @@ def index_path_sqlite(path, out, status_cb, log_cb, allow_empty_prune:)
       scanned_files.add(file)
       status_cb.call("Indexing #{indexed_files} files, created=#{created}, skipped=#{skipped}, errors=#{error_count}")
       begin
-        chunks = normalize_index_chunks(reader_class.new(file).load.chunks)
+        # Readers own chunking through ChunkUtils; indexing persists their chunks unchanged.
+        chunks = reader_class.new(file).load.chunks
       rescue => e
         error_count += 1
         out << "\nError reading #{file}: #{e.class}: #{e.message}\n"

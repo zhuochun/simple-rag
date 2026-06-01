@@ -144,6 +144,18 @@ module QueryHelpers
     end
   end
 
+  def compact_file_results(files, brief_chars: DEFAULT_BRIEF_CHARS)
+    Array(files).map do |file|
+      anchor = file[:anchor_chunk] || {}
+      {
+        path: file[:path],
+        score: file[:score].to_f.round(4),
+        chunk: anchor[:chunk],
+        text: brief_text(anchor[:text], max_chars: brief_chars),
+      }
+    end
+  end
+
   def brief_text(text, max_chars: DEFAULT_BRIEF_CHARS)
     compact = text.to_s.gsub(/\s+/, " ").strip
     return compact if compact.length <= max_chars

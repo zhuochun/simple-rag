@@ -6,9 +6,6 @@ class JournalReader
     include ChunkUtils
     include MarkdownUtils
 
-    MAX_WORDS = 1000
-    MIN_WORDS = 10
-
     attr_accessor :file, :chunks
 
     def initialize(file)
@@ -96,10 +93,10 @@ class JournalReader
         return if lines.length < 3
 
         content = lines.join("\n")
-        split_chunk_by_tokens(content, MAX_WORDS).each do |chunk|
+        split_chunk_by_tokens(content).each do |chunk|
             @chunks << chunk
         end
-        @chunks = filter_small_chunks(@chunks, MIN_WORDS)
+        @chunks = filter_small_chunks(@chunks)
     end
 
     def clean_line(line)

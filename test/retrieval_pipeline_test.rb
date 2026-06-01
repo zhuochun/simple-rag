@@ -295,6 +295,29 @@ class RetrievalPipelineTest
     assert_equal ["docs", "talks"], selected.map(&:name)
   end
 
+  def test_query_helpers_compact_file_results_keep_only_locator_fields
+    files = [{
+      path: "talks/example.md",
+      id: "example",
+      lookup: "talks",
+      url: "https://example.test/example",
+      score: 0.123456,
+      anchor_chunk: {
+        chunk: 2,
+        score: 0.12,
+        text: "Relevant text with extra context",
+        sources: ["vec:original"],
+      },
+      matched_chunks: [],
+      source_summary: {},
+    }]
+
+    assert_equal(
+      [{ path: "talks/example.md", score: 0.1235, chunk: 2, text: "Relevant text..." }],
+      QueryHelpers.compact_file_results(files, brief_chars: 16)
+    )
+  end
+
   def test_config_loader_rejects_blank_and_duplicate_lookup_names
     Dir.mktmpdir("retrieval-config-") do |dir|
       blank = File.join(dir, "blank.json")

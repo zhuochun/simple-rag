@@ -103,41 +103,18 @@ def validate_options!(options)
   raise ArgumentError, "--brief-chars must be > 0" unless options[:brief_chars].to_i > 0
 end
 
-def concise_chunk(chunk, brief_chars)
-  {
-    chunk: chunk[:chunk],
-    score: chunk[:score],
-    text: QueryHelpers.brief_text(chunk[:text], max_chars: brief_chars),
-    sources: chunk[:sources],
-  }
-end
-
-def serialize_file_result(file, concise:, brief_chars:)
-  return file unless concise
-
-  {
-    path: file[:path],
-    id: file[:id],
-    lookup: file[:lookup],
-    url: file[:url],
-    score: file[:score],
-    anchor_chunk: concise_chunk(file[:anchor_chunk], brief_chars),
-    matched_chunks: file[:matched_chunks].map { |chunk| concise_chunk(chunk, brief_chars) },
-    source_summary: file[:source_summary],
-  }
-end
-
 def print_output(format, payload, concise)
   case format
   when "json"
-    STDOUT << JSON.pretty_generate(payload) << "\n"
+    STDOUT << JSON.pretty_generate(concise ? payload[:data] : payload) << "\n"
   when "jsonl"
     payload[:data].each { |row| STDOUT << row.to_json << "\n" }
   when "text"
     payload[:data].each_with_index do |row, idx|
-      anchor = row[:anchor_chunk]
       score = format("%.4f", row[:score].to_f)
-      STDOUT << "#{idx + 1}. [#{row[:lookup]}] #{row[:path]}##{anchor[:chunk]} score=#{score}\n"
+      anchor = concise ? row : row[:anchor_chunk]
+      lookup = concise ? "" : "[#{row[:lookup]}] "
+      STDOUT << "#{idx + 1}. #{lookup}#{row[:path]}##{anchor[:chunk]} score=#{score}\n"
       STDOUT << "#{concise ? '   ' : ''}#{anchor[:text]}\n"
       STDOUT << "\n" unless concise
     end
@@ -202,9 +179,7 @@ end
 
 payload[:concise] = options[:concise]
 payload[:limit] = options[:limit]
-payload[:data] = payload[:data].map do |file|
-  serialize_file_result(file, concise: options[:concise], brief_chars: options[:brief_chars])
-end
+payload[:data] = QueryHelpers.compact_file_results(payload[:data], brief_chars: options[:brief_chars]) if options[:concise]
 payload[:paths] = lookup_paths.map { |path| { name: path.name, dir: path.dir } } unless options[:concise]
 
 print_output(options[:format], payload, options[:concise])

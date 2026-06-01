@@ -14,8 +14,6 @@ class TextReader
         @chunks = []
     end
 
-    MAX_WORDS = 1000
-    MIN_WORDS = 10
     FRONTMATTER_START = /\A---\s*$/
     FRONTMATTER_END = /\A(?:---|\.\.\.)\s*$/
 
@@ -35,7 +33,7 @@ class TextReader
             # file was removed after existence check; skip loading
         end
 
-        @chunks = filter_small_chunks(@chunks, MIN_WORDS)
+        @chunks = filter_small_chunks(@chunks)
         @loaded = true
 
         self
@@ -107,7 +105,7 @@ class TextReader
         super(text, preserve_heading_markers: true, compact_blank_lines: true)
     end
 
-    def build_index_chunks(text, max_tokens = MAX_WORDS)
+    def build_index_chunks(text, max_tokens = ChunkUtils::MAX_TOKENS)
         h1 = first_heading_1(text)
         cleaned_h1 = strip_markdown(h1)
         base_chunks = threshold_chunks(text, max_tokens, cleaned_h1)

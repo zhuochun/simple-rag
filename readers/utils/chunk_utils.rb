@@ -1,6 +1,6 @@
 module ChunkUtils
-    DEFAULT_MAX_TOKENS = 1000
-    DEFAULT_MIN_TOKENS = 10
+    MAX_TOKENS = 1000
+    MIN_TOKENS = 10
     MIN_TRAILING_CHUNK_RATIO = 0.05
 
     def count_tokens(str)
@@ -9,7 +9,7 @@ module ChunkUtils
         tokens.length
     end
 
-    def split_chunk_by_tokens(text, max_tokens = DEFAULT_MAX_TOKENS)
+    def split_chunk_by_tokens(text, max_tokens = MAX_TOKENS)
         return [] if text.nil? || text.empty?
         return [text] if count_tokens(text) <= max_tokens
 
@@ -23,11 +23,20 @@ module ChunkUtils
 
             if para_tokens > max_tokens
                 if current.any?
-                    parts << current.join("\n\n")
+                    prefix = current.join("\n\n")
+                    available_tokens = max_tokens - current_tokens
+                    if available_tokens > 0
+                        para_parts = split_hard_by_chars(para, available_tokens)
+                        first_part = para_parts.shift.to_s.strip
+                        parts << [prefix, first_part].reject(&:empty?).join("\n\n")
+                        para = para_parts.join.strip
+                    else
+                        parts << prefix
+                    end
                     current = []
                     current_tokens = 0
                 end
-                parts.concat(split_large_block_by_lines(para, max_tokens))
+                parts.concat(split_large_block_by_lines(para, max_tokens)) unless para.empty?
                 next
             end
 
@@ -102,11 +111,11 @@ module ChunkUtils
         parts
     end
 
-    def filter_small_chunks(chunks, min_tokens = DEFAULT_MIN_TOKENS)
+    def filter_small_chunks(chunks, min_tokens = MIN_TOKENS)
         chunks.select { |c| count_tokens(c) >= min_tokens }
     end
 
-    def discard_small_trailing_chunk(chunks, max_tokens = DEFAULT_MAX_TOKENS)
+    def discard_small_trailing_chunk(chunks, max_tokens = MAX_TOKENS)
         return chunks if chunks.length <= 1
         return chunks unless count_tokens(chunks.last) < max_tokens * MIN_TRAILING_CHUNK_RATIO
 
