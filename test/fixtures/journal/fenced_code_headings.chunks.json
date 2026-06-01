@@ -1,0 +1,4 @@
+[
+  "## Engineering Notes\nReview the deployment script before running it.\n```bash\n## this is a shell comment\necho ok\n```\nConfirm the command output after deployment completes.",
+  "## Next Entry\nReview the retrieval index after deployment completes.\nRecord the validation result for the next review.\nConfirm adjacent context remains available in search."
+]

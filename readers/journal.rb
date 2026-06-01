@@ -45,10 +45,24 @@ class JournalReader
         started = false
         heading = nil
         lines = []
+        fence = nil
 
         File.foreach(@file) do |line|
             line = line.chomp
             next if line.strip.empty?
+
+            if fence
+                lines << clean_line(line) if started
+                fence = nil if closing_fence?(line, fence)
+                next
+            end
+
+            opening_fence = parse_opening_fence(line)
+            if opening_fence
+                lines << clean_line(line) if started
+                fence = opening_fence
+                next
+            end
 
             if !started
                 next unless line.start_with?("## ")
@@ -86,5 +100,17 @@ class JournalReader
 
     def clean_line(line)
         line.gsub(/\[([^\]]+)\]\(([^\)]+)\)/, '\\1')
+    end
+
+    def parse_opening_fence(line)
+        match = line.match(/^\s{0,3}(`{3,}|~{3,})/)
+        return nil unless match
+
+        { marker: match[1][0], length: match[1].length }
+    end
+
+    def closing_fence?(line, fence)
+        marker = Regexp.escape(fence[:marker])
+        !!(line =~ /^\s{0,3}#{marker}{#{fence[:length]},}\s*$/)
     end
 end
