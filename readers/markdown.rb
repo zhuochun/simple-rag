@@ -160,9 +160,8 @@ class MarkdownReader
         s.lines.map(&:strip).join("\n").strip
     end
 
-    def build_index_chunks(title, body)
-        cleaned = strip_markdown(body)
-        base_chunks = threshold_chunks(cleaned, MAX_WORDS)
+    def build_index_chunks(title, body, max_tokens = MAX_WORDS)
+        base_chunks = threshold_chunks(body, max_tokens)
 
         # If the file only has frontmatter title and no body, still index the title.
         if base_chunks.empty?
@@ -180,9 +179,12 @@ class MarkdownReader
     def threshold_chunks(text, max_tokens)
         return [] if text.nil? || text.empty?
 
-        sections = split_by_headings(text)
+        sections = split_by_headings(text).map { |section| clean_section(section) }
+        sections.reject! { |section| section[:text].empty? }
+
         if sections.length <= 1
-            return split_chunk_by_tokens(text, max_tokens)
+            return [] if sections.empty?
+            return split_oversized_section(sections.first, max_tokens)
         end
 
         chunks = []
@@ -190,7 +192,7 @@ class MarkdownReader
         current_tokens = 0
 
         sections.each do |section|
-            section_tokens = count_tokens(section)
+            section_tokens = count_tokens(section[:text])
 
             # If a single heading section is too large, fall back to paragraph/line/token splitting.
             if section_tokens > max_tokens
@@ -199,17 +201,17 @@ class MarkdownReader
                     current = []
                     current_tokens = 0
                 end
-                chunks.concat(split_chunk_by_tokens(section, max_tokens))
+                chunks.concat(split_oversized_section(section, max_tokens))
                 next
             end
 
             extra_tokens = current.empty? ? 0 : 1
             if current.any? && (current_tokens + section_tokens + extra_tokens > max_tokens)
                 chunks << current.join("\n\n")
-                current = [section]
+                current = [section[:text]]
                 current_tokens = section_tokens
             else
-                current << section
+                current << section[:text]
                 current_tokens += section_tokens + extra_tokens
             end
         end
@@ -221,25 +223,92 @@ class MarkdownReader
     def split_by_headings(text)
         lines = text.split("\n")
         sections = []
-        current = []
+        heading_path = []
+        current = { heading_path: [], lines: [] }
+        fence = nil
 
         lines.each do |line|
-            if heading_line?(line) && current.any?
-                section = current.join("\n").strip
-                sections << section unless section.empty?
-                current = []
+            if fence
+                current[:lines] << line
+                fence = nil if closing_fence?(line, fence)
+                next
             end
 
-            current << line
+            opening_fence = parse_opening_fence(line)
+            if opening_fence
+                current[:lines] << line
+                fence = opening_fence
+                next
+            end
+
+            heading = parse_heading(line)
+            if heading
+                sections << current if section_has_body?(current)
+
+                level, title = heading
+                heading_path = heading_path.first(level - 1)
+                heading_path[level - 1] = title
+                current = { heading_path: heading_path.compact, lines: [] }
+            else
+                current[:lines] << line
+            end
         end
 
-        section = current.join("\n").strip
-        sections << section unless section.empty?
+        sections << current if current[:lines].any? || current[:heading_path].any?
 
         sections
     end
 
-    def heading_line?(line)
-        !!(line =~ /^\s{0,3}[#]{1,6}\s+\S+/)
+    def section_has_body?(section)
+        section[:lines].any? { |line| !line.strip.empty? }
+    end
+
+    def parse_opening_fence(line)
+        match = line.match(/^\s{0,3}(`{3,}|~{3,})/)
+        return nil unless match
+
+        { marker: match[1][0], length: match[1].length }
+    end
+
+    def closing_fence?(line, fence)
+        marker = Regexp.escape(fence[:marker])
+        !!(line =~ /^\s{0,3}#{marker}{#{fence[:length]},}\s*$/)
+    end
+
+    def parse_heading(line)
+        match = line.match(/^\s{0,3}([#]{1,6})\s+(.+?)\s*$/)
+        return nil unless match
+
+        title = match[2].sub(/\s+#+\s*$/, "")
+        [match[1].length, strip_markdown(title)]
+    end
+
+    def clean_section(section)
+        heading_path = section[:heading_path]
+        body = strip_markdown(section[:lines].join("\n"))
+        {
+            heading_path: heading_path,
+            body: body,
+            text: join_section_text(heading_path, body),
+        }
+    end
+
+    def split_oversized_section(section, max_tokens)
+        return split_chunk_by_tokens(section[:text], max_tokens) if section[:heading_path].empty?
+
+        heading_text = section[:heading_path].join("\n\n")
+        available_tokens = max_tokens - count_tokens(heading_text)
+        return split_chunk_by_tokens(section[:text], max_tokens) if available_tokens <= 0
+
+        body_chunks = split_chunk_by_tokens(section[:body], available_tokens)
+        return [heading_text] if body_chunks.empty?
+
+        body_chunks.map { |body| join_section_text(section[:heading_path], body.strip) }
+    end
+
+    def join_section_text(heading_path, body)
+        parts = heading_path.dup
+        parts << body unless body.empty?
+        parts.join("\n\n")
     end
 end
