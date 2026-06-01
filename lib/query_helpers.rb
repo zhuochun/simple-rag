@@ -4,7 +4,10 @@ module QueryHelpers
   module_function
 
   def resolve_lookup_paths(config, selected, default_to_search_default: false)
-    names = Array(selected).compact
+    names = Array(selected).filter_map do |name|
+      value = name.to_s.strip
+      value unless value.empty?
+    end.uniq
 
     if names.empty?
       if default_to_search_default

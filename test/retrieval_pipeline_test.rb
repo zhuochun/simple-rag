@@ -3,6 +3,7 @@ require "ostruct"
 require "tmpdir"
 
 require_relative "../lib/config_loader"
+require_relative "../lib/query_helpers"
 require_relative "../server/retrieval_pipeline"
 
 class RetrievalPipelineTest
@@ -255,10 +256,43 @@ class RetrievalPipelineTest
   def test_retriever_validates_public_inputs
     retriever = Retriever.new(planner: planner_with_responses, executor: StaticExecutor.new)
 
-    assert_raises(ArgumentError) { retriever.retrieve_q([path("docs")], " ", top_n: 5) }
-    assert_raises(ArgumentError) { retriever.retrieve_q([path("docs")], "alpha", top_n: 0) }
-    assert_raises(ArgumentError) { retriever.retrieve_q([path("docs")], "alpha", top_n: 101) }
-    assert_raises(ArgumentError) { retriever.retrieve_q([], "alpha", top_n: 5) }
+    assert_raises(RetrievalInputError) { retriever.retrieve_q([path("docs")], " ", top_n: 5) }
+    assert_raises(RetrievalInputError) { retriever.retrieve_q([path("docs")], "alpha", top_n: 0) }
+    assert_raises(RetrievalInputError) { retriever.retrieve_q([path("docs")], "alpha", top_n: 101) }
+    assert_raises(RetrievalInputError) { retriever.retrieve_q([], "alpha", top_n: 5) }
+  end
+
+  def test_empty_embedding_raises_backend_failure
+    executor = RetrievalExecutor.new(
+      embedding_fn: ->(_query) { nil },
+      id_fn: ->(value) { value },
+      url_fn: ->(value, _base) { value },
+      store_factory: ->(_lookup) { FakeStore.new(vector_rows: [row("a.md", 0, 0.9)]) }
+    )
+    plan = QueryPlan.new(
+      original_query: "alpha",
+      semantic_rewrite: nil,
+      keyword_variants: [],
+      lists: [{ name: "vec:original", backend: "vector", query_type: "original", query: "alpha", weight: 1.2 }]
+    )
+
+    error = assert_raises(RuntimeError) { executor.execute_plan(plan, [path("docs")], top_n: 5) }
+    assert_equal "Embedding is empty", error.message
+  end
+
+  def test_query_helpers_resolve_lookup_paths_deduplicates_selected_names
+    docs = OpenStruct.new(name: "docs", searchDefault: true)
+    talks = OpenStruct.new(name: "talks", searchDefault: false)
+    config = OpenStruct.new(
+      paths: [docs, talks],
+      path_map: {
+        "docs" => docs,
+        "talks" => talks,
+      }
+    )
+
+    selected = QueryHelpers.resolve_lookup_paths(config, ["docs", "docs", " talks "])
+    assert_equal ["docs", "talks"], selected.map(&:name)
   end
 
   def test_config_loader_rejects_blank_and_duplicate_lookup_names

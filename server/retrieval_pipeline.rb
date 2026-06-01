@@ -10,6 +10,9 @@ QueryPlan = Struct.new(
   keyword_init: true
 )
 
+class RetrievalInputError < ArgumentError
+end
+
 class QueryPlanner
   ORIGINAL_QUERY_PHRASE_MAX_TOKENS = 5
 
@@ -316,9 +319,16 @@ class RetrievalExecutor
   end
 
   def normalized_embedding(raw)
-    values = Array(raw).map(&:to_f)
+    values = Array(raw)
+    raise RuntimeError, "Embedding is empty" if values.empty?
+
+    values = values.map do |value|
+      Float(value)
+    rescue ArgumentError, TypeError
+      raise RuntimeError, "Embedding contains non-numeric values"
+    end
     norm = Math.sqrt(values.sum { |value| value * value })
-    return Array.new(values.length, 0.0) if norm <= 0.0
+    raise RuntimeError, "Embedding norm is zero" if norm <= 0.0
 
     values.map { |value| value / norm }
   end
@@ -613,10 +623,10 @@ class Retriever
   end
 
   def validate_inputs!(lookup_paths, query, top_n)
-    raise ArgumentError, "Query text is required" if query.to_s.strip.empty?
-    raise ArgumentError, "top_n must be > 0" unless top_n.to_i > 0
-    raise ArgumentError, "top_n must be <= #{MAX_TOP_N}" if top_n.to_i > MAX_TOP_N
-    raise ArgumentError, "At least one lookup path is required" if Array(lookup_paths).empty?
+    raise RetrievalInputError, "Query text is required" if query.to_s.strip.empty?
+    raise RetrievalInputError, "top_n must be > 0" unless top_n.to_i > 0
+    raise RetrievalInputError, "top_n must be <= #{MAX_TOP_N}" if top_n.to_i > MAX_TOP_N
+    raise RetrievalInputError, "At least one lookup path is required" if Array(lookup_paths).empty?
   end
 
   private

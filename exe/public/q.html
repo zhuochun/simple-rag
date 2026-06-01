@@ -492,6 +492,15 @@
                 });
             }
 
+            function parseJsonOrThrow(response) {
+                return response.json().then(body => {
+                    if (!response.ok) {
+                        throw new Error(body && body.error ? body.error : `HTTP ${response.status}`);
+                    }
+                    return body;
+                });
+            }
+
             fetch('http://localhost:4567/paths')
                 .then(response => response.json())
                 .then(data => {
@@ -539,13 +548,13 @@
                         paths: selectedPaths(),
                     })
                 })
-                .then(response => response.json())
+                .then(parseJsonOrThrow)
                 .then(resp => {
                     renderResults(resp.data || []);
                     setStatus('Search complete. You can discuss or explore any card.');
                 })
-                .catch(() => {
-                    setStatus('Failed to perform search.', true);
+                .catch(error => {
+                    setStatus(error.message || 'Failed to perform search.', true);
                     renderEmpty('Search failed. Check API availability and try again.');
                 })
                 .finally(() => {
@@ -575,7 +584,7 @@
                         paths: selectedPaths(),
                     })
                 })
-                .then(response => response.json())
+                .then(parseJsonOrThrow)
                 .then(resp => {
                     renderResults(resp.data || [], {
                         variants: resp.keyword_variants,
@@ -584,8 +593,8 @@
                     });
                     setStatus(resp.fallback ? 'Search+ fell back to standard search.' : 'Search+ complete with query expansion.');
                 })
-                .catch(() => {
-                    setStatus('Failed to perform Search+.', true);
+                .catch(error => {
+                    setStatus(error.message || 'Failed to perform Search+.', true);
                     renderEmpty('Search+ failed. Check API availability and try again.');
                 })
                 .finally(() => {

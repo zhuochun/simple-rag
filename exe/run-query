@@ -195,7 +195,7 @@ end
 
 begin
   payload = build_retriever.retrieve_q(lookup_paths, query, top_n: options[:limit])
-rescue ArgumentError => e
+rescue RetrievalInputError => e
   STDOUT << "#{e.message}\n"
   exit 1
 end

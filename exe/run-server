@@ -94,6 +94,14 @@ def serialize_entries(entries)
     QueryHelpers.serialize_entries(entries)
 end
 
+def parse_top_n(raw, default:)
+    return default if raw.nil?
+
+    Integer(raw)
+rescue ArgumentError, TypeError
+    raise RetrievalInputError, "topN must be an integer"
+end
+
 def find_indexed_note_ref(lookup, path, chunk, hash = nil)
     lookup = lookup.to_s
     path = path.to_s
@@ -210,8 +218,9 @@ class SimpleRagServer < Sinatra::Application
         begin
             data = JSON.parse(request.body.read)
             lookup_paths = resolve_lookup_paths(data["paths"], default_to_search_default: true)
-            RETRIEVER.retrieve_q(lookup_paths, data["q"], top_n: (data["topN"] || 20).to_i).to_json
-        rescue JSON::ParserError, ArgumentError => e
+            top_n = parse_top_n(data["topN"], default: 20)
+            RETRIEVER.retrieve_q(lookup_paths, data["q"], top_n: top_n).to_json
+        rescue JSON::ParserError, RetrievalInputError => e
             status 400
             { error: e.message }.to_json
         end
@@ -224,8 +233,9 @@ class SimpleRagServer < Sinatra::Application
         begin
             data = JSON.parse(request.body.read)
             lookup_paths = resolve_lookup_paths(data["paths"], default_to_search_default: true)
-            RETRIEVER.retrieve_q_plus(lookup_paths, data["q"], top_n: (data["topN"] || 20).to_i).to_json
-        rescue JSON::ParserError, ArgumentError => e
+            top_n = parse_top_n(data["topN"], default: 20)
+            RETRIEVER.retrieve_q_plus(lookup_paths, data["q"], top_n: top_n).to_json
+        rescue JSON::ParserError, RetrievalInputError => e
             status 400
             { error: e.message }.to_json
         end
@@ -304,14 +314,14 @@ class SimpleRagServer < Sinatra::Application
         begin
             data = JSON.parse(request.body.read)
             lookup_paths = resolve_lookup_paths(data["paths"])
-            top_n = (data["topN"] || 3).to_i
+            top_n = parse_top_n(data["topN"], default: 3)
             note = data["note"]
             RETRIEVER.validate_inputs!(lookup_paths, note, top_n)
 
             entries = retrieve_by_embedding(lookup_paths, note, top_n: top_n)
             ordered = top_n_by_score(entries, top_n)
             { data: serialize_entries(ordered) }.to_json
-        rescue JSON::ParserError, ArgumentError => e
+        rescue JSON::ParserError, RetrievalInputError => e
             status 400
             { error: e.message }.to_json
         end

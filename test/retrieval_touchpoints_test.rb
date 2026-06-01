@@ -36,9 +36,11 @@ refute_includes query_cli, "--mode"
 
 assert_includes query_ui, "const anchor = item.anchor_chunk || {};"
 assert_includes query_ui, "resp.keyword_variants"
+assert_includes query_ui, ".then(parseJsonOrThrow)"
 refute_includes query_ui, "synthesize"
 
 assert_equal 2, graph_ui.scan("fetch(api('/similar')").length
+assert_includes graph_ui, ".then(parseJsonOrThrow)"
 refute_includes graph_ui, "api('/q')"
 refute_includes graph_ui, "api('/q_plus')"
 refute_includes graph_ui, "search-plus-button"
