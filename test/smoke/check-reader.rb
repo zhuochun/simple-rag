@@ -1,4 +1,4 @@
-require_relative "reader"
+require_relative "../../readers/reader"
 
 # check-reader reader filepath
 
@@ -6,7 +6,7 @@ reader_name = ARGV[0]
 file_path = ARGV[1..]&.join(" ")
 
 if reader_name.nil? || reader_name.empty? || file_path.nil? || file_path.empty?
-    STDOUT << "Usage: ruby readers\\check-reader.rb <reader> <filepath>\n"
+    STDOUT << "Usage: ruby test\\smoke\\check-reader.rb <reader> <filepath>\n"
     exit 1
 end
 
