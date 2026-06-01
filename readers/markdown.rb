@@ -161,25 +161,65 @@ class MarkdownReader
     end
 
     def build_index_chunks(title, body, max_tokens = MAX_WORDS)
-        base_chunks = threshold_chunks(body, max_tokens)
+        effective_title, normalized_body, heading_level_offset = normalize_single_heading_1(title, body)
+        content_max_tokens = max_tokens
+        if heading_level_offset == -1
+            content_max_tokens = [max_tokens - count_tokens(effective_title), 1].max
+        end
+        base_chunks = threshold_chunks(normalized_body, content_max_tokens, heading_level_offset)
 
         # If the file only has frontmatter title and no body, still index the title.
         if base_chunks.empty?
-            return [] if title.nil? || title.empty?
-            return [title]
+            return [] if effective_title.nil? || effective_title.empty?
+            return [effective_title]
         end
 
-        if title && !title.empty?
-            base_chunks.map { |chunk| "#{title}\n\n#{chunk}" }
+        if effective_title && !effective_title.empty?
+            base_chunks.map { |chunk| "#{effective_title}\n\n#{chunk}" }
         else
             base_chunks
         end
     end
 
-    def threshold_chunks(text, max_tokens)
+    def normalize_single_heading_1(title, body)
+        return [title, body, 0] if title.nil? || title.empty? || body.nil? || body.empty?
+
+        heading_1_titles = []
+        lines = []
+        fence = nil
+
+        body.each_line do |line|
+            if fence
+                lines << line
+                fence = nil if closing_fence?(line, fence)
+                next
+            end
+
+            opening_fence = parse_opening_fence(line)
+            if opening_fence
+                lines << line
+                fence = opening_fence
+                next
+            end
+
+            heading = parse_heading(line)
+            if heading&.first == 1
+                heading_1_titles << heading.last
+                next
+            end
+
+            lines << line
+        end
+
+        return [title, body, 0] unless heading_1_titles.length == 1
+
+        [heading_1_titles.first, lines.join, -1]
+    end
+
+    def threshold_chunks(text, max_tokens, heading_level_offset = 0)
         return [] if text.nil? || text.empty?
 
-        sections = split_by_headings(text).map { |section| clean_section(section) }
+        sections = split_by_headings(text, heading_level_offset).map { |section| clean_section(section) }
         sections.reject! { |section| section[:text].empty? }
 
         if sections.length <= 1
@@ -220,7 +260,7 @@ class MarkdownReader
         chunks
     end
 
-    def split_by_headings(text)
+    def split_by_headings(text, heading_level_offset = 0)
         lines = text.split("\n")
         sections = []
         heading_path = []
@@ -246,6 +286,7 @@ class MarkdownReader
                 sections << current if section_has_body?(current)
 
                 level, title = heading
+                level = [level + heading_level_offset, 1].max
                 heading_path = heading_path.first(level - 1)
                 heading_path[level - 1] = title
                 current = { heading_path: heading_path.compact, lines: [] }
