@@ -7,8 +7,8 @@ module OllamaService
 
   module_function
 
-  def ensure_started(config, out: STDOUT, wait_seconds: 15)
-    url = ollama_api_url(config)
+  def ensure_started(config, out: STDOUT, wait_seconds: 15, sections: [:embedding, :chat])
+    url = ollama_api_url(config, sections: sections)
     return true unless url
 
     return true if running?(url)
@@ -37,10 +37,14 @@ module OllamaService
     false
   end
 
-  def ollama_api_url(config)
-    urls = []
-    urls << section_url(config, :embedding, "http://127.0.0.1:11434/api/embeddings")
-    urls << section_url(config, :chat, "http://127.0.0.1:11434/api/chat")
+  def ollama_api_url(config, sections: [:embedding, :chat])
+    defaults = {
+      embedding: "http://127.0.0.1:11434/api/embeddings",
+      chat: "http://127.0.0.1:11434/api/chat",
+    }
+    urls = Array(sections).map do |section|
+      section_url(config, section, defaults.fetch(section))
+    end
     urls.compact.first&.then { |url| tags_url(url) }
   end
 

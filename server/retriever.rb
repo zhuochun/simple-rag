@@ -7,6 +7,7 @@ require_relative "cache"
 require_relative "../llm/llm"
 require_relative "../llm/embedding"
 require_relative "../storage/sqlite_index"
+require_relative "retrieval_pipeline"
 
 VECTOR_SEARCH_K = 512
 VECTOR_SEARCH_K_MIN = 64
@@ -188,32 +189,6 @@ def extract_url(file_path, url)
     end
 end
 
-VARIANT_PROMPT = <<~PROMPT
-Generate 6 short keyword variants for exact keyword matching in markdown.
-
-Rules:
-- Keep the same intent as the user input.
-- Output exactly 6 terms:
-  - 3 Chinese terms, each 1 to 6 characters.
-  - 3 English terms, each 1 to 3 words.
-- Prefer concrete nouns, names, acronyms, and likely terms from docs.
-- Terms must be distinct and useful for search.
-- Output one CSV line only in this order:
-  zh_term1, zh_term2, zh_term3, en_term1, en_term2, en_term3
-- No numbering, no bullets, no quotes, no extra text.
-PROMPT
-
-def expand_variants(q)
-    msgs = [
-        { role: ROLE_SYSTEM, content: VARIANT_PROMPT },
-        { role: ROLE_USER, content: q },
-    ]
-
-    variants = chat(msgs).split(',').map(&:strip).reject(&:empty?).uniq.first(6)
-    retrieve_progress("Expand variants: #{variants}\n")
-    variants
-end
-
 def retrieve_by_text(lookup_paths, query_or_queries, store_cache: nil, top_n: nil, parallel: true, phrase: false)
     queries = normalize_search_terms(query_or_queries)
     return [] if queries.empty?
@@ -244,4 +219,19 @@ def retrieve_by_text(lookup_paths, query_or_queries, store_cache: nil, top_n: ni
     end
 
     entries
+end
+
+def cached_embedding(query)
+    CACHE.get_or_set(query, method(:embedding).to_proc)
+end
+
+def build_retriever
+    Retriever.new(
+        planner: QueryPlanner.new(chat_fn: method(:chat)),
+        executor: RetrievalExecutor.new(
+            embedding_fn: method(:cached_embedding),
+            id_fn: method(:extract_id),
+            url_fn: method(:extract_url)
+        )
+    )
 end

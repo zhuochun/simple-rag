@@ -7,11 +7,10 @@ module ProviderEnvValidator
 
   module_function
 
-  def missing_key_message(config)
-    providers = [
-      provider_name(config, :chat),
-      provider_name(config, :embedding),
-    ].compact.map(&:downcase).uniq
+  def missing_key_message(config, sections: [:chat, :embedding])
+    providers = Array(sections).filter_map do |section|
+      provider_name(config, section)
+    end.map(&:downcase).uniq
 
     providers.each do |provider|
       env_key = REQUIRED_ENV_BY_PROVIDER[provider]

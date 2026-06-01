@@ -66,7 +66,7 @@
             padding: 0 10px;
             box-sizing: border-box;
         }
-        #search-button, #search-plus-button, #reset-view-button {
+        #search-button, #reset-view-button {
             height: 38px;
             border: 1px solid #cbd5e1;
             border-radius: 6px;
@@ -74,7 +74,7 @@
             background: white;
             cursor: pointer;
         }
-        #search-button:hover, #search-plus-button:hover, #reset-view-button:hover {
+        #search-button:hover, #reset-view-button:hover {
             background: #f1f5f9;
         }
         #workspace {
@@ -198,16 +198,6 @@
             border-radius: 4px;
             padding: 1px 4px;
         }
-        #search-plus-output {
-            width: 100%;
-            display: none;
-            font-size: 12px;
-            color: #475569;
-            margin-top: 2px;
-        }
-        #search-plus-output.show {
-            display: block;
-        }
         @media (max-width: 980px) {
             #workspace {
                 grid-template-columns: 1fr;
@@ -245,10 +235,8 @@
     <div id="controls">
         <input type="text" id="search-input" placeholder="Enter your search query">
         <button id="search-button">Search</button>
-        <button id="search-plus-button">Search+</button>
         <button id="reset-view-button">Reset View</button>
         <ul id="paths-list"></ul>
-        <div id="search-plus-output"></div>
     </div>
     <div id="workspace">
         <div id="graph-wrapper">
@@ -288,7 +276,6 @@
         const pathsList = document.getElementById('paths-list');
         const searchInput = document.getElementById('search-input');
         const searchButton = document.getElementById('search-button');
-        const searchPlusButton = document.getElementById('search-plus-button');
         const resetViewButton = document.getElementById('reset-view-button');
         const graphWrapper = document.getElementById('graph-wrapper');
         const canvas = document.getElementById('graph-canvas');
@@ -299,7 +286,6 @@
         const pinNodeButton = document.getElementById('pin-node-button');
         const focusNodeButton = document.getElementById('focus-node-button');
         const openNodeButton = document.getElementById('open-node-button');
-        const searchPlusOutput = document.getElementById('search-plus-output');
 
         const ctx = canvas.getContext('2d');
         const nodes = new Map();
@@ -983,18 +969,10 @@
 
             const node = selected[0];
             if (node.type === 'query') {
-                const extra = node.details && node.details.expanded
-                    ? `<div><strong>Expanded:</strong> ${node.details.expanded}</div>`
-                    : '';
-                const variants = node.details && node.details.variants && node.details.variants.length > 0
-                    ? `<div><strong>Variants:</strong> ${node.details.variants.join(', ')}</div>`
-                    : '';
                 inspectorBody.innerHTML = `
                     <div class="meta">
                         <div><strong>Type:</strong> Query</div>
                         <div><strong>Text:</strong> ${node.text}</div>
-                        ${extra}
-                        ${variants}
                     </div>
                 `;
                 return;
@@ -1113,38 +1091,27 @@
             draw();
         }
 
-        function performSearch(url, edgeType) {
+        function performSearch() {
             const query = searchInput.value.trim();
             if (!query) return;
 
             const body = {
-                q: query,
+                note: query,
                 paths: selectedPaths(),
                 topN: 20
             };
 
             setStatus('Searching...');
-            searchPlusOutput.classList.remove('show');
-            searchPlusOutput.textContent = '';
             clearGraphForNewSearch();
 
-            fetch(url, {
+            fetch(api('/similar'), {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(body)
             }).then(resp => resp.json())
               .then(resp => {
-                  const details = {
-                      expanded: resp.expanded || '',
-                      variants: Array.isArray(resp.variants) ? resp.variants : []
-                  };
-                  const queryNode = addQueryNode(query, details);
-                  processSearchResponse(queryNode, resp, edgeType);
-                  if (details.expanded || details.variants.length > 0) {
-                      const variantsText = details.variants.length > 0 ? ` | variants: ${details.variants.join(', ')}` : '';
-                      searchPlusOutput.textContent = `expanded: ${details.expanded || '(none)'}${variantsText}`;
-                      searchPlusOutput.classList.add('show');
-                  }
+                  const queryNode = addQueryNode(query);
+                  processSearchResponse(queryNode, resp, 'query_hit');
               })
               .catch(err => {
                   console.error(err);
@@ -1173,7 +1140,7 @@
                 }
 
                 searchInput.value = note;
-                performSearch(api('/q'), 'query_hit');
+                performSearch();
             } catch (err) {
                 console.error(err);
                 setStatus('Failed to load explore payload');
@@ -1368,8 +1335,7 @@
 
         pathsList.addEventListener('change', draw);
 
-        searchButton.addEventListener('click', () => performSearch(api('/q'), 'query_hit'));
-        searchPlusButton.addEventListener('click', () => performSearch(api('/q_plus'), 'query_hit'));
+        searchButton.addEventListener('click', performSearch);
         resetViewButton.addEventListener('click', resetView);
         expandNodeButton.addEventListener('click', () => {
             const single = selectedNodes();
@@ -1383,7 +1349,7 @@
 
         searchInput.addEventListener('keypress', function(e) {
             if (e.key === 'Enter') {
-                performSearch(api('/q'), 'query_hit');
+                performSearch();
             }
         });
 

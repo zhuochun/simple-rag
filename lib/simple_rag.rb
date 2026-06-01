@@ -11,5 +11,4 @@ end
 require "llm/llm"
 require "readers/reader"
 require "server/retriever"
-require "server/synthesizer"
 require "server/discuss"

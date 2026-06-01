@@ -20,7 +20,6 @@ end
 require "sinatra/base"
 
 require_relative "../server/retriever"
-require_relative "../server/synthesizer"
 require_relative "../server/discuss"
 require_relative "../server/duplicate"
 require_relative "../server/article"
@@ -50,7 +49,7 @@ rescue => e
     exit 1
 end
 
-exit 9 unless OllamaService.ensure_started(CONFIG)
+exit 9 unless OllamaService.ensure_started(CONFIG, sections: [:embedding])
 
 DISMISSED_FILE = CONFIG.dismissedDuplicatesFile
 DISMISSED_CLUSTERS = if DISMISSED_FILE && File.exist?(DISMISSED_FILE)
@@ -114,11 +113,13 @@ rescue ArgumentError, JSON::ParserError, TypeError
     nil
 end
 
-missing_key_msg = ProviderEnvValidator.missing_key_message(CONFIG)
+missing_key_msg = ProviderEnvValidator.missing_key_message(CONFIG, sections: [:embedding])
 if missing_key_msg
     STDOUT << "#{missing_key_msg}\n"
     exit 9
 end
+
+RETRIEVER = build_retriever
 
 begin
     CONFIG.paths.each do |path_cfg|
@@ -206,81 +207,28 @@ class SimpleRagServer < Sinatra::Application
     post "/q" do
         content_type :json
 
-        data = JSON.parse(request.body.read)
-        lookup_paths = resolve_lookup_paths(data["paths"], default_to_search_default: true)
-
-        top_n = (data["topN"] || 20).to_i
-        q = data["q"]
-
-        store_cache = {}
-        embedding_entries = []
-        text_entries = []
         begin
-            embedding_entries = retrieve_by_embedding(lookup_paths, q, store_cache: store_cache, top_n: top_n)
-            text_entries = retrieve_by_text(lookup_paths, q, store_cache: store_cache, top_n: top_n)
-        ensure
-            close_store_cache(store_cache)
+            data = JSON.parse(request.body.read)
+            lookup_paths = resolve_lookup_paths(data["paths"], default_to_search_default: true)
+            RETRIEVER.retrieve_q(lookup_paths, data["q"], top_n: (data["topN"] || 20).to_i).to_json
+        rescue JSON::ParserError, ArgumentError => e
+            status 400
+            { error: e.message }.to_json
         end
-
-        fused = fuse_entries_with_weighted_rrf(
-            [
-                { name: "embedding", entries: embedding_entries, weight: 1.0 },
-                *QueryHelpers.text_fusion_lists(text_entries, name: "bm25", weight: 0.75),
-            ],
-            component_weights: { weighted: 0.7, rrf: 0.3 },
-            rrf_k: 60
-        )
-        ordered = top_n_by_score(fused, top_n)
-        { data: serialize_entries(ordered) }.to_json
     end
 
-    # agentic query - keyword variants for text retrieval
+    # recall-enhanced query with semantic rewrite and keyword variants
     post "/q_plus" do
         content_type :json
 
-        data = JSON.parse(request.body.read)
-        lookup_paths = resolve_lookup_paths(data["paths"], default_to_search_default: true)
-        top_n = (data["topN"] || 20).to_i
-
-        variants = expand_variants(data["q"])
-
-        store_cache = {}
-        base_entries = []
-        original_text_entries = []
-        variant_entries = []
         begin
-            base_entries = retrieve_by_embedding(lookup_paths, data["q"], store_cache: store_cache, top_n: top_n)
-            original_text_entries = retrieve_by_text(lookup_paths, data["q"], store_cache: store_cache, top_n: top_n)
-            variant_entries = retrieve_by_text(lookup_paths, variants, store_cache: store_cache, top_n: top_n, phrase: true) unless variants.empty?
-        ensure
-            close_store_cache(store_cache)
+            data = JSON.parse(request.body.read)
+            lookup_paths = resolve_lookup_paths(data["paths"], default_to_search_default: true)
+            RETRIEVER.retrieve_q_plus(lookup_paths, data["q"], top_n: (data["topN"] || 20).to_i).to_json
+        rescue JSON::ParserError, ArgumentError => e
+            status 400
+            { error: e.message }.to_json
         end
-
-        fused = fuse_entries_with_weighted_rrf(
-            [
-                { name: "base", entries: base_entries, weight: 1.0 },
-                *QueryHelpers.text_fusion_lists(original_text_entries, name: "bm25", weight: 0.75),
-                *QueryHelpers.text_fusion_lists(variant_entries, name: "variants", weight: 0.5),
-            ],
-            component_weights: { weighted: 0.7, rrf: 0.3 },
-            rrf_k: 60
-        )
-        ordered = top_n_by_score(fused, top_n)
-
-        {
-            data: serialize_entries(ordered),
-            variants: variants,
-        }.to_json
-    end
-
-    # synthesize notes into a summary
-    post "/synthesize" do
-        content_type :json
-
-        data = JSON.parse(request.body.read)
-        summary = synthesize_notes(data["notes"])
-
-        { note: summary }.to_json
     end
 
     # generate discussion for a single note
@@ -353,14 +301,20 @@ class SimpleRagServer < Sinatra::Application
     post "/similar" do
         content_type :json
 
-        data = JSON.parse(request.body.read)
-        lookup_paths = resolve_lookup_paths(data["paths"])
-        top_n = (data["topN"] || 3).to_i
+        begin
+            data = JSON.parse(request.body.read)
+            lookup_paths = resolve_lookup_paths(data["paths"])
+            top_n = (data["topN"] || 3).to_i
+            note = data["note"]
+            RETRIEVER.validate_inputs!(lookup_paths, note, top_n)
 
-        entries = retrieve_by_embedding(lookup_paths, data["note"] || "", top_n: top_n)
-        ordered = top_n_by_score(entries, top_n)
-
-        { data: serialize_entries(ordered) }.to_json
+            entries = retrieve_by_embedding(lookup_paths, note, top_n: top_n)
+            ordered = top_n_by_score(entries, top_n)
+            { data: serialize_entries(ordered) }.to_json
+        rescue JSON::ParserError, ArgumentError => e
+            status 400
+            { error: e.message }.to_json
+        end
     end
 
     # list cached article files from jina.cacheDir

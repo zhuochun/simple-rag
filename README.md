@@ -27,15 +27,14 @@ gem install simple-rag-zc
   - Open `http://localhost:4567/q.html` to search/ask from your knowledge bases
     - Use **Search** for standard retrieval
     - Use **Search+** for agentic query expansion and fast text match
-    - Use **Synthesize** to combine retrieved notes
   - Open `http://localhost:4567/duplicate.html` to review duplicate clusters
   - Open `http://localhost:4567/random.html` to explore notes randomly
   - Open `http://localhost:4567/graph.html` to explore search results as a graph
 
 - Run `run-query "your question"` for CLI retrieval (LLM-friendly)
   - `run-query --help` shows usage and all configured `paths` (`name => dir`)
-  - Modes: `--mode embedding` (default), `--mode bm25`, `--mode hybrid`
-  - Default output is concise brief chunks; use `--full` for complete chunk text
+  - Uses the same standard retrieval pipeline as the web UI **Search** action
+  - Default output is concise file results with anchor chunks; use `--full` for complete chunk text and debug details
 
 ## Setup Map Generator
 

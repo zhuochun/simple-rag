@@ -121,13 +121,6 @@
             background: var(--secondary-hover);
             box-shadow: 0 8px 18px rgba(12, 95, 89, 0.28);
         }
-        #synthesize-button {
-            background: #475569;
-        }
-        #synthesize-button:hover {
-            background: #334155;
-            box-shadow: 0 8px 18px rgba(51, 65, 85, 0.24);
-        }
         #status-message {
             min-height: 20px;
             margin-top: 10px;
@@ -315,7 +308,6 @@
                 <input type="text" id="search-input" placeholder="Enter your search query">
                 <button id="search-button" class="btn">Search</button>
                 <button id="search-plus-button" class="btn">Search+</button>
-                <button id="synthesize-button" class="btn">Synthesize</button>
             </div>
             <div id="status-message" aria-live="polite"></div>
         </div>
@@ -329,10 +321,8 @@
             const searchInput = document.getElementById('search-input');
             const searchButton = document.getElementById('search-button');
             const searchPlusButton = document.getElementById('search-plus-button');
-            const synthesizeButton = document.getElementById('synthesize-button');
             const responseContainer = document.getElementById('response-container');
             const statusMessage = document.getElementById('status-message');
-            let retrievedNotes = [];
             let activeQuery = '';
             let startupExplorePayload = null;
 
@@ -439,7 +429,9 @@
             function createResultCard(item) {
                 const card = document.createElement('div');
                 card.className = 'card';
-                card.dataset.note = item.text;
+                const anchor = item.anchor_chunk || {};
+                const note = typeof anchor.text === 'string' ? anchor.text : '';
+                card.dataset.note = note;
 
                 const pathPill = document.createElement('span');
                 pathPill.className = 'path-pill';
@@ -451,7 +443,7 @@
                         <a class="card-link" href="${item.url}">${item.id}</a>
                         <span class="score-pill">Score: ${item.score}</span>
                     </div>
-                    <div class="markdown-content">${marked.parse(item.text)}</div>
+                    <div class="markdown-content">${marked.parse(note)}</div>
                     <div class="card-actions">
                         <button type="button" class="explore-button">Explore</button>
                         <button type="button" class="discuss-button">Discuss</button>
@@ -461,7 +453,7 @@
                 const header = card.querySelector('.card-header');
                 header.prepend(pathPill);
                 card.querySelector('.card-link').addEventListener('click', event => event.stopPropagation());
-                card.querySelector('.explore-button').addEventListener('click', () => openInGraph(item.text));
+                card.querySelector('.explore-button').addEventListener('click', () => openInGraph(note));
                 card.querySelector('.discuss-button').addEventListener('click', () => discussCard(card));
                 return card;
             }
@@ -479,10 +471,15 @@
 
             function renderResults(items, extras = {}) {
                 responseContainer.innerHTML = '';
-                retrievedNotes = [];
 
                 if (extras.variants && extras.variants.length > 0) {
                     responseContainer.appendChild(createMetaCard('Variants:', extras.variants.join(', '), 'variants'));
+                }
+                if (extras.rewrite) {
+                    responseContainer.appendChild(createMetaCard('Semantic rewrite:', extras.rewrite, 'rewrite'));
+                }
+                if (extras.fallback) {
+                    responseContainer.appendChild(createMetaCard('Fallback:', extras.fallback.reason || 'q', 'fallback'));
                 }
 
                 if (!Array.isArray(items) || items.length === 0) {
@@ -492,7 +489,6 @@
 
                 items.forEach(item => {
                     responseContainer.appendChild(createResultCard(item));
-                    retrievedNotes.push(item.text);
                 });
             }
 
@@ -546,7 +542,7 @@
                 .then(response => response.json())
                 .then(resp => {
                     renderResults(resp.data || []);
-                    setStatus('Search complete. You can discuss any card or synthesize all results.');
+                    setStatus('Search complete. You can discuss or explore any card.');
                 })
                 .catch(() => {
                     setStatus('Failed to perform search.', true);
@@ -581,8 +577,12 @@
                 })
                 .then(response => response.json())
                 .then(resp => {
-                    renderResults(resp.data || [], { variants: resp.variants });
-                    setStatus('Search+ complete with original query and keyword variants.');
+                    renderResults(resp.data || [], {
+                        variants: resp.keyword_variants,
+                        rewrite: resp.semantic_rewrite,
+                        fallback: resp.fallback,
+                    });
+                    setStatus(resp.fallback ? 'Search+ fell back to standard search.' : 'Search+ complete with query expansion.');
                 })
                 .catch(() => {
                     setStatus('Failed to perform Search+.', true);
@@ -591,40 +591,6 @@
                 .finally(() => {
                     setSearchButtonsDisabled(false);
                     searchPlusButton.textContent = 'Search+';
-                });
-            }
-
-            function synthesizeNotes() {
-                if (retrievedNotes.length === 0) {
-                    setStatus('Run a search first to synthesize notes.', true);
-                    return;
-                }
-
-                synthesizeButton.disabled = true;
-                synthesizeButton.textContent = 'Synthesizing...';
-                setStatus('Synthesizing retrieved notes...');
-                fetch('http://localhost:4567/synthesize', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                    },
-                    body: JSON.stringify({
-                        notes: retrievedNotes,
-                    })
-                })
-                .then(response => response.json())
-                .then(resp => {
-                    const card = document.createElement('div');
-                    card.className = 'card meta-card';
-                    applyBackgroundColor(card, 'synthesize');
-                    card.innerHTML = `<div class="markdown-content">${marked.parse(resp.note)}</div>`;
-                    responseContainer.prepend(card);
-                    setStatus('Synthesis added at the top of the results.');
-                })
-                .catch(() => setStatus('Error synthesizing notes.', true))
-                .finally(() => {
-                    synthesizeButton.disabled = false;
-                    synthesizeButton.textContent = 'Synthesize';
                 });
             }
 
@@ -663,7 +629,6 @@
 
             searchButton.addEventListener('click', performSearch);
             searchPlusButton.addEventListener('click', performAgentSearch);
-            synthesizeButton.addEventListener('click', synthesizeNotes);
 
             searchInput.addEventListener('keydown', function(e) {
                 if (e.key === 'Enter') {

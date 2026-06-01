@@ -2,6 +2,8 @@ require_relative "openai"
 require_relative "ollama"
 require_relative "gemini"
 require_relative "openrouter"
+require_relative "../lib/ollama_service"
+require_relative "../lib/provider_env_validator"
 
 ROLE_SYSTEM = "system"
 ROLE_USER = "user"
@@ -29,6 +31,8 @@ end
 # Route chat requests based on provider configuration
 
 def chat(messages, opts = {})
+  ensure_chat_provider_ready!
+
   provider = cfg(:chat, 'provider', 'openai').downcase
   case provider
   when 'ollama'
@@ -48,6 +52,14 @@ def chat(messages, opts = {})
     url = cfg(:chat, 'url', 'https://api.openai.com/v1/chat/completions')
     openai_chat(messages, model, url, opts)
   end
+end
+
+def ensure_chat_provider_ready!
+  return unless defined?(CONFIG)
+
+  missing_key = ProviderEnvValidator.missing_key_message(CONFIG, sections: [:chat])
+  raise RuntimeError, missing_key if missing_key
+  raise RuntimeError, "Chat provider is not ready" unless OllamaService.ensure_started(CONFIG, sections: [:chat])
 end
 
 # Route embedding requests based on provider configuration

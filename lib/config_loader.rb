@@ -15,6 +15,7 @@ module ConfigLoader
     config.paths = path_hashes.each_with_index.map do |path_hash, idx|
       normalize_path(OpenStruct.new(path_hash), idx + 1)
     end
+    validate_unique_path_names!(config.paths)
 
     if with_path_map
       config.path_map = {}
@@ -46,7 +47,11 @@ module ConfigLoader
   end
 
   def normalize_path(path, fallback_idx)
-    path_name = path.name || "paths[#{fallback_idx}]"
+    path_name = path.name.to_s.strip
+    if path_name.empty?
+      raise ArgumentError, %(Path "paths[#{fallback_idx}]" must set a non-empty "name".)
+    end
+    path.name = path_name
     db_file, db_table = parse_db_target(path.db, path_name)
     path.db_file = db_file
     path.db_table = db_table
@@ -56,5 +61,16 @@ module ConfigLoader
     end
 
     path
+  end
+
+  def validate_unique_path_names!(paths)
+    seen = {}
+    paths.each do |path|
+      if seen[path.name]
+        raise ArgumentError, %(Duplicate path name "#{path.name}". Path names must be unique.)
+      end
+
+      seen[path.name] = true
+    end
   end
 end
