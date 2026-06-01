@@ -39,9 +39,6 @@ from .labels import (
     label_key,
     map_snippet,
 )
-from .readers import get_reader
-
-
 MAP_WIDTH = 2600
 MAP_HEIGHT = 1700
 MAP_MARGIN = 140
@@ -117,11 +114,7 @@ def map_layout_iterations(config: Config) -> int:
 def load_all_notes(paths: list[PathConfig]) -> list[dict[str, Any]]:
     all_notes: list[dict[str, Any]] = []
     for path_cfg in paths:
-        reader_cls = get_reader(path_cfg.reader)
-        if reader_cls is None:
-            print(f'Skip "{path_cfg.name}": unknown reader "{path_cfg.reader}"')
-            continue
-        notes = read_sqlite_path(path_cfg, reader_cls) if path_cfg.db_file and path_cfg.db_table else read_jsonl_path(path_cfg, reader_cls)
+        notes = read_sqlite_path(path_cfg)
         print(f'Loaded {len(notes)} notes from "{path_cfg.name}"')
         all_notes.extend(notes)
     return all_notes
@@ -145,34 +138,7 @@ def extract_url(file_path: str, url_prefix: str | None) -> str:
     return f"file://{file_path}"
 
 
-def read_jsonl_path(path_cfg: PathConfig, reader_cls: type) -> list[dict[str, Any]]:
-    index_file = Path(str(path_cfg.out)).expanduser()
-    if not index_file.exists():
-        return []
-    file_cache: dict[str, Any] = {}
-    notes: list[dict[str, Any]] = []
-    with index_file.open("r", encoding="utf-8", errors="replace") as fh:
-        for idx, line in enumerate(fh):
-            try:
-                row = json.loads(line)
-                emb = safe_float_array(row["embedding"])
-                chunk_idx = int(row["chunk"])
-                file_path = row["path"]
-                reader = file_cache.get(file_path)
-                if reader is None:
-                    reader = reader_cls(file_path).load()
-                    file_cache[file_path] = reader
-                text = reader.get_chunk(chunk_idx)
-                if text is None or not str(text).strip():
-                    continue
-                notes.append(_note_from_row(path_cfg, row, file_path, chunk_idx, text, emb))
-            except Exception as exc:
-                print(f"[{path_cfg.name}] JSONL line {idx + 1} skipped: {exc.__class__.__name__}: {exc}")
-    return notes
-
-
-def read_sqlite_path(path_cfg: PathConfig, reader_cls: type) -> list[dict[str, Any]]:
-    file_cache: dict[str, Any] = {}
+def read_sqlite_path(path_cfg: PathConfig) -> list[dict[str, Any]]:
     notes: list[dict[str, Any]] = []
     conn = sqlite3.connect(str(path_cfg.db_file))
     conn.row_factory = sqlite3.Row
@@ -182,12 +148,6 @@ def read_sqlite_path(path_cfg: PathConfig, reader_cls: type) -> list[dict[str, A
             file_path = row["path"]
             chunk_idx = int(row["chunk"])
             text = row["text"]
-            if text is None:
-                reader = file_cache.get(file_path)
-                if reader is None:
-                    reader = reader_cls(file_path).load()
-                    file_cache[file_path] = reader
-                text = reader.get_chunk(chunk_idx)
             if text is None or not str(text).strip():
                 continue
             notes.append(_note_from_row(path_cfg, row, file_path, chunk_idx, text, safe_float_array(row["embedding"])))

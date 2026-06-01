@@ -14,7 +14,6 @@ TABLE_NAME_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 class PathConfig:
     name: str
     reader: str | None
-    out: str | None
     db_file: str | None
     db_table: str | None
     url: str | None
@@ -169,13 +168,11 @@ def _bool_config(raw: Any) -> bool:
 def _normalize_path(raw: dict[str, Any], fallback_idx: int) -> PathConfig:
     name = str(raw.get("name") or f"paths[{fallback_idx}]")
     db_file, db_table = _parse_db(raw.get("db"), name)
-    out = str(raw.get("out")) if raw.get("out") is not None else None
-    if not out and not db_file:
-        raise ValueError(f'Path "{name}" must set either "out" or "db".')
+    if not db_file:
+        raise ValueError(f'Path "{name}" must set "db".')
     return PathConfig(
         name=name,
         reader=str(raw.get("reader")) if raw.get("reader") is not None else None,
-        out=out,
         db_file=db_file,
         db_table=db_table,
         url=str(raw.get("url")) if raw.get("url") is not None else None,

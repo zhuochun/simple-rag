@@ -11,7 +11,7 @@ from .config import PathConfig
 def load_indexed_notes(paths: list[PathConfig]) -> list[dict[str, Any]]:
     notes: list[dict[str, Any]] = []
     for path_cfg in paths:
-        loaded = _load_sqlite(path_cfg) if path_cfg.db_file and path_cfg.db_table else _load_jsonl(path_cfg)
+        loaded = _load_sqlite(path_cfg)
         for note in loaded:
             note["index"] = len(notes)
             notes.append(note)
@@ -39,22 +39,6 @@ def _load_sqlite(path_cfg: PathConfig) -> list[dict[str, Any]]:
     return notes
 
 
-def _load_jsonl(path_cfg: PathConfig) -> list[dict[str, Any]]:
-    out = Path(str(path_cfg.out)).expanduser()
-    if not out.exists():
-        return []
-    notes = []
-    with out.open("r", encoding="utf-8", errors="replace") as fh:
-        for line_no, line in enumerate(fh, start=1):
-            if not line.strip():
-                continue
-            try:
-                notes.append(_note_from_row(path_cfg, json.loads(line)))
-            except Exception as exc:
-                print(f"[{path_cfg.name}] JSONL line {line_no} skipped: {exc.__class__.__name__}: {exc}")
-    return notes
-
-
 def parse_embedding(raw: Any) -> list[float]:
     if isinstance(raw, list):
         values = raw
@@ -69,8 +53,6 @@ def _note_from_row(path_cfg: PathConfig, row: Any) -> dict[str, Any]:
     file_path = str(_row_get(row, "path"))
     chunk = int(_row_get(row, "chunk"))
     text = str(_row_get(row, "text", "") or "")
-    if not text.strip():
-        text = _source_text_chunk(path_cfg, file_path, chunk)
     return {
         "index": -1,
         "lookup": path_cfg.name,
@@ -91,20 +73,6 @@ def _row_get(row: Any, key: str, default: Any = None) -> Any:
         return row[key]
     except (KeyError, IndexError):
         return default
-
-
-def _source_text_chunk(path_cfg: PathConfig, file_path: str, chunk: int) -> str:
-    try:
-        from simple_rag_map.readers import get_reader
-
-        reader_cls = get_reader(path_cfg.reader)
-        if reader_cls is not None:
-            text = reader_cls(file_path).load().get_chunk(chunk)
-            if text:
-                return str(text)
-    except Exception as exc:
-        print(f"[{path_cfg.name}] failed to load source chunk {file_path}#{chunk}: {exc.__class__.__name__}: {exc}")
-    return ""
 
 
 def _title(file_path: str) -> str:

@@ -15,7 +15,6 @@ DB_FORMAT = '"sqlite_file_path@table_name"'
 class PathConfig:
     name: str
     reader: str | None
-    out: str | None
     db: str | None
     db_file: str | None
     db_table: str | None
@@ -78,16 +77,12 @@ def _normalize_path(path_raw: dict[str, Any], fallback_idx: int) -> PathConfig:
     path_name = path_raw.get("name") or f"paths[{fallback_idx}]"
     db_file, db_table = parse_db_target(path_raw.get("db"), path_name)
 
-    out = path_raw.get("out")
-    has_out = out is not None and str(out).strip() != ""
-    has_db = db_file is not None
-    if not has_out and not has_db:
-        raise ValueError(f'Path "{path_name}" must set either "out" or "db".')
+    if db_file is None:
+        raise ValueError(f'Path "{path_name}" must set "db".')
 
     return PathConfig(
         name=str(path_name),
         reader=path_raw.get("reader"),
-        out=str(out) if out is not None else None,
         db=str(path_raw.get("db")) if path_raw.get("db") is not None else None,
         db_file=db_file,
         db_table=db_table,
