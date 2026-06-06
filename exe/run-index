@@ -4,7 +4,7 @@
 # Index all markdown files in configured SQLite tables.
 #
 # Usage:
-#   run-index [--allow-empty-prune] [config.json]
+#   run-index [--allow-empty-prune] [--non-interactive] [config.json]
 #
 # Requires provider API keys for configured providers.
 
@@ -29,21 +29,32 @@ require_relative "../storage/sqlite_index"
 
 def usage_text
   <<~USAGE
-    Usage: run-index [--allow-empty-prune] [config.json]
+    Usage: run-index [--allow-empty-prune] [--non-interactive] [config.json]
 
     Options:
       --allow-empty-prune  Allow deleting stale rows when a path scan returns zero files.
+      --non-interactive    Print only the final indexing summary.
       -h, --help           Show this help.
   USAGE
 end
 
+def summary_line(found:, created:, skipped:, errors:)
+  "Found: #{found}, Created: #{created}, Skipped: #{skipped}, Errors: #{errors}"
+end
+
+def path_summary_line(path_name, found:, created:, skipped:, errors:)
+  "#{path_name}: Found #{found} files | Created: #{created}, Skipped: #{skipped}, Errors: #{errors} chunks"
+end
+
 def parse_cli_args(argv)
-  opts = { allow_empty_prune: false, config_arg: nil }
+  opts = { allow_empty_prune: false, non_interactive: false, config_arg: nil }
 
   argv.each do |arg|
     case arg
     when "--allow-empty-prune"
       opts[:allow_empty_prune] = true
+    when "--non-interactive"
+      opts[:non_interactive] = true
     when "-h", "--help"
       STDOUT << usage_text
       exit 0
@@ -70,25 +81,43 @@ end
 
 config_file = ConfigPathResolver.resolve_config_path(cli[:config_arg])
 unless config_file
-  STDOUT << "#{ConfigPathResolver.default_search_message}\n"
+  if cli[:non_interactive]
+    STDOUT << summary_line(found: 0, created: 0, skipped: 0, errors: 1) << "\n"
+  else
+    STDOUT << "#{ConfigPathResolver.default_search_message}\n"
+  end
   exit 1
 end
 
 begin
   CONFIG = ConfigLoader.load_config(config_file)
 rescue => e
-  STDOUT << "Config error: #{e.message}\n"
+  if cli[:non_interactive]
+    STDOUT << summary_line(found: 0, created: 0, skipped: 0, errors: 1) << "\n"
+  else
+    STDOUT << "Config error: #{e.message}\n"
+  end
   exit 1
 end
 
-STDOUT << "Using config: #{config_file}\n"
-STDOUT << "allow_empty_prune=#{cli[:allow_empty_prune]}\n"
+unless cli[:non_interactive]
+  STDOUT << "Using config: #{config_file}\n"
+  STDOUT << "allow_empty_prune=#{cli[:allow_empty_prune]}\n"
+end
 
-exit 9 unless OllamaService.ensure_started(CONFIG)
+service_output = cli[:non_interactive] ? StringIO.new : STDOUT
+unless OllamaService.ensure_started(CONFIG, out: service_output)
+  STDOUT << summary_line(found: 0, created: 0, skipped: 0, errors: 1) << "\n" if cli[:non_interactive]
+  exit 9
+end
 
 missing_key_msg = ProviderEnvValidator.missing_key_message(CONFIG)
 if missing_key_msg
-  STDOUT << "#{missing_key_msg}\n"
+  if cli[:non_interactive]
+    STDOUT << summary_line(found: 0, created: 0, skipped: 0, errors: 1) << "\n"
+  else
+    STDOUT << "#{missing_key_msg}\n"
+  end
   exit 9
 end
 
@@ -130,7 +159,7 @@ def index_path_sqlite(path, out, status_cb, log_cb, allow_empty_prune:)
   indexed_files = 0
 
   out << "Building index @#{Time.now}\n["
-  status_cb.call("Indexing files, created=0, skipped=0, errors=0")
+  status_cb.call(path_summary_line(path.name, found: 0, created: 0, skipped: 0, errors: 0))
   skipped = 0
   created = 0
   scanned_files = Set.new
@@ -139,7 +168,7 @@ def index_path_sqlite(path, out, status_cb, log_cb, allow_empty_prune:)
     files.each do |file|
       indexed_files += 1
       scanned_files.add(file)
-      status_cb.call("Indexing #{indexed_files} files, created=#{created}, skipped=#{skipped}, errors=#{error_count}")
+      status_cb.call(path_summary_line(path.name, found: indexed_files, created: created, skipped: skipped, errors: error_count))
       begin
         # Readers own chunking through ChunkUtils; indexing persists their chunks unchanged.
         chunks = reader_class.new(file).load.chunks
@@ -236,7 +265,7 @@ def index_path_sqlite(path, out, status_cb, log_cb, allow_empty_prune:)
 
     if indexed_files == 0 && !allow_empty_prune
       out << "Empty scan guard: skipping stale prune for #{path.name}. Re-run with --allow-empty-prune to allow pruning on empty scan.\n"
-      status_cb.call("Empty scan guard active; prune skipped")
+      status_cb.call(path_summary_line(path.name, found: indexed_files, created: created, skipped: skipped, errors: error_count))
       prune_skipped = true
     end
 
@@ -254,7 +283,7 @@ def index_path_sqlite(path, out, status_cb, log_cb, allow_empty_prune:)
   end
 
   out << "]\nDone @#{Time.now}, Created: #{created}, Skipped: #{skipped}, Errors: #{error_count}\n"
-  status_cb.call("Done. created=#{created}, skipped=#{skipped}, errors=#{error_count}")
+  status_cb.call(path_summary_line(path.name, found: indexed_files, created: created, skipped: skipped, errors: error_count))
   { created: created, skipped: skipped, errors: error_count, files: indexed_files, prune_skipped: prune_skipped }
 end
 
@@ -266,41 +295,53 @@ def index_path(path, out, status_cb, log_cb, allow_empty_prune:)
   index_path_sqlite(path, out, status_cb, log_cb, allow_empty_prune: allow_empty_prune)
 end
 
+interactive_status = STDOUT.tty? && !cli[:non_interactive]
 status_mutex = Mutex.new
 status_map = {}
-log_lines = []
 
-status_cb = lambda do |name, msg|
-  status_mutex.synchronize { status_map[name] = msg }
-end
-
-log_cb = lambda do |line|
-  status_mutex.synchronize do
-    log_lines << line
-    log_lines.shift while log_lines.length > 20
+status_cb =
+  if interactive_status
+    lambda do |name, msg|
+      status_mutex.synchronize { status_map[name] = msg }
+    end
+  else
+    ->(_name, _msg) {}
   end
-end
 
+log_cb = ->(_line) {}
+printer_stop = false
 printer = Thread.new do
-  next unless STDOUT.tty?
+  next unless interactive_status
+
+  previous_lines = []
   loop do
     lines = nil
-    logs = nil
     status_mutex.synchronize do
-      lines = status_map.map { |k, v| "#{k}: #{v}" }
-      logs = log_lines.dup
+      lines = status_map.values
     end
-    STDOUT << "\e[2J\e[H"
-    STDOUT << "Index status (live)\n"
-    lines.each { |l| STDOUT << l << "\n" }
-    STDOUT << "\nRecent errors\n"
-    if logs.empty?
-      STDOUT << "(none)\n"
-    else
-      logs.each { |l| STDOUT << l << "\n" }
+
+    render_lines = lines.empty? ? ["Indexing..."] : lines
+    if render_lines != previous_lines
+      if previous_lines.any?
+        STDOUT << "\r"
+        STDOUT << "\e[#{previous_lines.length - 1}F" if previous_lines.length > 1
+      end
+
+      padded_lines = render_lines.each_with_index.map do |line, idx|
+        line.ljust([line.length, previous_lines[idx].to_s.length].max)
+      end
+
+      padded_lines.each_with_index do |line, idx|
+        STDOUT << "\e[2K" << line
+        STDOUT << "\n" unless idx == padded_lines.length - 1
+      end
+      STDOUT.flush
+      previous_lines = padded_lines
+      Thread.current[:status_lines] = previous_lines
     end
-    STDOUT.flush
-    sleep 0.2
+
+    break if printer_stop
+    sleep 0.25
   end
 end
 
@@ -310,7 +351,7 @@ threads = CONFIG.paths.map do |path|
     failed = false
     summary = nil
     begin
-      status_cb.call(path.name, "Starting")
+      status_cb.call(path.name, "#{path.name}: Starting")
       summary = index_path(
         path,
         buffer,
@@ -328,19 +369,57 @@ threads = CONFIG.paths.map do |path|
       Thread.current[:path_name] = path.name
       Thread.current[:failed] = failed
       Thread.current[:summary] = summary
-      status_cb.call(path.name, failed ? "Failed" : "Finished")
+      if failed
+        status_cb.call(path.name, "#{path.name}: Failed")
+      elsif summary
+        status_cb.call(path.name, path_summary_line(path.name, found: summary[:files].to_i, created: summary[:created].to_i, skipped: summary[:skipped].to_i, errors: summary[:errors].to_i))
+      else
+        status_cb.call(path.name, "#{path.name}: Finished")
+      end
     end
   end
 end
 
 threads.each(&:join)
-printer.kill if printer&.alive?
+printer_stop = true
+printer.join
+if interactive_status
+  status_lines = printer[:status_lines] || []
+  if status_lines.any?
+    STDOUT << "\r"
+    STDOUT << "\e[#{status_lines.length - 1}F" if status_lines.length > 1
+    status_lines.each_with_index do |_line, idx|
+      STDOUT << "\e[2K"
+      STDOUT << "\n" unless idx == status_lines.length - 1
+    end
+    STDOUT << "\e[#{status_lines.length - 1}F" if status_lines.length > 1
+    STDOUT << "\r"
+  end
+end
 
-threads.each do |t|
-  name = t[:path_name] || "path"
-  STDOUT << "\n=== Index output: #{name} ===\n"
-  STDOUT << (t[:output] || "")
-  STDOUT << "\n=== End: #{name} ===\n"
+unless cli[:non_interactive]
+  threads.each do |thread|
+    next unless thread[:failed]
+
+    output = thread[:output].to_s
+    next if output.empty?
+
+    STDOUT << "\n#{thread[:path_name] || 'path'} errors:\n"
+    STDOUT << output
+  end
+end
+
+threads.each do |thread|
+  summary = thread[:summary]
+  next unless summary
+
+  STDOUT << path_summary_line(
+    thread[:path_name] || "path",
+    found: summary[:files].to_i,
+    created: summary[:created].to_i,
+    skipped: summary[:skipped].to_i,
+    errors: summary[:errors].to_i
+  ) << "\n"
 end
 
 failed_paths = threads.filter_map do |t|
@@ -349,6 +428,6 @@ failed_paths = threads.filter_map do |t|
 end
 
 if failed_paths.any?
-  STDOUT << "\nIndex completed with failures: #{failed_paths.join(', ')}\n"
+  STDOUT << "Failed paths: #{failed_paths.join(', ')}\n" unless cli[:non_interactive]
   exit 1
 end
