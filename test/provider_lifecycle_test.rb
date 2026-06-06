@@ -31,6 +31,15 @@ end
 
 assert_equal nil, OllamaService.ollama_api_url(config, sections: [:embedding])
 assert_equal "http://127.0.0.1:11434/api/tags", OllamaService.ollama_api_url(config, sections: [:chat])
+assert_equal "RuntimeError: first line", OllamaService.concise_error(RuntimeError.new("first line\nsecond line"))
+
+original_ollama_exe = ENV["OLLAMA_EXE"]
+begin
+  ENV["OLLAMA_EXE"] = __FILE__
+  assert_equal File.expand_path(__FILE__), File.expand_path(OllamaService.executable_path)
+ensure
+  ENV["OLLAMA_EXE"] = original_ollama_exe
+end
 
 chat_config = OpenStruct.new(
   embedding: OpenStruct.new(provider: "ollama"),
