@@ -297,7 +297,7 @@ class RetrievalPipelineTest
 
   def test_query_helpers_compact_file_results_keep_only_locator_fields
     files = [{
-      path: "talks/example.md",
+      path: "talks\\example.md",
       id: "example",
       lookup: "talks",
       url: "https://example.test/example",
@@ -308,12 +308,23 @@ class RetrievalPipelineTest
         text: "Relevant text with extra context",
         sources: ["vec:original"],
       },
-      matched_chunks: [],
+      matched_chunks: [
+        { text: "Relevant text with extra context" },
+        { text: "x" * 305 },
+      ],
       source_summary: {},
     }]
 
     assert_equal(
-      [{ path: "talks/example.md", score: 0.1235, chunk: 2, text: "Relevant text..." }],
+      [{
+        path: "talks",
+        file: "talks/example.md",
+        score: 0.1235,
+        matched_chunks: [
+          "Relevant text...",
+          ("x" * 13) + "...",
+        ],
+      }],
       QueryHelpers.compact_file_results(files, brief_chars: 16)
     )
   end

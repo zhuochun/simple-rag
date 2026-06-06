@@ -33,11 +33,15 @@ refute_includes server, 'post "/read_url"'
 refute_includes server, 'post "/synthesize"'
 
 assert_includes query_cli, "build_retriever.retrieve_q(lookup_paths, query"
-assert_includes query_cli, "QueryHelpers.compact_file_results(payload[:data]"
+assert_includes query_cli, "QueryHelpers.compact_file_results(payload[:data], brief_chars: options[:brief_chars])"
 assert_includes query_cli, "JSON.pretty_generate(concise ? payload[:data] : payload)"
 refute_includes query_cli, "--mode"
 
 assert_includes index_cli, "Readers own chunking through ChunkUtils"
+assert_includes index_cli, '"--non-interactive"'
+assert_includes index_cli, 'path_summary_line(path.name, found: indexed_files, created: created, skipped: skipped, errors: error_count)'
+refute_includes index_cli, "summary_line(**totals)"
+refute_includes index_cli, '"\\e[2J\\e[H"'
 refute_includes index_cli, "normalize_index_chunks"
 refute_includes index_cli, "INDEX_MAX_EMBED_TOKENS"
 

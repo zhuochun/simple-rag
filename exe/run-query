@@ -179,7 +179,7 @@ end
 
 payload[:concise] = options[:concise]
 payload[:limit] = options[:limit]
-payload[:data] = QueryHelpers.compact_file_results(payload[:data], brief_chars: options[:brief_chars]) if options[:concise]
+  payload[:data] = QueryHelpers.compact_file_results(payload[:data], brief_chars: options[:brief_chars]) if options[:concise]
 payload[:paths] = lookup_paths.map { |path| { name: path.name, dir: path.dir } } unless options[:concise]
 
 print_output(options[:format], payload, options[:concise])

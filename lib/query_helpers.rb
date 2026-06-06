@@ -1,5 +1,5 @@
 module QueryHelpers
-  DEFAULT_BRIEF_CHARS = 220
+  DEFAULT_BRIEF_CHARS = 300
 
   module_function
 
@@ -56,14 +56,19 @@ module QueryHelpers
     end
   end
 
-  def compact_file_results(files, brief_chars: DEFAULT_BRIEF_CHARS)
+  def compact_file_results(files, lookup_paths: nil, brief_chars: DEFAULT_BRIEF_CHARS)
     Array(files).map do |file|
-      anchor = file[:anchor_chunk] || {}
+      matched_chunks = Array(file[:matched_chunks]).filter_map do |chunk|
+        text = chunk[:text] || chunk["text"]
+        compact = brief_text(text, max_chars: brief_chars)
+        compact unless compact.empty?
+      end
+
       {
-        path: file[:path],
+        path: file[:lookup],
+        file: concise_file_path(file[:path]),
         score: file[:score].to_f.round(4),
-        chunk: anchor[:chunk],
-        text: brief_text(anchor[:text], max_chars: brief_chars),
+        matched_chunks: matched_chunks,
       }
     end
   end
@@ -79,5 +84,21 @@ module QueryHelpers
 
   def sort_score(item)
     item.fetch("_sort_score", item["score"] || 0.0).to_f
+  end
+
+  def concise_file_path(file_path)
+    absolute_file = File.expand_path(file_path.to_s)
+    normalized_file = normalize_path(absolute_file)
+    normalized_pwd = normalize_path(Dir.pwd)
+    return normalized_file if normalized_file == normalized_pwd
+
+    prefix = "#{normalized_pwd}/"
+    return normalized_file.delete_prefix(prefix) if normalized_file.start_with?(prefix)
+
+    normalized_file
+  end
+
+  def normalize_path(path)
+    path.to_s.tr("\\", "/")
   end
 end
