@@ -3,11 +3,12 @@
 
 # Query and answer questions based on SQLite indexes.
 #
-# Usage: run-server config.json
+# Usage: run-server [config.json] [--bind HOSTNAME] [--port PORT]
 #
 # Requires provider API keys for configured providers.
 
 require "json"
+require "optparse"
 require "set"
 require "pathname"
 begin
@@ -29,8 +30,32 @@ require_relative "../lib/ollama_service"
 require_relative "../lib/provider_env_validator"
 require_relative "../lib/query_helpers"
 
+options = {
+    bind: nil,
+    port: nil,
+}
+
+parser = OptionParser.new do |opts|
+    opts.banner = "Usage: run-server [config.json] [--bind HOSTNAME] [--port PORT]"
+
+    opts.on("--bind HOSTNAME", "Bind the server to a specific hostname or IP address") do |host|
+        options[:bind] = host
+    end
+
+    opts.on("--port PORT", Integer, "Bind the server to a specific port") do |port|
+        options[:port] = port
+    end
+end
+
+begin
+    parser.parse!(ARGV)
+rescue OptionParser::ParseError => e
+    STDOUT << "#{e.message}\n#{parser}\n"
+    exit 1
+end
+
 if ARGV.length > 1
-    STDOUT << "Invalid arguments received, expected at most one config file path\n"
+    STDOUT << "Invalid arguments received, expected at most one config file path\n#{parser}\n"
     exit 1
 end
 
@@ -390,4 +415,8 @@ class SimpleRagServer < Sinatra::Application
 
 end
 
-SimpleRagServer.run!
+run_options = {}
+run_options[:bind] = options[:bind] if options[:bind]
+run_options[:port] = options[:port] if options[:port]
+
+SimpleRagServer.run!(run_options)
