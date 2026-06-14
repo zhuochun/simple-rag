@@ -346,8 +346,8 @@ Retrieve more chunks than the requested file count so aggregation has enough
 evidence:
 
 ```ruby
-vector_candidate_depth = clamp(top_n * 12, min: 64, max: 512)
-bm25_candidate_depth = clamp(top_n * 20, min: 100, max: 800)
+vector_candidate_depth = clamp(top_n * 6, min: 64, max: 512)
+bm25_candidate_depth = clamp(top_n * 10, min: 100, max: 800)
 ```
 
 ### Shared input validation
@@ -864,13 +864,13 @@ LIST_WEIGHTS_Q_PLUS = {
 ORIGINAL_QUERY_PHRASE_MAX_TOKENS = 5
 
 VECTOR_CANDIDATE_DEPTH = {
-  multiplier: 12,
+  multiplier: 6,
   min: 64,
   max: 512
 }
 
 BM25_CANDIDATE_DEPTH = {
-  multiplier: 20,
+  multiplier: 10,
   min: 100,
   max: 800
 }

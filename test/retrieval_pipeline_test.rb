@@ -10,14 +10,20 @@ class RetrievalPipelineTest
   Path = Struct.new(:name, :db_file, :db_table, :url, :threshold, keyword_init: true)
 
   class FakeStore
+    attr_reader :closed, :vector_limits, :text_limits
+
     def initialize(vector_rows: [], text_rows: [], tracker: nil, delay: 0)
       @vector_rows = vector_rows
       @text_rows = text_rows
       @tracker = tracker
       @delay = delay
+      @closed = false
+      @vector_limits = []
+      @text_limits = []
     end
 
-    def vector_search(_embedding, _limit)
+    def vector_search(_embedding, limit)
+      @vector_limits << limit
       tracked { @vector_rows.map(&:dup) }
     end
 
@@ -25,10 +31,12 @@ class RetrievalPipelineTest
       raise "missing BM25 limit" unless limit
       raise "expected boolean phrase flag" unless phrase == true || phrase == false
 
+      @text_limits << limit
       tracked { @text_rows.map(&:dup) }
     end
 
     def close
+      @closed = true
     end
 
     private
@@ -39,6 +47,12 @@ class RetrievalPipelineTest
       yield
     ensure
       @tracker&.leave
+    end
+  end
+
+  class FailingStore < FakeStore
+    def vector_search(_embedding, _limit)
+      raise "broken connection"
     end
   end
 
@@ -214,6 +228,123 @@ class RetrievalPipelineTest
     assert_equal 2, tracker.store_ids.uniq.length
     assert_operator tracker.max_active, :<=, 2
     assert_operator tracker.max_active, :>, 1
+  end
+
+  def test_executor_reuses_connections_across_queries
+    stores = []
+    factory = lambda do |_path|
+      FakeStore.new(
+        vector_rows: [row("a.md", 0, 0.9)],
+        text_rows: [row("a.md", 0, 2.0)],
+        delay: 0.02
+      ).tap do |store|
+        stores << store
+      end
+    end
+    executor = RetrievalExecutor.new(
+      embedding_fn: ->(_query) { [1.0, 0.0] },
+      id_fn: ->(value) { value },
+      url_fn: ->(value, _base) { value },
+      store_factory: factory,
+      threads_max: 2
+    )
+    plan = QueryPlan.new(
+      original_query: "alpha",
+      semantic_rewrite: nil,
+      keyword_variants: [],
+      lists: [
+        { name: "vec:original", backend: "vector", query_type: "original", query: "alpha", weight: 1.2 },
+        { name: "bm25:phrase", backend: "bm25", query_type: "original", query: "alpha", phrase: true, weight: 1.2 },
+      ]
+    )
+
+    2.times { executor.execute_plan(plan, [path("docs")], top_n: 5) }
+
+    assert_equal 2, stores.length
+    executor.close
+    assert_equal true, stores.all?(&:closed)
+  end
+
+  def test_executor_accepts_candidate_depth_overrides
+    store = FakeStore.new(vector_rows: [row("a.md", 0, 0.9)], text_rows: [row("a.md", 0, 2.0)])
+    executor = RetrievalExecutor.new(
+      embedding_fn: ->(_query) { [1.0, 0.0] },
+      id_fn: ->(value) { value },
+      url_fn: ->(value, _base) { value },
+      store_factory: ->(_path) { store },
+      threads_max: 1,
+      vector_candidate_depth: 24,
+      bm25_candidate_depth: 40
+    )
+    plan = QueryPlan.new(
+      original_query: "alpha",
+      semantic_rewrite: nil,
+      keyword_variants: [],
+      lists: [
+        { name: "vec:original", backend: "vector", query_type: "original", query: "alpha", weight: 1.2 },
+        { name: "bm25:phrase", backend: "bm25", query_type: "original", query: "alpha", phrase: true, weight: 1.2 },
+      ]
+    )
+
+    executor.execute_plan(plan, [path("docs")], top_n: 10)
+
+    assert_equal [24], store.vector_limits
+    assert_equal [40], store.text_limits
+    executor.close
+  end
+
+  def test_executor_uses_reduced_default_candidate_depths
+    store = FakeStore.new(vector_rows: [row("a.md", 0, 0.9)], text_rows: [row("a.md", 0, 2.0)])
+    executor = RetrievalExecutor.new(
+      embedding_fn: ->(_query) { [1.0, 0.0] },
+      id_fn: ->(value) { value },
+      url_fn: ->(value, _base) { value },
+      store_factory: ->(_path) { store },
+      threads_max: 1
+    )
+    plan = QueryPlan.new(
+      original_query: "alpha",
+      semantic_rewrite: nil,
+      keyword_variants: [],
+      lists: [
+        { name: "vec:original", backend: "vector", query_type: "original", query: "alpha", weight: 1.2 },
+        { name: "bm25:phrase", backend: "bm25", query_type: "original", query: "alpha", phrase: true, weight: 1.2 },
+      ]
+    )
+
+    executor.execute_plan(plan, [path("docs")], top_n: 10)
+
+    assert_equal [64], store.vector_limits
+    assert_equal [100], store.text_limits
+    executor.close
+  end
+
+  def test_executor_discards_failed_connections
+    stores = []
+    executor = RetrievalExecutor.new(
+      embedding_fn: ->(_query) { [1.0, 0.0] },
+      id_fn: ->(value) { value },
+      url_fn: ->(value, _base) { value },
+      store_factory: lambda do |_path|
+        store = stores.empty? ? FailingStore.new : FakeStore.new(vector_rows: [row("a.md", 0, 0.9)])
+        stores << store
+        store
+      end,
+      threads_max: 1
+    )
+    plan = QueryPlan.new(
+      original_query: "alpha",
+      semantic_rewrite: nil,
+      keyword_variants: [],
+      lists: [{ name: "vec:original", backend: "vector", query_type: "original", query: "alpha", weight: 1.2 }]
+    )
+
+    assert_raises(RuntimeError) { executor.execute_plan(plan, [path("docs")], top_n: 10) }
+    executor.execute_plan(plan, [path("docs")], top_n: 10)
+
+    assert_equal 2, stores.length
+    assert_equal true, stores.first.closed
+    executor.close
   end
 
   def test_fusion_keeps_lookup_identity_and_penalizes_expanded_only_hits

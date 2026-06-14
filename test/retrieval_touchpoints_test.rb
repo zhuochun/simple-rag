@@ -29,10 +29,12 @@ assert_includes server, 'RETRIEVER.retrieve_q(lookup_paths, data["q"]'
 assert_includes server, 'RETRIEVER.retrieve_q_plus(lookup_paths, data["q"]'
 assert_includes server, 'RETRIEVER.validate_inputs!(lookup_paths, note, top_n)'
 assert_includes server, 'OllamaService.ensure_started(CONFIG, sections: [:embedding])'
+assert_includes server, 'get "/health"'
 refute_includes server, 'post "/read_url"'
 refute_includes server, 'post "/synthesize"'
 
 assert_includes query_cli, "build_retriever.retrieve_q(lookup_paths, query"
+assert_includes query_cli, "QueryServerClient.retrieve("
 assert_includes query_cli, "QueryHelpers.compact_file_results(payload[:data], brief_chars: options[:brief_chars])"
 assert_includes query_cli, "JSON.pretty_generate(concise ? payload[:data] : payload)"
 refute_includes query_cli, "--mode"

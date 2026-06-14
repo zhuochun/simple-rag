@@ -1,5 +1,6 @@
 module QueryHelpers
   DEFAULT_BRIEF_CHARS = 300
+  MAX_TOP_N = 100
 
   module_function
 

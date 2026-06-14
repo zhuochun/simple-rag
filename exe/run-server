@@ -8,6 +8,7 @@
 # Requires provider API keys for configured providers.
 
 require "json"
+require "digest"
 require "optparse"
 require "set"
 require "pathname"
@@ -73,6 +74,7 @@ rescue => e
     STDOUT << "Config error: #{e.message}\n"
     exit 1
 end
+CONFIG_DIGEST = Digest::SHA256.file(CONFIG_FILE).hexdigest
 
 exit 9 unless OllamaService.ensure_started(CONFIG, sections: [:embedding])
 
@@ -164,6 +166,12 @@ class SimpleRagServer < Sinatra::Application
     set :root, File.expand_path("..", __dir__)
     set :public_folder, File.expand_path("public", __dir__)
     set :static, true
+
+    get "/health" do
+        content_type :json
+
+        { status: "ok", config: CONFIG_FILE, configDigest: CONFIG_DIGEST }.to_json
+    end
 
     # list all the paths that can be searched
     get "/paths" do

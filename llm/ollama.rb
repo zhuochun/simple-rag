@@ -14,7 +14,8 @@ def ollama_embedding(txts, model, url, opts = {})
   url = ollama_url(url)
   data = {
     "model" => model,
-    "prompt" => txts
+    "prompt" => txts,
+    "keep_alive" => "70m"
   }.merge(opts)
 
   response = http_post(url, nil, data)

@@ -1,5 +1,6 @@
 require "thread"
 
+require_relative "../lib/query_helpers"
 require_relative "../storage/sqlite_index"
 
 QueryPlan = Struct.new(
@@ -188,15 +189,100 @@ end
 
 class RetrievalExecutor
   RETRIEVAL_THREADS_MAX = 8
-  VECTOR_CANDIDATE_DEPTH = { multiplier: 12, min: 64, max: 512 }.freeze
-  BM25_CANDIDATE_DEPTH = { multiplier: 20, min: 100, max: 800 }.freeze
+  VECTOR_CANDIDATE_DEPTH = { multiplier: 6, min: 64, max: 512 }.freeze
+  BM25_CANDIDATE_DEPTH = { multiplier: 10, min: 100, max: 800 }.freeze
 
-  def initialize(embedding_fn:, id_fn:, url_fn:, store_factory: nil, threads_max: RETRIEVAL_THREADS_MAX)
+  class StorePool
+    def initialize(factory, max_per_path:)
+      @factory = factory
+      @max_per_path = max_per_path
+      @available = Hash.new { |hash, key| hash[key] = [] }
+      @created = Hash.new(0)
+      @mutex = Mutex.new
+      @condition = ConditionVariable.new
+    end
+
+    def with(path)
+      key = [path.db_file.to_s, path.db_table.to_s]
+      store = checkout(key, path)
+      reusable = false
+      begin
+        result = yield store
+        reusable = true
+        result
+      ensure
+        reusable ? checkin(key, store) : discard(key, store)
+      end
+    end
+
+    def close
+      stores = @mutex.synchronize do
+        pooled = @available.values.flatten
+        @available.clear
+        @created.clear
+        pooled
+      end
+      stores.each { |store| store.close if store.respond_to?(:close) }
+    end
+
+    private
+
+    def checkout(key, path)
+      @mutex.synchronize do
+        loop do
+          return @available[key].pop unless @available[key].empty?
+
+          if @created[key] < @max_per_path
+            @created[key] += 1
+            begin
+              return @factory.call(path)
+            rescue
+              @created[key] -= 1
+              raise
+            end
+          end
+
+          @condition.wait(@mutex)
+        end
+      end
+    end
+
+    def checkin(key, store)
+      @mutex.synchronize do
+        @available[key] << store
+        @condition.signal
+      end
+    end
+
+    def discard(key, store)
+      begin
+        store.close if store.respond_to?(:close)
+      ensure
+        @mutex.synchronize do
+          @created[key] -= 1
+          @condition.signal
+        end
+      end
+    end
+  end
+
+  def initialize(
+    embedding_fn:,
+    id_fn:,
+    url_fn:,
+    store_factory: nil,
+    threads_max: RETRIEVAL_THREADS_MAX,
+    vector_candidate_depth: nil,
+    bm25_candidate_depth: nil
+  )
     @embedding_fn = embedding_fn
     @id_fn = id_fn
     @url_fn = url_fn
-    @store_factory = store_factory || ->(path) { SqliteIndex.new(path.db_file, path.db_table) }
     @threads_max = [[threads_max.to_i, 1].max, RETRIEVAL_THREADS_MAX].min
+    @vector_candidate_depth_override = positive_depth(vector_candidate_depth, "vector_candidate_depth")
+    @bm25_candidate_depth_override = positive_depth(bm25_candidate_depth, "bm25_candidate_depth")
+    factory = store_factory || ->(path) { SqliteIndex.new(path.db_file, path.db_table) }
+    @store_pool = StorePool.new(factory, max_per_path: @threads_max)
   end
 
   def execute_plan(plan, lookup_paths, top_n:)
@@ -227,6 +313,10 @@ class RetrievalExecutor
       end
     end
     source_lists
+  end
+
+  def close
+    @store_pool.close
   end
 
   private
@@ -262,24 +352,23 @@ class RetrievalExecutor
   def execute_job(job, top_n)
     source = job[:source]
     path = job[:path]
-    store = @store_factory.call(path)
-    entries = if source[:backend] == "vector"
-      store.vector_search(job[:query_embedding], vector_candidate_depth(top_n)).filter_map do |item|
-        score = item["score"].to_f
-        next if score < path.threshold.to_f
+    entries = @store_pool.with(path) do |store|
+      if source[:backend] == "vector"
+        store.vector_search(job[:query_embedding], vector_candidate_depth(top_n)).filter_map do |item|
+          score = item["score"].to_f
+          next if score < path.threshold.to_f
 
-        candidate(item, path, score, source)
+          candidate(item, path, score, source)
+        end
+      else
+        store.text_search_any(
+          source[:query],
+          limit: bm25_candidate_depth(top_n),
+          phrase: source[:phrase]
+        ).map { |item| candidate(item, path, item["score"].to_f, source) }
       end
-    else
-      store.text_search_any(
-        source[:query],
-        limit: bm25_candidate_depth(top_n),
-        phrase: source[:phrase]
-      ).map { |item| candidate(item, path, item["score"].to_f, source) }
     end
     { source: source, path: path, entries: entries }
-  ensure
-    store.close if store && store.respond_to?(:close)
   end
 
   def candidate(item, path, score, source)
@@ -334,11 +423,24 @@ class RetrievalExecutor
   end
 
   def vector_candidate_depth(top_n)
+    return @vector_candidate_depth_override if @vector_candidate_depth_override
+
     clamp(top_n.to_i * VECTOR_CANDIDATE_DEPTH[:multiplier], VECTOR_CANDIDATE_DEPTH)
   end
 
   def bm25_candidate_depth(top_n)
+    return @bm25_candidate_depth_override if @bm25_candidate_depth_override
+
     clamp(top_n.to_i * BM25_CANDIDATE_DEPTH[:multiplier], BM25_CANDIDATE_DEPTH)
+  end
+
+  def positive_depth(value, name)
+    return nil if value.nil?
+
+    depth = value.to_i
+    raise ArgumentError, "#{name} must be > 0" unless depth > 0
+
+    depth
   end
 
   def clamp(value, config)
@@ -589,7 +691,7 @@ class FileAggregator
 end
 
 class Retriever
-  MAX_TOP_N = 100
+  MAX_TOP_N = QueryHelpers::MAX_TOP_N
 
   def initialize(planner:, executor:, fusion_engine: FusionEngine.new, file_aggregator: FileAggregator.new)
     @planner = planner

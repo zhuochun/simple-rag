@@ -8,12 +8,9 @@ begin
 rescue LoadError
 end
 
-require_relative "../server/retriever"
-require_relative "../lib/config_loader"
 require_relative "../lib/config_path_resolver"
-require_relative "../lib/ollama_service"
-require_relative "../lib/provider_env_validator"
 require_relative "../lib/query_helpers"
+require_relative "../lib/query_server_client"
 
 DEFAULT_LIMIT = 10
 VALID_FORMATS = %w[json jsonl text].freeze
@@ -72,6 +69,8 @@ parser = OptionParser.new do |opts|
 end
 
 def print_paths_for_help(config_arg)
+  require_relative "../lib/config_loader"
+
   abs_config = ConfigPathResolver.resolve_config_path(config_arg)
   unless abs_config
     STDOUT << "\nPaths: #{ConfigPathResolver.default_search_message}\n"
@@ -99,7 +98,7 @@ end
 
 def validate_options!(options)
   raise ArgumentError, "--limit must be > 0" unless options[:limit].to_i > 0
-  raise ArgumentError, "--limit must be <= #{Retriever::MAX_TOP_N}" if options[:limit].to_i > Retriever::MAX_TOP_N
+  raise ArgumentError, "--limit must be <= #{QueryHelpers::MAX_TOP_N}" if options[:limit].to_i > QueryHelpers::MAX_TOP_N
   raise ArgumentError, "--brief-chars must be > 0" unless options[:brief_chars].to_i > 0
 end
 
@@ -150,36 +149,63 @@ unless config_file
 end
 
 begin
-  CONFIG = ConfigLoader.load_config(config_file, with_path_map: true)
-rescue => e
-  STDOUT << "Config error: #{e.message}\n"
-  exit 1
-end
-
-lookup_paths = QueryHelpers.resolve_lookup_paths(CONFIG, options[:paths], default_to_search_default: true)
-if lookup_paths.empty?
-  STDOUT << "No lookup paths selected. Check --paths names or config paths.\n"
-  exit 1
-end
-
-exit 9 unless OllamaService.ensure_started(CONFIG, sections: [:embedding])
-
-key_error = ProviderEnvValidator.missing_key_message(CONFIG, sections: [:embedding])
-if key_error
-  STDOUT << "#{key_error}\n"
-  exit 9
-end
-
-begin
-  payload = build_retriever.retrieve_q(lookup_paths, query, top_n: options[:limit])
-rescue RetrievalInputError => e
+  payload = QueryServerClient.retrieve(
+    config_file: config_file,
+    query: query,
+    path_names: options[:paths],
+    top_n: options[:limit]
+  )
+rescue QueryServerClient::QueryError => e
   STDOUT << "#{e.message}\n"
   exit 1
 end
 
+lookup_paths = nil
+unless payload
+  require_relative "../lib/config_loader"
+  require_relative "../server/retriever"
+  require_relative "../lib/ollama_service"
+  require_relative "../lib/provider_env_validator"
+
+  begin
+    CONFIG = ConfigLoader.load_config(config_file, with_path_map: true)
+  rescue => e
+    STDOUT << "Config error: #{e.message}\n"
+    exit 1
+  end
+
+  lookup_paths = QueryHelpers.resolve_lookup_paths(CONFIG, options[:paths], default_to_search_default: true)
+  if lookup_paths.empty?
+    STDOUT << "No lookup paths selected. Check --paths names or config paths.\n"
+    exit 1
+  end
+
+  exit 9 unless OllamaService.ensure_started(CONFIG, sections: [:embedding])
+
+  key_error = ProviderEnvValidator.missing_key_message(CONFIG, sections: [:embedding])
+  if key_error
+    STDOUT << "#{key_error}\n"
+    exit 9
+  end
+
+  begin
+    payload = build_retriever.retrieve_q(lookup_paths, query, top_n: options[:limit])
+  rescue RetrievalInputError => e
+    STDOUT << "#{e.message}\n"
+    exit 1
+  end
+end
+
 payload[:concise] = options[:concise]
 payload[:limit] = options[:limit]
-  payload[:data] = QueryHelpers.compact_file_results(payload[:data], brief_chars: options[:brief_chars]) if options[:concise]
-payload[:paths] = lookup_paths.map { |path| { name: path.name, dir: path.dir } } unless options[:concise]
+payload[:data] = QueryHelpers.compact_file_results(payload[:data], brief_chars: options[:brief_chars]) if options[:concise]
+unless options[:concise]
+  unless lookup_paths
+    require_relative "../lib/config_loader"
+    config = ConfigLoader.load_config(config_file, with_path_map: true)
+    lookup_paths = QueryHelpers.resolve_lookup_paths(config, options[:paths], default_to_search_default: true)
+  end
+  payload[:paths] = lookup_paths.map { |path| { name: path.name, dir: path.dir } }
+end
 
 print_output(options[:format], payload, options[:concise])

@@ -35,8 +35,34 @@ gem install simple-rag-zc
 - Run `run-query "your question"` for CLI retrieval (LLM-friendly)
   - `run-query --help` shows usage and all configured `paths` (`name => dir`)
   - Uses the same standard retrieval pipeline as the web UI **Search** action
+  - Automatically uses a matching server at `http://127.0.0.1:4567`; otherwise it retrieves locally
+  - Set `RAG_SERVER_URL` to use a different server URL
   - Default JSON output is a flat locator list with `path`, rounded `score`, anchor `chunk`, and brief `text`
   - Use `--full` for complete chunk text and retrieval debug details
+
+- Benchmark retrieval latency with a representative query set:
+
+```bash
+ruby test/benchmark/retrieval_benchmark.rb --config config.json
+```
+
+  - Reports minimum, median, p95, and maximum latency plus embedding and local retrieval time.
+  - Use `--max-p95-ms 2000` or `RAG_RETRIEVAL_MAX_P95_MS=2000` to fail on a latency regression.
+
+- Compare top-10 retrieval results across configs and candidate depths:
+
+```bash
+ruby test/benchmark/retrieval_quality_benchmark.rb ^
+  --config qwen=config-v2.json ^
+  --config other=config.json ^
+  --depth previous=120,200 ^
+  --depth current=64,100
+```
+
+  - Configs and depth profiles are combined into comparison scenarios.
+  - Reports top-10 overlap, Jaccard similarity, rank displacement, and latency.
+  - Cached scenario results and timestamped JSON reports are written under `tmp/retrieval-quality`.
+  - Use `--refresh` to ignore cached results.
 
 ## Setup Map Generator
 
