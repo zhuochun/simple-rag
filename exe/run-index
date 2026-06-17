@@ -4,7 +4,7 @@
 # Index all markdown files in configured SQLite tables.
 #
 # Usage:
-#   run-index [--allow-empty-prune] [--non-interactive] [config.json]
+#   run-index [--build-mode delta|full] [--allow-empty-prune] [--non-interactive] [config.json]
 #
 # Requires provider API keys for configured providers.
 
@@ -27,11 +27,15 @@ require_relative "../lib/ollama_service"
 require_relative "../lib/provider_env_validator"
 require_relative "../storage/sqlite_index"
 
+BUILD_MODES = %w[delta full].freeze
+DEFAULT_BUILD_MODE = "delta".freeze
+
 def usage_text
   <<~USAGE
-    Usage: run-index [--allow-empty-prune] [--non-interactive] [config.json]
+    Usage: run-index [--build-mode delta|full] [--allow-empty-prune] [--non-interactive] [config.json]
 
     Options:
+      --build-mode MODE   Build mode: delta (default) or full. Delta falls back to full when the index or scan timestamp is missing.
       --allow-empty-prune  Allow deleting stale rows when a path scan returns zero files.
       --non-interactive    Print only the final indexing summary.
       -h, --help           Show this help.
@@ -46,11 +50,29 @@ def path_summary_line(path_name, found:, created:, skipped:, errors:)
   "#{path_name}: Found #{found} files | Created: #{created}, Skipped: #{skipped}, Errors: #{errors} chunks"
 end
 
-def parse_cli_args(argv)
-  opts = { allow_empty_prune: false, non_interactive: false, config_arg: nil }
+def normalize_build_mode(value)
+  mode = value.to_s.strip.downcase
+  unless BUILD_MODES.include?(mode)
+    raise ArgumentError, "Invalid build mode: #{value.inspect}. Expected one of: #{BUILD_MODES.join(', ')}"
+  end
 
-  argv.each do |arg|
+  mode
+end
+
+def parse_cli_args(argv)
+  opts = { allow_empty_prune: false, non_interactive: false, build_mode: DEFAULT_BUILD_MODE, config_arg: nil }
+
+  idx = 0
+  while idx < argv.length
+    arg = argv[idx]
     case arg
+    when "--build-mode"
+      idx += 1
+      raise ArgumentError, "Missing value for --build-mode" if idx >= argv.length
+
+      opts[:build_mode] = normalize_build_mode(argv[idx])
+    when /\A--build-mode=(.*)\z/
+      opts[:build_mode] = normalize_build_mode(Regexp.last_match(1))
     when "--allow-empty-prune"
       opts[:allow_empty_prune] = true
     when "--non-interactive"
@@ -66,6 +88,7 @@ def parse_cli_args(argv)
       end
       opts[:config_arg] = arg
     end
+    idx += 1
   end
 
   opts
@@ -102,6 +125,7 @@ end
 
 unless cli[:non_interactive]
   STDOUT << "Using config: #{config_file}\n"
+  STDOUT << "build_mode=#{cli[:build_mode]}\n"
   STDOUT << "allow_empty_prune=#{cli[:allow_empty_prune]}\n"
 end
 
@@ -144,16 +168,73 @@ def reader_class_or_exit(path, out)
   reader_class
 end
 
-def index_path_sqlite(path, out, status_cb, log_cb, allow_empty_prune:)
+def resolve_build_mode(requested_mode, index_file_existed, last_scan_at)
+  return ["full", nil] if requested_mode == "full"
+  return ["full", "index does not exist"] unless index_file_existed
+  return ["full", "scan timestamp is missing"] if last_scan_at.nil?
+
+  ["delta", nil]
+end
+
+def format_scan_timestamp(timestamp)
+  Time.at(timestamp.to_f).strftime("%Y-%m-%d %H:%M:%S %z")
+end
+
+def modified_after?(file, timestamp)
+  File.mtime(file).to_f > timestamp.to_f
+rescue
+  true
+end
+
+def select_files_for_build(path, out, status_cb, build_mode:, last_scan_at:)
+  matched_files = []
+  files_to_index = []
+
+  each_scanned_file(path, out, status_cb) do |file|
+    matched_files << file
+    next if build_mode == "delta" && last_scan_at && !modified_after?(file, last_scan_at)
+
+    files_to_index << file
+  end
+
+  [matched_files, files_to_index]
+end
+
+def index_path_sqlite(path, out, status_cb, log_cb, allow_empty_prune:, build_mode:)
   out << "Read path name: #{path.name}, reader: #{path.reader}\n"
   status_cb.call("Reading index")
+
+  db_file = path.db_file.to_s
+  expanded_db_file = db_file == ":memory:" ? db_file : File.expand_path(db_file)
+  index_file_existed = db_file == ":memory:" ? false : File.exist?(expanded_db_file)
+  scan_started_at = Time.now
 
   out << "Read existing sqlite index: #{path.db_file}@#{path.db_table}, time: @#{Time.now}\n"
   store = SqliteIndex.new(path.db_file, path.db_table)
   out << "Found index rows: #{store.row_count}\n"
 
-  files = each_scanned_file(path, out, status_cb)
+  last_scan_at = store.last_scan_completed_at
+  actual_build_mode, fallback_reason = resolve_build_mode(build_mode, index_file_existed, last_scan_at)
+  out << "Build mode: #{actual_build_mode}"
+  out << " (requested #{build_mode}; #{fallback_reason})" if fallback_reason
+  out << "\n"
+  out << "Last scan timestamp: #{last_scan_at ? format_scan_timestamp(last_scan_at) : 'none'}\n"
+
   reader_class = reader_class_or_exit(path, out)
+  matched_files, files_to_index = select_files_for_build(
+    path,
+    out,
+    status_cb,
+    build_mode: actual_build_mode,
+    last_scan_at: last_scan_at
+  )
+  out << "Matched files: #{matched_files.length}\n"
+  if actual_build_mode == "delta"
+    out << "Delta files modified since #{format_scan_timestamp(last_scan_at)}: #{files_to_index.length}\n"
+  else
+    out << "Full build files: #{files_to_index.length}\n"
+  end
+
   error_count = 0
   prune_skipped = false
   indexed_files = 0
@@ -162,12 +243,10 @@ def index_path_sqlite(path, out, status_cb, log_cb, allow_empty_prune:)
   status_cb.call(path_summary_line(path.name, found: 0, created: 0, skipped: 0, errors: 0))
   skipped = 0
   created = 0
-  scanned_files = Set.new
 
   begin
-    files.each do |file|
+    files_to_index.each do |file|
       indexed_files += 1
-      scanned_files.add(file)
       status_cb.call(path_summary_line(path.name, found: indexed_files, created: created, skipped: skipped, errors: error_count))
       begin
         # Readers own chunking through ChunkUtils; indexing persists their chunks unchanged.
@@ -263,20 +342,30 @@ def index_path_sqlite(path, out, status_cb, log_cb, allow_empty_prune:)
       end
     end
 
-    if indexed_files == 0 && !allow_empty_prune
+    if matched_files.empty? && !allow_empty_prune
       out << "Empty scan guard: skipping stale prune for #{path.name}. Re-run with --allow-empty-prune to allow pruning on empty scan.\n"
       status_cb.call(path_summary_line(path.name, found: indexed_files, created: created, skipped: skipped, errors: error_count))
       prune_skipped = true
     end
 
-    if indexed_files == 0 && allow_empty_prune
+    if matched_files.empty? && allow_empty_prune
       out << "\nallow-empty-prune enabled: pruning all rows in table #{path.db_table} due to empty scan.\n"
     end
 
     unless prune_skipped
       store.transaction do
-        store.delete_stale_paths(scanned_files.to_a)
+        store.delete_stale_paths(matched_files)
       end
+    end
+
+    if error_count.zero? && !prune_skipped
+      store.record_scan_completed_at(scan_started_at)
+      out << "Recorded scan timestamp: #{format_scan_timestamp(scan_started_at.to_f)}\n"
+    else
+      reasons = []
+      reasons << "#{error_count} errors occurred" unless error_count.zero?
+      reasons << "stale prune was skipped" if prune_skipped
+      out << "Scan timestamp not updated because #{reasons.join(' and ')}.\n"
     end
   ensure
     store.close
@@ -287,12 +376,12 @@ def index_path_sqlite(path, out, status_cb, log_cb, allow_empty_prune:)
   { created: created, skipped: skipped, errors: error_count, files: indexed_files, prune_skipped: prune_skipped }
 end
 
-def index_path(path, out, status_cb, log_cb, allow_empty_prune:)
+def index_path(path, out, status_cb, log_cb, allow_empty_prune:, build_mode:)
   unless path.db_file && path.db_table
     raise ArgumentError, %(Path "#{path.name}" must set "db". JSONL indexing has been removed.)
   end
 
-  index_path_sqlite(path, out, status_cb, log_cb, allow_empty_prune: allow_empty_prune)
+  index_path_sqlite(path, out, status_cb, log_cb, allow_empty_prune: allow_empty_prune, build_mode: build_mode)
 end
 
 interactive_status = STDOUT.tty? && !cli[:non_interactive]
@@ -357,7 +446,8 @@ threads = CONFIG.paths.map do |path|
         buffer,
         ->(msg) { status_cb.call(path.name, msg) },
         log_cb,
-        allow_empty_prune: cli[:allow_empty_prune]
+        allow_empty_prune: cli[:allow_empty_prune],
+        build_mode: cli[:build_mode]
       )
       failed = summary[:errors].to_i > 0
     rescue => e

@@ -7,6 +7,7 @@ class SqliteIndex
   TABLE_NAME_PATTERN = /\A[A-Za-z_][A-Za-z0-9_]*\z/
   VECTOR_K_DEFAULT = 512
   VECTOR_DISTANCE_METRIC = "cosine"
+  LAST_SCAN_SCOPE = "last_completed".freeze
 
   attr_reader :db_file, :table
 
@@ -131,6 +132,22 @@ class SqliteIndex
     out
   end
 
+  def last_scan_completed_at
+    raw = @db.get_first_value("SELECT scanned_at FROM #{quoted_scan_timestamps_table} WHERE scope = ?", [LAST_SCAN_SCOPE])
+    raw.nil? ? nil : raw.to_f
+  end
+
+  def record_scan_completed_at(time)
+    scanned_at = time.respond_to?(:to_f) ? time.to_f : time.to_s.to_f
+    raise ArgumentError, "Scan timestamp must be positive" if scanned_at <= 0.0
+
+    @db.execute(<<~SQL, [LAST_SCAN_SCOPE, scanned_at])
+      INSERT INTO #{quoted_scan_timestamps_table} (scope, scanned_at)
+      VALUES (?, ?)
+      ON CONFLICT(scope) DO UPDATE SET scanned_at = excluded.scanned_at
+    SQL
+  end
+
   def find_chunk(path, chunk, hash: nil)
     sql = "SELECT path, chunk, hash, bucket, text FROM #{quoted_table} WHERE path = ? AND chunk = ?"
     binds = [path.to_s, chunk.to_i]
@@ -238,6 +255,7 @@ class SqliteIndex
 
     @db.execute("CREATE INDEX IF NOT EXISTS #{quoted_identifier("#{table}_hash_idx")} ON #{quoted_table}(hash)")
     ensure_meta_schema!
+    ensure_scan_timestamps_schema!
     ensure_fts_schema!
   end
 
@@ -351,6 +369,14 @@ class SqliteIndex
     quoted_identifier(meta_table)
   end
 
+  def scan_timestamps_table
+    "#{@table}__scan_timestamps"
+  end
+
+  def quoted_scan_timestamps_table
+    quoted_identifier(scan_timestamps_table)
+  end
+
   def setup_vector_extension
     begin
       @db.enable_load_extension(true)
@@ -406,6 +432,15 @@ class SqliteIndex
       CREATE TABLE IF NOT EXISTS #{quoted_meta_table} (
         key TEXT PRIMARY KEY,
         value TEXT NOT NULL
+      )
+    SQL
+  end
+
+  def ensure_scan_timestamps_schema!
+    @db.execute(<<~SQL)
+      CREATE TABLE IF NOT EXISTS #{quoted_scan_timestamps_table} (
+        scope TEXT PRIMARY KEY,
+        scanned_at REAL NOT NULL
       )
     SQL
   end

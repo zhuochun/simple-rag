@@ -40,6 +40,7 @@ assert_includes query_cli, "JSON.pretty_generate(concise ? payload[:data] : payl
 refute_includes query_cli, "--mode"
 
 assert_includes index_cli, "Readers own chunking through ChunkUtils"
+assert_includes index_cli, '"--build-mode"'
 assert_includes index_cli, '"--non-interactive"'
 assert_includes index_cli, 'path_summary_line(path.name, found: indexed_files, created: created, skipped: skipped, errors: error_count)'
 refute_includes index_cli, "summary_line(**totals)"
@@ -59,7 +60,8 @@ refute_includes graph_ui, "api('/q_plus')"
 refute_includes graph_ui, "search-plus-button"
 
 refute_includes readme, "Synthesize"
-refute_includes readme, "--mode"
+assert_includes readme, "run-index --build-mode full"
+refute_includes readme, "run-query --mode"
 refute_includes library, 'require "server/synthesizer"'
 assert_includes llm, "ensure_chat_provider_ready!"
 raise "Synthesizer file still exists" if File.exist?(File.join(ROOT, "server/synthesizer.rb"))

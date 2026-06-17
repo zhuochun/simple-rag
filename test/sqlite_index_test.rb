@@ -79,6 +79,18 @@ class SqliteIndexTest
     store&.close
   end
 
+  def test_scan_timestamp_is_stored_per_index_table
+    assert_equal nil, @store.last_scan_completed_at
+
+    @store.record_scan_completed_at(Time.at(1234.5))
+    assert_operator @store.last_scan_completed_at, :>, 1234.0
+
+    other = SqliteIndex.new(File.join(@tmpdir, "index.sqlite"), "other_chunks")
+    assert_equal nil, other.last_scan_completed_at
+  ensure
+    other&.close
+  end
+
   def test_serialize_entries_uses_indexed_text_without_loading_reader
     reader = Object.new
     def reader.load
@@ -132,6 +144,7 @@ if $PROGRAM_NAME == __FILE__
     test_text_search_supports_tokenized_and_phrase_queries
     test_find_chunk_and_random_chunks_return_indexed_text
     test_in_memory_store_supports_vector_search
+    test_scan_timestamp_is_stored_per_index_table
     test_serialize_entries_uses_indexed_text_without_loading_reader
   ]
 

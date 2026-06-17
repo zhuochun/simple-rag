@@ -20,8 +20,9 @@ gem install simple-rag-zc
   - Set per-path `db` as `sqlite_file_path@table_name`
 
 - Run `run-index config.json` *Required
-  - To generate embeddings for all files. It takes a while on the first time.
-  - To update embeddings whenever your files updated.
+  - By default this uses delta build mode: after the first complete scan, it only reads files modified since the last completed scan.
+  - Delta mode automatically falls back to a full build when the index DB or per-path scan timestamp is missing.
+  - Use `run-index --build-mode full config.json` to scan all matching docs and rebuild/prune from the complete current file set.
   - Use `run-index --non-interactive config.json` to print only per-path final summaries.
   
 - Run `run-server config.json`
