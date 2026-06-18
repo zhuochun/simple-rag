@@ -42,12 +42,12 @@ def usage_text
   USAGE
 end
 
-def summary_line(found:, created:, skipped:, errors:)
-  "Found: #{found}, Created: #{created}, Skipped: #{skipped}, Errors: #{errors}"
+def summary_line(matched:, read:, created:, skipped:, errors:)
+  "Matched: #{matched}, Read: #{read}, Created: #{created}, Skipped: #{skipped}, Errors: #{errors}"
 end
 
-def path_summary_line(path_name, found:, created:, skipped:, errors:)
-  "#{path_name}: Found #{found} files | Created: #{created}, Skipped: #{skipped}, Errors: #{errors} chunks"
+def path_summary_line(path_name, matched:, read:, created:, skipped:, errors:)
+  "#{path_name}: Matched #{matched} files | Read: #{read} files | Created: #{created}, Skipped: #{skipped}, Errors: #{errors} chunks"
 end
 
 def normalize_build_mode(value)
@@ -105,7 +105,7 @@ end
 config_file = ConfigPathResolver.resolve_config_path(cli[:config_arg])
 unless config_file
   if cli[:non_interactive]
-    STDOUT << summary_line(found: 0, created: 0, skipped: 0, errors: 1) << "\n"
+    STDOUT << summary_line(matched: 0, read: 0, created: 0, skipped: 0, errors: 1) << "\n"
   else
     STDOUT << "#{ConfigPathResolver.default_search_message}\n"
   end
@@ -116,7 +116,7 @@ begin
   CONFIG = ConfigLoader.load_config(config_file)
 rescue => e
   if cli[:non_interactive]
-    STDOUT << summary_line(found: 0, created: 0, skipped: 0, errors: 1) << "\n"
+    STDOUT << summary_line(matched: 0, read: 0, created: 0, skipped: 0, errors: 1) << "\n"
   else
     STDOUT << "Config error: #{e.message}\n"
   end
@@ -131,14 +131,14 @@ end
 
 service_output = cli[:non_interactive] ? StringIO.new : STDOUT
 unless OllamaService.ensure_started(CONFIG, out: service_output)
-  STDOUT << summary_line(found: 0, created: 0, skipped: 0, errors: 1) << "\n" if cli[:non_interactive]
+  STDOUT << summary_line(matched: 0, read: 0, created: 0, skipped: 0, errors: 1) << "\n" if cli[:non_interactive]
   exit 9
 end
 
 missing_key_msg = ProviderEnvValidator.missing_key_message(CONFIG)
 if missing_key_msg
   if cli[:non_interactive]
-    STDOUT << summary_line(found: 0, created: 0, skipped: 0, errors: 1) << "\n"
+    STDOUT << summary_line(matched: 0, read: 0, created: 0, skipped: 0, errors: 1) << "\n"
   else
     STDOUT << "#{missing_key_msg}\n"
   end
@@ -230,24 +230,24 @@ def index_path_sqlite(path, out, status_cb, log_cb, allow_empty_prune:, build_mo
   )
   out << "Matched files: #{matched_files.length}\n"
   if actual_build_mode == "delta"
-    out << "Delta files modified since #{format_scan_timestamp(last_scan_at)}: #{files_to_index.length}\n"
+    out << "Files to read modified since #{format_scan_timestamp(last_scan_at)}: #{files_to_index.length}\n"
   else
-    out << "Full build files: #{files_to_index.length}\n"
+    out << "Files to read for full build: #{files_to_index.length}\n"
   end
 
   error_count = 0
   prune_skipped = false
-  indexed_files = 0
+  read_files = 0
 
   out << "Building index @#{Time.now}\n["
-  status_cb.call(path_summary_line(path.name, found: 0, created: 0, skipped: 0, errors: 0))
+  status_cb.call(path_summary_line(path.name, matched: matched_files.length, read: 0, created: 0, skipped: 0, errors: 0))
   skipped = 0
   created = 0
 
   begin
     files_to_index.each do |file|
-      indexed_files += 1
-      status_cb.call(path_summary_line(path.name, found: indexed_files, created: created, skipped: skipped, errors: error_count))
+      read_files += 1
+      status_cb.call(path_summary_line(path.name, matched: matched_files.length, read: read_files, created: created, skipped: skipped, errors: error_count))
       begin
         # Readers own chunking through ChunkUtils; indexing persists their chunks unchanged.
         chunks = reader_class.new(file).load.chunks
@@ -335,8 +335,8 @@ def index_path_sqlite(path, out, status_cb, log_cb, allow_empty_prune:, build_mo
         pending_rows.each { |row| store.upsert_chunk(row) }
         store.delete_stale_chunks(file, valid_chunks)
       end
-      if (indexed_files - 1) % 50 == 0
-        out << (indexed_files - 1)
+      if (read_files - 1) % 50 == 0
+        out << (read_files - 1)
       else
         out << "."
       end
@@ -344,7 +344,7 @@ def index_path_sqlite(path, out, status_cb, log_cb, allow_empty_prune:, build_mo
 
     if matched_files.empty? && !allow_empty_prune
       out << "Empty scan guard: skipping stale prune for #{path.name}. Re-run with --allow-empty-prune to allow pruning on empty scan.\n"
-      status_cb.call(path_summary_line(path.name, found: indexed_files, created: created, skipped: skipped, errors: error_count))
+      status_cb.call(path_summary_line(path.name, matched: matched_files.length, read: read_files, created: created, skipped: skipped, errors: error_count))
       prune_skipped = true
     end
 
@@ -371,9 +371,17 @@ def index_path_sqlite(path, out, status_cb, log_cb, allow_empty_prune:, build_mo
     store.close
   end
 
-  out << "]\nDone @#{Time.now}, Created: #{created}, Skipped: #{skipped}, Errors: #{error_count}\n"
-  status_cb.call(path_summary_line(path.name, found: indexed_files, created: created, skipped: skipped, errors: error_count))
-  { created: created, skipped: skipped, errors: error_count, files: indexed_files, prune_skipped: prune_skipped }
+  out << "]\nDone @#{Time.now}, Matched: #{matched_files.length}, Read: #{read_files}, Created: #{created}, Skipped: #{skipped}, Errors: #{error_count}\n"
+  status_cb.call(path_summary_line(path.name, matched: matched_files.length, read: read_files, created: created, skipped: skipped, errors: error_count))
+  {
+    created: created,
+    skipped: skipped,
+    errors: error_count,
+    matched_files: matched_files.length,
+    read_files: read_files,
+    files: read_files,
+    prune_skipped: prune_skipped
+  }
 end
 
 def index_path(path, out, status_cb, log_cb, allow_empty_prune:, build_mode:)
@@ -462,7 +470,7 @@ threads = CONFIG.paths.map do |path|
       if failed
         status_cb.call(path.name, "#{path.name}: Failed")
       elsif summary
-        status_cb.call(path.name, path_summary_line(path.name, found: summary[:files].to_i, created: summary[:created].to_i, skipped: summary[:skipped].to_i, errors: summary[:errors].to_i))
+        status_cb.call(path.name, path_summary_line(path.name, matched: summary[:matched_files].to_i, read: summary[:read_files].to_i, created: summary[:created].to_i, skipped: summary[:skipped].to_i, errors: summary[:errors].to_i))
       else
         status_cb.call(path.name, "#{path.name}: Finished")
       end
@@ -505,7 +513,8 @@ threads.each do |thread|
 
   STDOUT << path_summary_line(
     thread[:path_name] || "path",
-    found: summary[:files].to_i,
+    matched: summary[:matched_files].to_i,
+    read: summary[:read_files].to_i,
     created: summary[:created].to_i,
     skipped: summary[:skipped].to_i,
     errors: summary[:errors].to_i

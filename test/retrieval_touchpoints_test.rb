@@ -42,7 +42,9 @@ refute_includes query_cli, "--mode"
 assert_includes index_cli, "Readers own chunking through ChunkUtils"
 assert_includes index_cli, '"--build-mode"'
 assert_includes index_cli, '"--non-interactive"'
-assert_includes index_cli, 'path_summary_line(path.name, found: indexed_files, created: created, skipped: skipped, errors: error_count)'
+assert_includes index_cli, 'path_summary_line(path.name, matched: matched_files.length, read: read_files, created: created, skipped: skipped, errors: error_count)'
+assert_includes index_cli, '"Matched: #{matched}, Read: #{read}, Created: #{created}, Skipped: #{skipped}, Errors: #{errors}"'
+assert_includes index_cli, '"Files to read modified since #{format_scan_timestamp(last_scan_at)}: #{files_to_index.length}\\n"'
 refute_includes index_cli, "summary_line(**totals)"
 refute_includes index_cli, '"\\e[2J\\e[H"'
 refute_includes index_cli, "normalize_index_chunks"
