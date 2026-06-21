@@ -24,7 +24,7 @@ gem install simple-rag-zc
   - Delta mode automatically falls back to a full build when the index DB or per-path scan timestamp is missing.
   - Use `run-index --build-mode full config.json` to scan all matching docs and rebuild/prune from the complete current file set.
   - Use `run-index --non-interactive config.json` to print only per-path final summaries.
-  - Index summaries report `Matched` files separately from `Read` files; in delta mode, `Read` is the changed-file workload.
+  - Index summaries report matched files separately from read files; in delta mode, read files are the changed-file workload.
   
 - Run `run-server config.json`
   - Open `http://localhost:4567/q.html` to search/ask from your knowledge bases

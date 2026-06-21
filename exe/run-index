@@ -43,11 +43,11 @@ def usage_text
 end
 
 def summary_line(matched:, read:, created:, skipped:, errors:)
-  "Matched: #{matched}, Read: #{read}, Created: #{created}, Skipped: #{skipped}, Errors: #{errors}"
+  "Match #{matched}, Read #{read} files | Create #{created}, Skip #{skipped}, Err #{errors} chunks"
 end
 
 def path_summary_line(path_name, matched:, read:, created:, skipped:, errors:)
-  "#{path_name}: Matched #{matched} files | Read: #{read} files | Created: #{created}, Skipped: #{skipped}, Errors: #{errors} chunks"
+  "#{path_name}: #{summary_line(matched: matched, read: read, created: created, skipped: skipped, errors: errors)}"
 end
 
 def normalize_build_mode(value)
