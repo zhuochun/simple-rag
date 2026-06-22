@@ -9,7 +9,7 @@ def validate_and_normalize(notes: list[dict[str, Any]]) -> tuple[np.ndarray, int
     if not notes:
         raise RuntimeError("No notes available.")
     arrays = []
-    dim = None
+    dim: int | None = None
     norms = []
     for idx, note in enumerate(notes):
         embedding = note.get("embedding")
