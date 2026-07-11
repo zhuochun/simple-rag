@@ -18,11 +18,7 @@ def ollama_embedding(txts, model, url, opts = {})
     "keep_alive" => "70m"
   }.merge(opts)
 
-  response = http_post(url, nil, data)
-
-  if response.code != "200"
-    raise_http_error("Embedding error", response, url)
-  end
+  response = LlmHttp.post_json!(url, data, error_prefix: "Embedding error")
 
   result = JSON.parse(response.body)
   result["embedding"]
@@ -42,11 +38,7 @@ def ollama_chat(messages, model, url, opts = {})
   # Disable thinking/reasoning traces in models that support the toggle.
   data["think"] = false
 
-  response = http_post(url, nil, data)
-
-  if response.code != "200"
-    raise_http_error("Chat error", response, url)
-  end
+  response = LlmHttp.post_json!(url, data, error_prefix: "Chat error")
 
   result = JSON.parse(response.body)
   if result.is_a?(Hash) && result["message"]

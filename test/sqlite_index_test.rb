@@ -28,6 +28,19 @@ class SqliteIndexTest
     assert_operator results.first["score"], :>, 0.99
   end
 
+  def test_upsert_chunks_persists_a_batch_across_all_indexes
+    @store.transaction do
+      @store.upsert_chunks([
+        { path: "alpha.md", chunk: 0, hash: "alpha-0", embedding: [1.0, 0.0], bucket: 0, text: "alpha topic" },
+        { path: "beta.md", chunk: 0, hash: "beta-0", embedding: [0.0, 1.0], bucket: 0, text: "beta topic" },
+      ])
+    end
+
+    assert_equal 2, @store.row_count
+    assert_equal ["alpha.md"], @store.vector_search([1.0, 0.0], 1).map { |row| row["path"] }
+    assert_equal ["beta.md"], @store.text_search_any("beta", limit: 1).map { |row| row["path"] }
+  end
+
   def test_text_search_uses_bm25_and_tracks_updates_and_deletes
     upsert("frequent.md", 0, "legacyterm rare rare rare", [1.0, 0.0])
     upsert("single.md", 0, "rare", [0.0, 1.0])
@@ -65,14 +78,14 @@ class SqliteIndexTest
 
   def test_in_memory_store_supports_vector_search
     store = SqliteIndex.new(":memory:", "chunks")
-    store.upsert_chunk(
+    store.upsert_chunks([{
       path: "memory.md",
       chunk: 0,
       hash: Digest::SHA256.hexdigest("memory"),
       embedding: [1.0, 0.0],
       bucket: 0,
       text: nil
-    )
+    }])
 
     assert_equal ["memory.md"], store.vector_search([1.0, 0.0], 1).map { |row| row["path"] }
   ensure
@@ -126,20 +139,21 @@ class SqliteIndexTest
   end
 
   def upsert(path, chunk, text, embedding)
-    @store.upsert_chunk(
+    @store.upsert_chunks([{
       path: path,
       chunk: chunk,
       hash: Digest::SHA256.hexdigest(text),
       embedding: embedding,
       bucket: 0,
       text: text
-    )
+    }])
   end
 end
 
 if $PROGRAM_NAME == __FILE__
   tests = %w[
     test_vector_search_uses_cosine_distance
+    test_upsert_chunks_persists_a_batch_across_all_indexes
     test_text_search_uses_bm25_and_tracks_updates_and_deletes
     test_text_search_supports_tokenized_and_phrase_queries
     test_find_chunk_and_random_chunks_return_indexed_text

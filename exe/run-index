@@ -1,41 +1,32 @@
 #!/usr/bin/env ruby
 # encoding: utf-8
 
-# Index all markdown files in configured SQLite tables.
-#
-# Usage:
-#   run-index [--build-mode delta|full] [--allow-empty-prune] [--non-interactive] [config.json]
-#
-# Requires provider API keys for configured providers.
-
-require "json"
-require "digest"
 require "stringio"
 require "thread"
-require "set"
+
 begin
   require "bundler/setup"
 rescue LoadError
 end
 
 require_relative "../llm/llm"
-require_relative "../llm/embedding"
 require_relative "../readers/reader"
 require_relative "../lib/config_loader"
 require_relative "../lib/config_path_resolver"
+require_relative "../lib/indexing"
 require_relative "../lib/ollama_service"
 require_relative "../lib/provider_env_validator"
-require_relative "../storage/sqlite_index"
 
 BUILD_MODES = %w[delta full].freeze
 DEFAULT_BUILD_MODE = "delta".freeze
 
 def usage_text
   <<~USAGE
-    Usage: run-index [--build-mode delta|full] [--allow-empty-prune] [--non-interactive] [config.json]
+    Usage: run-index [--build-mode delta|full] [--workers N] [--allow-empty-prune] [--non-interactive] [config.json]
 
     Options:
       --build-mode MODE   Build mode: delta (default) or full. Delta falls back to full when the index or scan timestamp is missing.
+      --workers N         Maximum paths indexed concurrently (default: #{SimpleRag::Indexing::Runner::DEFAULT_WORKERS}).
       --allow-empty-prune  Allow deleting stale rows when a path scan returns zero files.
       --non-interactive    Print only the final indexing summary.
       -h, --help           Show this help.
@@ -46,59 +37,141 @@ def summary_line(matched:, read:, created:, skipped:, errors:)
   "Match #{matched}, Read #{read} files | Create #{created}, Skip #{skipped}, Err #{errors} chunks"
 end
 
-def path_summary_line(path_name, matched:, read:, created:, skipped:, errors:)
-  "#{path_name}: #{summary_line(matched: matched, read: read, created: created, skipped: skipped, errors: errors)}"
-end
-
-def normalize_build_mode(value)
-  mode = value.to_s.strip.downcase
-  unless BUILD_MODES.include?(mode)
-    raise ArgumentError, "Invalid build mode: #{value.inspect}. Expected one of: #{BUILD_MODES.join(', ')}"
-  end
-
-  mode
+def path_summary_line(path_name, summary)
+  "#{path_name}: #{summary_line(
+    matched: summary[:matched_files].to_i,
+    read: summary[:read_files].to_i,
+    created: summary[:created].to_i,
+    skipped: summary[:skipped].to_i,
+    errors: summary[:errors].to_i
+  )}"
 end
 
 def parse_cli_args(argv)
-  opts = { allow_empty_prune: false, non_interactive: false, build_mode: DEFAULT_BUILD_MODE, config_arg: nil }
+  options = {
+    allow_empty_prune: false,
+    non_interactive: false,
+    build_mode: DEFAULT_BUILD_MODE,
+    workers: SimpleRag::Indexing::Runner::DEFAULT_WORKERS,
+    config_arg: nil
+  }
 
-  idx = 0
-  while idx < argv.length
-    arg = argv[idx]
-    case arg
+  index = 0
+  while index < argv.length
+    argument = argv[index]
+    case argument
     when "--build-mode"
-      idx += 1
-      raise ArgumentError, "Missing value for --build-mode" if idx >= argv.length
-
-      opts[:build_mode] = normalize_build_mode(argv[idx])
+      index += 1
+      raise ArgumentError, "Missing value for --build-mode" if index >= argv.length
+      options[:build_mode] = normalize_build_mode(argv[index])
     when /\A--build-mode=(.*)\z/
-      opts[:build_mode] = normalize_build_mode(Regexp.last_match(1))
+      options[:build_mode] = normalize_build_mode(Regexp.last_match(1))
+    when "--workers"
+      index += 1
+      raise ArgumentError, "Missing value for --workers" if index >= argv.length
+      options[:workers] = positive_integer(argv[index], "--workers")
+    when /\A--workers=(.*)\z/
+      options[:workers] = positive_integer(Regexp.last_match(1), "--workers")
     when "--allow-empty-prune"
-      opts[:allow_empty_prune] = true
+      options[:allow_empty_prune] = true
     when "--non-interactive"
-      opts[:non_interactive] = true
+      options[:non_interactive] = true
     when "-h", "--help"
       STDOUT << usage_text
       exit 0
     when /\A-/
-      raise ArgumentError, "Unknown option: #{arg}"
+      raise ArgumentError, "Unknown option: #{argument}"
     else
-      if opts[:config_arg]
-        raise ArgumentError, "Invalid arguments received, expected at most one config file path"
-      end
-      opts[:config_arg] = arg
+      raise ArgumentError, "Expected at most one config file path" if options[:config_arg]
+      options[:config_arg] = argument
     end
-    idx += 1
+    index += 1
+  end
+  options
+end
+
+def normalize_build_mode(value)
+  mode = value.to_s.strip.downcase
+  raise ArgumentError, "Invalid build mode: #{value.inspect}. Expected one of: #{BUILD_MODES.join(', ')}" unless BUILD_MODES.include?(mode)
+  mode
+end
+
+def positive_integer(value, name)
+  number = Integer(value)
+  raise ArgumentError, "#{name} must be > 0" unless number.positive?
+  number
+rescue ArgumentError, TypeError
+  raise ArgumentError, "#{name} must be > 0"
+end
+
+class StatusPrinter
+  def initialize(enabled:)
+    @enabled = enabled
+    @mutex = Mutex.new
+    @messages = {}
+    @stop = false
   end
 
-  opts
+  def start
+    return unless @enabled
+
+    @thread = Thread.new do
+      previous = []
+      loop do
+        lines = @mutex.synchronize { @messages.values }
+        rendered = lines.empty? ? ["Indexing..."] : lines
+        previous = render(rendered, previous) if rendered != previous
+        break if @stop
+        sleep 0.25
+      end
+      Thread.current[:lines] = previous
+    end
+  end
+
+  def update(path, message)
+    @mutex.synchronize { @messages[path] = message } if @enabled
+  end
+
+  def stop
+    return unless @thread
+
+    @stop = true
+    @thread.join
+    clear(@thread[:lines] || [])
+  end
+
+  private
+
+  def render(lines, previous)
+    STDOUT << "\r" if previous.any?
+    STDOUT << "\e[#{previous.length - 1}F" if previous.length > 1
+    padded = lines.each_with_index.map { |line, index| line.ljust([line.length, previous[index].to_s.length].max) }
+    padded.each_with_index do |line, index|
+      STDOUT << "\e[2K" << line
+      STDOUT << "\n" unless index == padded.length - 1
+    end
+    STDOUT.flush
+    padded
+  end
+
+  def clear(lines)
+    return if lines.empty?
+
+    STDOUT << "\r"
+    STDOUT << "\e[#{lines.length - 1}F" if lines.length > 1
+    lines.each_index do |index|
+      STDOUT << "\e[2K"
+      STDOUT << "\n" unless index == lines.length - 1
+    end
+    STDOUT << "\e[#{lines.length - 1}F" if lines.length > 1
+    STDOUT << "\r"
+  end
 end
 
 begin
   cli = parse_cli_args(ARGV)
-rescue ArgumentError => e
-  STDOUT << "#{e.message}\n\n"
-  STDOUT << usage_text
+rescue ArgumentError => error
+  STDOUT << "#{error.message}\n\n#{usage_text}"
   exit 1
 end
 
@@ -113,419 +186,55 @@ unless config_file
 end
 
 begin
-  CONFIG = ConfigLoader.load_config(config_file)
-rescue => e
-  if cli[:non_interactive]
-    STDOUT << summary_line(matched: 0, read: 0, created: 0, skipped: 0, errors: 1) << "\n"
-  else
-    STDOUT << "Config error: #{e.message}\n"
-  end
+  config = ConfigLoader.load_config(config_file)
+rescue => error
+  message = cli[:non_interactive] ? summary_line(matched: 0, read: 0, created: 0, skipped: 0, errors: 1) : "Config error: #{error.message}"
+  STDOUT << "#{message}\n"
   exit 1
 end
 
+CONFIG = config
 unless cli[:non_interactive]
   STDOUT << "Using config: #{config_file}\n"
   STDOUT << "build_mode=#{cli[:build_mode]}\n"
+  STDOUT << "workers=#{cli[:workers]}\n"
   STDOUT << "allow_empty_prune=#{cli[:allow_empty_prune]}\n"
 end
 
 service_output = cli[:non_interactive] ? StringIO.new : STDOUT
-unless OllamaService.ensure_started(CONFIG, out: service_output)
+unless OllamaService.ensure_started(config, out: service_output)
   STDOUT << summary_line(matched: 0, read: 0, created: 0, skipped: 0, errors: 1) << "\n" if cli[:non_interactive]
   exit 9
 end
 
-missing_key_msg = ProviderEnvValidator.missing_key_message(CONFIG)
-if missing_key_msg
-  if cli[:non_interactive]
-    STDOUT << summary_line(matched: 0, read: 0, created: 0, skipped: 0, errors: 1) << "\n"
-  else
-    STDOUT << "#{missing_key_msg}\n"
-  end
+missing_key = ProviderEnvValidator.missing_key_message(config)
+if missing_key
+  message = cli[:non_interactive] ? summary_line(matched: 0, read: 0, created: 0, skipped: 0, errors: 1) : missing_key
+  STDOUT << "#{message}\n"
   exit 9
 end
 
-def each_scanned_file(path, out, status_cb)
-  return enum_for(__method__, path, out, status_cb) unless block_given?
-
-  status_cb.call("Scanning dir")
-  name_match = path.nameMatch || "*.{md,markdown}"
-  dir_blob = File.join(File.expand_path(path.dir), "**", name_match)
-  out << "Scan dir: #{dir_blob}\n"
-  Dir.glob(dir_blob) do |file|
-    next unless File.file?(file)
-
-    yield file
-  end
-end
-
-def reader_class_or_exit(path, out)
-  reader_class = get_reader(path.reader)
-  if reader_class.nil?
-    out << "Reader undefinied: #{path.reader}\n"
-    exit 9
-  end
-  reader_class
-end
-
-def resolve_build_mode(requested_mode, index_file_existed, last_scan_at)
-  return ["full", nil] if requested_mode == "full"
-  return ["full", "index does not exist"] unless index_file_existed
-  return ["full", "scan timestamp is missing"] if last_scan_at.nil?
-
-  ["delta", nil]
-end
-
-def format_scan_timestamp(timestamp)
-  Time.at(timestamp.to_f).strftime("%Y-%m-%d %H:%M:%S %z")
-end
-
-def modified_after?(file, timestamp)
-  File.mtime(file).to_f > timestamp.to_f
-rescue
-  true
-end
-
-def select_files_for_build(path, out, status_cb, build_mode:, last_scan_at:)
-  matched_files = []
-  files_to_index = []
-
-  each_scanned_file(path, out, status_cb) do |file|
-    matched_files << file
-    next if build_mode == "delta" && last_scan_at && !modified_after?(file, last_scan_at)
-
-    files_to_index << file
-  end
-
-  [matched_files, files_to_index]
-end
-
-def index_path_sqlite(path, out, status_cb, log_cb, allow_empty_prune:, build_mode:)
-  out << "Read path name: #{path.name}, reader: #{path.reader}\n"
-  status_cb.call("Reading index")
-
-  db_file = path.db_file.to_s
-  expanded_db_file = db_file == ":memory:" ? db_file : File.expand_path(db_file)
-  index_file_existed = db_file == ":memory:" ? false : File.exist?(expanded_db_file)
-  scan_started_at = Time.now
-
-  out << "Read existing sqlite index: #{path.db_file}@#{path.db_table}, time: @#{Time.now}\n"
-  store = SqliteIndex.new(path.db_file, path.db_table)
-  out << "Found index rows: #{store.row_count}\n"
-
-  last_scan_at = store.last_scan_completed_at
-  actual_build_mode, fallback_reason = resolve_build_mode(build_mode, index_file_existed, last_scan_at)
-  out << "Build mode: #{actual_build_mode}"
-  out << " (requested #{build_mode}; #{fallback_reason})" if fallback_reason
-  out << "\n"
-  out << "Last scan timestamp: #{last_scan_at ? format_scan_timestamp(last_scan_at) : 'none'}\n"
-
-  reader_class = reader_class_or_exit(path, out)
-  matched_files, files_to_index = select_files_for_build(
-    path,
-    out,
-    status_cb,
-    build_mode: actual_build_mode,
-    last_scan_at: last_scan_at
-  )
-  out << "Matched files: #{matched_files.length}\n"
-  if actual_build_mode == "delta"
-    out << "Files to read modified since #{format_scan_timestamp(last_scan_at)}: #{files_to_index.length}\n"
-  else
-    out << "Files to read for full build: #{files_to_index.length}\n"
-  end
-
-  error_count = 0
-  prune_skipped = false
-  read_files = 0
-
-  out << "Building index @#{Time.now}\n["
-  status_cb.call(path_summary_line(path.name, matched: matched_files.length, read: 0, created: 0, skipped: 0, errors: 0))
-  skipped = 0
-  created = 0
-
-  begin
-    files_to_index.each do |file|
-      read_files += 1
-      status_cb.call(path_summary_line(path.name, matched: matched_files.length, read: read_files, created: created, skipped: skipped, errors: error_count))
-      begin
-        # Readers own chunking through ChunkUtils; indexing persists their chunks unchanged.
-        chunks = reader_class.new(file).load.chunks
-      rescue => e
-        error_count += 1
-        out << "\nError reading #{file}: #{e.class}: #{e.message}\n"
-        out << "Backtrace: #{e.backtrace&.first}\n"
-        log_cb.call("[#{path.name}] Error reading #{file}: #{e.class}: #{e.message}")
-        next
-      end
-
-      valid_chunks = Set.new
-      pending_rows = []
-      file_chunk_hashes = store.chunk_hash_lookup_for_path(file)
-      chunk_rows = []
-      changed_hashes = Set.new
-
-      chunks.each_with_index do |chunk, chunk_idx|
-        begin
-          hash = Digest::SHA256.hexdigest(chunk)
-          chunk_rows << [chunk_idx, chunk, hash]
-          valid_chunks.add(chunk_idx)
-          next if file_chunk_hashes[chunk_idx] == hash
-
-          changed_hashes.add(hash)
-        rescue => e
-          error_count += 1
-          out << "\nError indexing file=#{file}, chunk=#{chunk_idx}: #{e.class}: #{e.message}\n"
-          out << "Hash: #{hash}\n" if defined?(hash)
-          out << "Backtrace: #{e.backtrace&.first}\n"
-          log_cb.call("[#{path.name}] Error indexing #{file} chunk #{chunk_idx}: #{e.class}: #{e.message}")
-          next
-        end
-      end
-
-      begin
-        existing_embeddings = store.embeddings_for_hashes(changed_hashes.to_a)
-      rescue => e
-        error_count += 1
-        out << "\nError loading existing embeddings for file=#{file}: #{e.class}: #{e.message}\n"
-        out << "Backtrace: #{e.backtrace&.first}\n"
-        log_cb.call("[#{path.name}] Error loading existing embeddings for #{file}: #{e.class}: #{e.message}")
-        existing_embeddings = {}
-      end
-
-      chunk_rows.each do |chunk_idx, chunk, hash|
-        begin
-          if file_chunk_hashes[chunk_idx] == hash
-            skipped += 1
-            next
-          end
-
-          emb = existing_embeddings[hash]
-          if emb.nil?
-            emb = embedding(chunk)
-            created += 1
-            existing_embeddings[hash] = emb
-          end
-
-          raise "Embedding missing for hash=#{hash}" if emb.nil?
-
-          normalized = normalize_embedding(emb)
-          bucket = bucket_key(normalized)
-
-          pending_rows << {
-            path: file,
-            chunk: chunk_idx,
-            hash: hash,
-            embedding: emb,
-            bucket: bucket,
-            text: chunk
-          }
-          file_chunk_hashes[chunk_idx] = hash
-        rescue => e
-          error_count += 1
-          out << "\nError indexing file=#{file}, chunk=#{chunk_idx}: #{e.class}: #{e.message}\n"
-          out << "Hash: #{hash}\n" if defined?(hash)
-          out << "Backtrace: #{e.backtrace&.first}\n"
-          log_cb.call("[#{path.name}] Error indexing #{file} chunk #{chunk_idx}: #{e.class}: #{e.message}")
-          next
-        end
-      end
-
-      store.transaction do
-        pending_rows.each { |row| store.upsert_chunk(row) }
-        store.delete_stale_chunks(file, valid_chunks)
-      end
-      if (read_files - 1) % 50 == 0
-        out << (read_files - 1)
-      else
-        out << "."
-      end
-    end
-
-    if matched_files.empty? && !allow_empty_prune
-      out << "Empty scan guard: skipping stale prune for #{path.name}. Re-run with --allow-empty-prune to allow pruning on empty scan.\n"
-      status_cb.call(path_summary_line(path.name, matched: matched_files.length, read: read_files, created: created, skipped: skipped, errors: error_count))
-      prune_skipped = true
-    end
-
-    if matched_files.empty? && allow_empty_prune
-      out << "\nallow-empty-prune enabled: pruning all rows in table #{path.db_table} due to empty scan.\n"
-    end
-
-    unless prune_skipped
-      store.transaction do
-        store.delete_stale_paths(matched_files)
-      end
-    end
-
-    if error_count.zero? && !prune_skipped
-      store.record_scan_completed_at(scan_started_at)
-      out << "Recorded scan timestamp: #{format_scan_timestamp(scan_started_at.to_f)}\n"
-    else
-      reasons = []
-      reasons << "#{error_count} errors occurred" unless error_count.zero?
-      reasons << "stale prune was skipped" if prune_skipped
-      out << "Scan timestamp not updated because #{reasons.join(' and ')}.\n"
-    end
-  ensure
-    store.close
-  end
-
-  out << "]\nDone @#{Time.now}, Matched: #{matched_files.length}, Read: #{read_files}, Created: #{created}, Skipped: #{skipped}, Errors: #{error_count}\n"
-  status_cb.call(path_summary_line(path.name, matched: matched_files.length, read: read_files, created: created, skipped: skipped, errors: error_count))
-  {
-    created: created,
-    skipped: skipped,
-    errors: error_count,
-    matched_files: matched_files.length,
-    read_files: read_files,
-    files: read_files,
-    prune_skipped: prune_skipped
-  }
-end
-
-def index_path(path, out, status_cb, log_cb, allow_empty_prune:, build_mode:)
-  unless path.db_file && path.db_table
-    raise ArgumentError, %(Path "#{path.name}" must set "db". JSONL indexing has been removed.)
-  end
-
-  index_path_sqlite(path, out, status_cb, log_cb, allow_empty_prune: allow_empty_prune, build_mode: build_mode)
-end
-
-interactive_status = STDOUT.tty? && !cli[:non_interactive]
-status_mutex = Mutex.new
-status_map = {}
-
-status_cb =
-  if interactive_status
-    lambda do |name, msg|
-      status_mutex.synchronize { status_map[name] = msg }
-    end
-  else
-    ->(_name, _msg) {}
-  end
-
-log_cb = ->(_line) {}
-printer_stop = false
-printer = Thread.new do
-  next unless interactive_status
-
-  previous_lines = []
-  loop do
-    lines = nil
-    status_mutex.synchronize do
-      lines = status_map.values
-    end
-
-    render_lines = lines.empty? ? ["Indexing..."] : lines
-    if render_lines != previous_lines
-      if previous_lines.any?
-        STDOUT << "\r"
-        STDOUT << "\e[#{previous_lines.length - 1}F" if previous_lines.length > 1
-      end
-
-      padded_lines = render_lines.each_with_index.map do |line, idx|
-        line.ljust([line.length, previous_lines[idx].to_s.length].max)
-      end
-
-      padded_lines.each_with_index do |line, idx|
-        STDOUT << "\e[2K" << line
-        STDOUT << "\n" unless idx == padded_lines.length - 1
-      end
-      STDOUT.flush
-      previous_lines = padded_lines
-      Thread.current[:status_lines] = previous_lines
-    end
-
-    break if printer_stop
-    sleep 0.25
-  end
-end
-
-threads = CONFIG.paths.map do |path|
-  Thread.new do
-    buffer = StringIO.new
-    failed = false
-    summary = nil
-    begin
-      status_cb.call(path.name, "#{path.name}: Starting")
-      summary = index_path(
-        path,
-        buffer,
-        ->(msg) { status_cb.call(path.name, msg) },
-        log_cb,
-        allow_empty_prune: cli[:allow_empty_prune],
-        build_mode: cli[:build_mode]
-      )
-      failed = summary[:errors].to_i > 0
-    rescue => e
-      failed = true
-      buffer << "\nThread error: #{e.class}: #{e.message}\n"
-      buffer << "Backtrace: #{e.backtrace&.first}\n"
-    ensure
-      Thread.current[:output] = buffer.string
-      Thread.current[:path_name] = path.name
-      Thread.current[:failed] = failed
-      Thread.current[:summary] = summary
-      if failed
-        status_cb.call(path.name, "#{path.name}: Failed")
-      elsif summary
-        status_cb.call(path.name, path_summary_line(path.name, matched: summary[:matched_files].to_i, read: summary[:read_files].to_i, created: summary[:created].to_i, skipped: summary[:skipped].to_i, errors: summary[:errors].to_i))
-      else
-        status_cb.call(path.name, "#{path.name}: Finished")
-      end
-    end
-  end
-end
-
-threads.each(&:join)
-printer_stop = true
-printer.join
-if interactive_status
-  status_lines = printer[:status_lines] || []
-  if status_lines.any?
-    STDOUT << "\r"
-    STDOUT << "\e[#{status_lines.length - 1}F" if status_lines.length > 1
-    status_lines.each_with_index do |_line, idx|
-      STDOUT << "\e[2K"
-      STDOUT << "\n" unless idx == status_lines.length - 1
-    end
-    STDOUT << "\e[#{status_lines.length - 1}F" if status_lines.length > 1
-    STDOUT << "\r"
-  end
-end
+printer = StatusPrinter.new(enabled: STDOUT.tty? && !cli[:non_interactive])
+printer.start
+indexer = SimpleRag::Indexing::Indexer.new(embedding_fn: method(:embedding), reader_resolver: method(:get_reader))
+runner = SimpleRag::Indexing::Runner.new(indexer: indexer, workers: cli[:workers])
+results = runner.run(
+  config.paths,
+  allow_empty_prune: cli[:allow_empty_prune],
+  build_mode: cli[:build_mode],
+  on_status: printer.method(:update)
+)
+printer.stop
 
 unless cli[:non_interactive]
-  threads.each do |thread|
-    next unless thread[:failed]
-
-    output = thread[:output].to_s
-    next if output.empty?
-
-    STDOUT << "\n#{thread[:path_name] || 'path'} errors:\n"
-    STDOUT << output
+  results.select(&:failed?).each do |result|
+    next if result.output.empty?
+    STDOUT << "\n#{result.path} errors:\n#{result.output}"
   end
 end
+results.each { |result| STDOUT << "#{path_summary_line(result.path, result.summary)}\n" if result.summary }
 
-threads.each do |thread|
-  summary = thread[:summary]
-  next unless summary
-
-  STDOUT << path_summary_line(
-    thread[:path_name] || "path",
-    matched: summary[:matched_files].to_i,
-    read: summary[:read_files].to_i,
-    created: summary[:created].to_i,
-    skipped: summary[:skipped].to_i,
-    errors: summary[:errors].to_i
-  ) << "\n"
-end
-
-failed_paths = threads.filter_map do |t|
-  next unless t[:failed]
-  t[:path_name] || "path"
-end
-
+failed_paths = results.select(&:failed?).map(&:path)
 if failed_paths.any?
   STDOUT << "Failed paths: #{failed_paths.join(', ')}\n" unless cli[:non_interactive]
   exit 1

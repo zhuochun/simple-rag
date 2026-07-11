@@ -84,10 +84,11 @@ embedding_fn = lambda do |text|
 ensure
   embedding_ms += elapsed_ms(started_at)
 end
+locator = SimpleRag::DocumentLocator.new
 executor = RetrievalExecutor.new(
   embedding_fn: embedding_fn,
-  id_fn: method(:extract_id),
-  url_fn: method(:extract_url)
+  id_fn: locator.method(:id),
+  url_fn: locator.method(:url)
 )
 retriever = Retriever.new(
   planner: QueryPlanner.new(chat_fn: method(:chat)),
@@ -115,7 +116,7 @@ retriever = Retriever.new(
     end
   end
 end
-executor.close
+retriever.close
 
 totals = samples.map { |sample| sample[:total_ms] }
 summary = {

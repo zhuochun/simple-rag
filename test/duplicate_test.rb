@@ -1,50 +1,54 @@
+require "ostruct"
+
 require_relative "../server/duplicate"
-require "digest"
 
-def assert_equal(expected, actual)
-  raise "Expected #{expected.inspect}, got #{actual.inspect}" unless expected == actual
-end
+class DuplicateFinderTest
+  class FakeCatalog
+    def initialize(entries)
+      @entries = entries
+    end
 
-def duplicate_item(path, chunk)
-  {
-    path: "lookup",
-    id: path,
-    url: path,
-    source_path: path,
-    chunk: chunk,
-    hash: Digest::SHA256.hexdigest("#{path}##{chunk}"),
-    embedding: [1.0, 0.0],
-    bucket: 0,
-    text: "#{path}##{chunk}",
-  }
-end
+    def each_item(_paths)
+      @entries.each { |path, row| yield path, row }
+    end
+  end
 
-items = [
-  duplicate_item("same.md", 0),
-  duplicate_item("same.md", 1),
-]
-assert_equal 2, pre_dedup_duplicate_items(items).length
+  def test_find_returns_complete_link_clusters_with_stable_ids
+    path = OpenStruct.new(name: "notes", url: nil)
+    catalog = FakeCatalog.new([
+      [path, row("left.md", [1.0, 0.0])],
+      [path, row("right.md", [0.999, 0.001])],
+      [path, row("other.md", [0.0, 1.0])],
+    ])
+    finder = SimpleRag::DuplicateFinder.new(catalog: catalog)
 
-FakeStore = Struct.new(:rows, :calls) do
-  def vector_search(_embedding, _limit)
-    self.calls = calls.to_i + 1
-    rows
+    clusters = finder.find([path], threshold: 0.99, cross_document_only: true)
+
+    assert_equal 1, clusters.length
+    assert_equal "left.md#0|right.md#0", clusters.first[:id]
+    assert_equal %w[left.md right.md], clusters.first[:items].map { |item| item[:source_path] }.sort
+  end
+
+  private
+
+  def row(path, embedding)
+    {
+      "path" => path,
+      "chunk" => 0,
+      "hash" => "#{path}-0",
+      "embedding" => embedding,
+      "bucket" => EmbeddingMath.bucket_key(EmbeddingMath.normalize(embedding)),
+      "text" => path
+    }
+  end
+
+  def assert_equal(expected, actual)
+    raise "Expected #{expected.inspect}, got #{actual.inspect}" unless expected == actual
   end
 end
 
-items = [
-  duplicate_item("left.md", 0),
-  duplicate_item("right.md", 0),
-]
-buckets = Hash.new { |hash, key| hash[key] = [] }
-store = FakeStore.new([{ "path" => "right.md", "chunk" => 0 }], 0)
-by_source_path, by_source_path_chunk = build_index_maps(items)
-candidates = candidate_indices_for_item(items, buckets, 0, store, by_source_path, by_source_path_chunk)
-assert_equal [1], candidates
-assert_equal 1, store.calls
-
-adjacency, = build_similarity_graph(items, buckets, 0.99, false)
-assert_equal [1], adjacency[0].to_a
-assert_equal [0], adjacency[1].to_a
-
-puts "duplicate_test: passed"
+if $PROGRAM_NAME == __FILE__
+  test = DuplicateFinderTest.new
+  test.test_find_returns_complete_link_clusters_with_stable_ids
+  puts "test_find_returns_complete_link_clusters_with_stable_ids: passed"
+end

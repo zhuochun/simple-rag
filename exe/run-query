@@ -164,6 +164,7 @@ lookup_paths = nil
 unless payload
   require_relative "../lib/config_loader"
   require_relative "../server/retriever"
+  require_relative "../llm/llm"
   require_relative "../lib/ollama_service"
   require_relative "../lib/provider_env_validator"
 
@@ -189,10 +190,16 @@ unless payload
   end
 
   begin
-    payload = build_retriever.retrieve_q(lookup_paths, query, top_n: options[:limit])
+    retriever = SimpleRag::RetrieverFactory.build(
+      chat_fn: method(:chat),
+      embedding_fn: method(:embedding)
+    )
+    payload = retriever.retrieve_q(lookup_paths, query, top_n: options[:limit])
   rescue RetrievalInputError => e
     STDOUT << "#{e.message}\n"
     exit 1
+  ensure
+    retriever&.close
   end
 end
 

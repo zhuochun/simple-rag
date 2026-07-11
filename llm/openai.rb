@@ -6,11 +6,7 @@ def openai_chat(messages, model, url, opts = {})
     "messages" => messages
   }.merge(opts)
 
-  response = http_post(url, ENV["DOT_OPENAI_KEY"], data)
-
-  if response.code != "200"
-    raise_http_error("Chat error", response, url)
-  end
+  response = LlmHttp.post_json!(url, data, error_prefix: "Chat error", headers: { "Authorization" => "Bearer #{ENV['DOT_OPENAI_KEY']}" })
 
   result = JSON.parse(response.body)
   STDOUT << "Chat usage: #{result["usage"]}, model: #{data["model"]}\n"
@@ -24,11 +20,7 @@ def openai_embedding(txts, model, url, opts = {})
     "input" => txts
   }.merge(opts)
 
-  response = http_post(url, ENV["DOT_OPENAI_KEY"], data)
-
-  if response.code != "200"
-    raise_http_error("Embedding error", response, url)
-  end
+  response = LlmHttp.post_json!(url, data, error_prefix: "Embedding error", headers: { "Authorization" => "Bearer #{ENV['DOT_OPENAI_KEY']}" })
 
   result = JSON.parse(response.body)
   result["data"][0]["embedding"]

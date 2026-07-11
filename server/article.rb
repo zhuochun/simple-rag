@@ -1,136 +1,111 @@
-require 'net/http'
-require 'uri'
-require 'time'
-require_relative '../llm/llm'
+require "fileutils"
+require "time"
+require "uri"
 
-JINA_READER_API = 'https://r.jina.ai/'
+require_relative "../llm/http"
 
-EXTRACT_PROMPT = <<~PROMPT
-Extract the core concepts, opinions and discussions from the following text.
-Organize related points into groups separated by blank lines.
-Return the result in concise markdown bullet points.
-PROMPT
+module SimpleRag
+  class ArticleReader
+    JINA_READER_URL = "https://r.jina.ai/".freeze
+    READ_TIMEOUT = 60
+    EXTRACT_PROMPT = <<~PROMPT.freeze
+      Extract the core concepts, opinions and discussions from the following text.
+      Organize related points into groups separated by blank lines.
+      Return the result in concise markdown bullet points.
+    PROMPT
 
-# Fetch article markdown using Jina Reader
-# url: string
-# Returns markdown text
+    def initialize(token: nil, cache_dir: nil, chat_fn: nil, http_factory: nil, clock: nil)
+      @token = token.to_s
+      @cache_dir = cache_dir.to_s
+      @chat_fn = chat_fn
+      @http_factory = http_factory
+      @clock = clock || -> { Time.now }
+    end
 
-def fetch_article(url)
-  uri = URI("#{JINA_READER_API}#{url}")
-  request = Net::HTTP::Get.new(uri)
-  token = cfg(:jina, 'token', '')
-  request['Authorization'] = "Bearer #{token}" unless token.to_s.empty?
+    def fetch_and_cache(source_url)
+      article = fetch(source_url)
+      { article: article, cached_file: save(source_url, article) }
+    end
 
-  Net::HTTP.start(uri.hostname, uri.port, use_ssl: true) do |http|
-    response = http.request(request)
-    response.body
+    def list_cached
+      return [] if @cache_dir.empty? || !Dir.exist?(@cache_dir)
+
+      Dir.children(@cache_dir).filter_map do |name|
+        next unless name.downcase.end_with?(".md")
+
+        path = File.join(@cache_dir, name)
+        next unless File.file?(path)
+
+        { name: name, updated_at: File.mtime(path).utc.iso8601 }
+      end.sort_by { |item| item[:updated_at] }.reverse
+    end
+
+    def read_cached(name)
+      raise ArgumentError, "Cache directory is not configured" if @cache_dir.empty?
+      raise ArgumentError, "Cache directory does not exist" unless Dir.exist?(@cache_dir)
+
+      filename = File.basename(name.to_s)
+      path = File.expand_path(File.join(@cache_dir, filename))
+      root = File.expand_path(@cache_dir)
+      unless path.start_with?("#{root}#{File::SEPARATOR}") && File.file?(path)
+        raise ArgumentError, "Cache file not found"
+      end
+
+      File.read(path, encoding: "UTF-8")
+    end
+
+    def extract(text)
+      raise ArgumentError, "Input text is required" if text.to_s.strip.empty?
+      raise RuntimeError, "Chat provider is unavailable" unless @chat_fn
+
+      extraction = @chat_fn.call([
+        { role: "system", content: EXTRACT_PROMPT },
+        { role: "user", content: text.to_s }
+      ])
+      {
+        extraction: extraction,
+        groups: extraction.to_s.strip.split(/\n\s*\n+/).map(&:strip).reject(&:empty?)
+      }
+    end
+
+    private
+
+    def fetch(source_url)
+      source = validate_source_url(source_url)
+      headers = {}
+      headers["Authorization"] = "Bearer #{@token}" unless @token.empty?
+      response = LlmHttp.get!(
+        "#{JINA_READER_URL}#{source}",
+        error_prefix: "Article fetch failed",
+        headers: headers,
+        http_factory: @http_factory,
+        read_timeout: READ_TIMEOUT
+      )
+      response.body.to_s
+    end
+
+    def validate_source_url(source_url)
+      uri = URI(source_url.to_s)
+      unless %w[http https].include?(uri.scheme) && !uri.host.to_s.empty?
+        raise ArgumentError, "Article URL must use http or https and include a host"
+      end
+
+      uri.to_s
+    rescue URI::InvalidURIError => error
+      raise ArgumentError, "Invalid article URL: #{error.message}"
+    end
+
+    def save(source_url, article)
+      return nil if @cache_dir.empty?
+
+      FileUtils.mkdir_p(@cache_dir)
+      uri = URI(source_url)
+      path_slug = uri.path.gsub(/[^0-9A-Za-z]+/, "-").sub(/\A-+|\-+\z/, "")
+      path_slug = "root" if path_slug.empty?
+      timestamp = @clock.call.strftime("%Y-%m-%d-%H")
+      filename = File.join(@cache_dir, "#{timestamp}-#{uri.host}-#{path_slug}.md")
+      File.write(filename, "# URL\n#{source_url}\n\n## Original Content\n#{article}\n", encoding: "UTF-8")
+      filename
+    end
   end
 end
-
-def cache_dir
-  cfg(:jina, 'cacheDir', '')
-end
-
-# Return cached markdown files sorted by mtime descending.
-def list_cached_articles
-  dir = cache_dir.to_s
-  return [] if dir.strip.empty? || !Dir.exist?(dir)
-
-  Dir.children(dir)
-     .select { |name| name.downcase.end_with?('.md') }
-     .map do |name|
-       path = File.join(dir, name)
-       next unless File.file?(path)
-
-       {
-         name: name,
-         updated_at: File.mtime(path).utc.iso8601,
-       }
-     end
-     .compact
-     .sort_by { |item| item[:updated_at] }
-     .reverse
-end
-
-# Read a single cached article file.
-def read_cached_article(name)
-  dir = cache_dir.to_s
-  raise ArgumentError, 'Cache directory is not configured' if dir.strip.empty?
-  raise ArgumentError, 'Cache directory does not exist' unless Dir.exist?(dir)
-
-  fname = File.basename(name.to_s)
-  path = File.expand_path(File.join(dir, fname))
-  root = File.expand_path(dir)
-  unless path == root || path.start_with?("#{root}#{File::SEPARATOR}")
-    raise ArgumentError, 'Invalid cache file path'
-  end
-  raise ArgumentError, 'Cache file not found' unless File.file?(path)
-
-  File.read(path)
-end
-
-# Save article URL and analysis to cache markdown file
-# url: the original URL
-# article: fetched markdown text
-# extraction: extracted bullet points
-# argument: new content bullet points
-def save_article_result(url, article, extraction, argument)
-  dir = cache_dir.to_s
-  return if dir.to_s.strip.empty?
-
-  require 'fileutils'
-  FileUtils.mkdir_p(dir)
-
-  host = 'unknown'
-  path = 'content'
-  begin
-    uri = URI.parse(url)
-    host = uri.host || host
-    path = uri.path.gsub(%r{[^0-9A-Za-z]+}, '-')
-    path = 'root' if path.empty?
-  rescue
-    # ignore malformed urls
-  end
-
-  ts = Time.now.strftime('%Y-%m-%d-%H')
-  fname = File.join(dir, "#{ts}-#{host}-#{path}.md")
-
-  File.open(fname, 'w') do |f|
-    f.puts "# URL"
-    f.puts url
-    f.puts
-    f.puts "## Original Content"
-    f.puts article
-    f.puts
-    f.puts "## Extraction"
-    f.puts extraction
-    f.puts
-    f.puts "## New Content"
-    f.puts argument
-  end
-
-  fname
-rescue StandardError => e
-  warn "Failed to save article result: #{e.message}"
-  nil
-end
-
-# Extract core concepts from article markdown
-# text: markdown text
-# Returns concise markdown bullet points
-
-def extract_article(text)
-  msgs = [
-    { role: ROLE_SYSTEM, content: EXTRACT_PROMPT },
-    { role: ROLE_USER, content: text }
-  ]
-  chat(msgs)
-end
-
-# Split the extracted text into thematic groups separated by blank lines.
-# extraction: string returned from +extract_article+
-# Returns an array of strings, one per group.
-def split_extraction_groups(extraction)
-  extraction.to_s.strip.split(/\n\s*\n+/).map(&:strip).reject(&:empty?)
-end
-

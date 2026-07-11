@@ -124,10 +124,11 @@ def run_scenario(scenario, queries, path_names, limit)
   raise "Embedding provider is not ready" unless OllamaService.ensure_started(config, sections: [:embedding])
 
   lookup_paths = QueryHelpers.resolve_lookup_paths(config, path_names, default_to_search_default: true)
+  locator = SimpleRag::DocumentLocator.new
   executor = RetrievalExecutor.new(
     embedding_fn: method(:embedding),
-    id_fn: method(:extract_id),
-    url_fn: method(:extract_url),
+    id_fn: locator.method(:id),
+    url_fn: locator.method(:url),
     vector_candidate_depth: scenario[:depth][:vector],
     bm25_candidate_depth: scenario[:depth][:bm25]
   )
@@ -159,7 +160,7 @@ def run_scenario(scenario, queries, path_names, limit)
     samples: samples,
   }
 ensure
-  executor&.close
+  retriever&.close
 end
 
 options = {

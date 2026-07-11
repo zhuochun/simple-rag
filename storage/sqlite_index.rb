@@ -21,6 +21,7 @@ class SqliteIndex
     @vector_error = nil
     @vector_dim_cache = nil
     @vector_dim_loaded = false
+    @vector_schema_ready = false
     @vector_available = setup_vector_extension
     raise RuntimeError, vector_unavailable_message unless @vector_available
 
@@ -40,9 +41,20 @@ class SqliteIndex
     raise
   end
 
-  def upsert_chunk(item)
-    row = normalize_row(item)
-    @db.execute(<<~SQL, [row["path"], row["chunk"], row["hash"], row["embedding"], row["bucket"], row["text"]])
+  def upsert_chunks(items)
+    rows = Array(items).map { |item| normalize_row(item) }
+    return 0 if rows.empty?
+
+    dimensions = rows.map { |row| parse_embedding(row["embedding"]).length }.uniq
+    raise ArgumentError, "Vector dimension mismatch within batch: #{dimensions.join(', ')}" unless dimensions.length == 1
+
+    ensure_vector_table_for_dim!(dimensions.first)
+    rows.each { |row| upsert_normalized_row(row) }
+    rows.length
+  end
+
+  def upsert_normalized_row(row)
+    rowid = @db.get_first_value(<<~SQL, [row["path"], row["chunk"], row["hash"], row["embedding"], row["bucket"], row["text"]])
       INSERT INTO #{quoted_table} (path, chunk, hash, embedding, bucket, text)
       VALUES (?, ?, ?, ?, ?, ?)
       ON CONFLICT(path, chunk) DO UPDATE SET
@@ -50,12 +62,12 @@ class SqliteIndex
         embedding = excluded.embedding,
         bucket = excluded.bucket,
         text = excluded.text
+      RETURNING rowid
     SQL
-
-    rowid = @db.get_first_value("SELECT rowid FROM #{quoted_table} WHERE path = ? AND chunk = ?", [row["path"], row["chunk"]])
     sync_fts_row(rowid, row)
     sync_vector_row(rowid, row)
   end
+  private :upsert_normalized_row
 
   def each_item
     @db.execute("SELECT path, chunk, hash, embedding, bucket, text FROM #{quoted_table}") do |row|
@@ -501,16 +513,21 @@ class SqliteIndex
       raise ArgumentError, "Vector dimension mismatch: existing=#{existing}, new=#{dim}"
     end
 
+    return true if @vector_schema_ready
+
     @db.execute(<<~SQL)
       CREATE VIRTUAL TABLE IF NOT EXISTS #{quoted_vector_table}
       USING vec0(embedding float[#{dim.to_i}] distance_metric=#{VECTOR_DISTANCE_METRIC})
     SQL
-    @db.execute(
-      "INSERT INTO #{quoted_meta_table}(key, value) VALUES('vector_dim', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-      [dim.to_i.to_s]
-    )
+    if existing.nil? || existing <= 0
+      @db.execute(
+        "INSERT INTO #{quoted_meta_table}(key, value) VALUES('vector_dim', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        [dim.to_i.to_s]
+      )
+    end
     @vector_dim_cache = dim.to_i
     @vector_dim_loaded = true
+    @vector_schema_ready = true
     true
   rescue => e
     @vector_error = "vector index initialization failed (#{e.class}: #{e.message})"
@@ -520,7 +537,6 @@ class SqliteIndex
   def sync_vector_row(rowid, row)
     emb = parse_embedding(row["embedding"])
     raise ArgumentError, "Vector embedding must not be empty" if emb.empty?
-    ensure_vector_table_for_dim!(emb.length)
     raise RuntimeError, "Canonical SQLite row is missing after upsert" if rowid.nil?
 
     @db.execute("DELETE FROM #{quoted_vector_table} WHERE rowid = ?", [rowid.to_i])

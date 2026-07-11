@@ -80,12 +80,13 @@ class RetrievalPipelineTest
   end
 
   class StaticExecutor
-    attr_reader :plans
+    attr_reader :plans, :closed
 
     def initialize(source_lists = [], error: nil)
       @source_lists = source_lists
       @error = error
       @plans = []
+      @closed = false
     end
 
     def execute_plan(plan, _lookup_paths, top_n:)
@@ -94,6 +95,10 @@ class RetrievalPipelineTest
 
       @plans << plan
       @source_lists
+    end
+
+    def close
+      @closed = true
     end
   end
 
@@ -391,6 +396,15 @@ class RetrievalPipelineTest
     assert_raises(RetrievalInputError) { retriever.retrieve_q([path("docs")], "alpha", top_n: 0) }
     assert_raises(RetrievalInputError) { retriever.retrieve_q([path("docs")], "alpha", top_n: 101) }
     assert_raises(RetrievalInputError) { retriever.retrieve_q([], "alpha", top_n: 5) }
+  end
+
+  def test_retriever_closes_its_executor
+    executor = StaticExecutor.new
+    retriever = Retriever.new(planner: planner_with_responses, executor: executor)
+
+    retriever.close
+
+    assert_equal true, executor.closed
   end
 
   def test_empty_embedding_raises_backend_failure

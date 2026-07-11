@@ -1,430 +1,125 @@
 #!/usr/bin/env ruby
 # encoding: utf-8
 
-# Query and answer questions based on SQLite indexes.
-#
-# Usage: run-server [config.json] [--bind HOSTNAME] [--port PORT]
-#
-# Requires provider API keys for configured providers.
-
-require "json"
 require "digest"
 require "optparse"
-require "set"
 require "pathname"
+
 begin
-    require "bundler/setup"
+  require "bundler/setup"
 rescue LoadError
 end
-if Gem::Platform.local.to_s.include?("mingw-ucrt")
-    require "webrick"
-end
-require "sinatra/base"
 
-require_relative "../server/retriever"
-require_relative "../server/discuss"
-require_relative "../server/duplicate"
+require_relative "../llm/llm"
+require_relative "../server/app"
 require_relative "../server/article"
+require_relative "../server/cache"
+require_relative "../server/discuss"
+require_relative "../server/dismissal_store"
+require_relative "../server/duplicate"
+require_relative "../server/retriever"
 require_relative "../lib/config_loader"
 require_relative "../lib/config_path_resolver"
 require_relative "../lib/ollama_service"
 require_relative "../lib/provider_env_validator"
-require_relative "../lib/query_helpers"
 
-options = {
-    bind: nil,
-    port: nil,
-}
-
+options = { bind: nil, port: nil }
 parser = OptionParser.new do |opts|
-    opts.banner = "Usage: run-server [config.json] [--bind HOSTNAME] [--port PORT]"
-
-    opts.on("--bind HOSTNAME", "Bind the server to a specific hostname or IP address") do |host|
-        options[:bind] = host
-    end
-
-    opts.on("--port PORT", Integer, "Bind the server to a specific port") do |port|
-        options[:port] = port
-    end
+  opts.banner = "Usage: run-server [config.json] [--bind HOSTNAME] [--port PORT]"
+  opts.on("--bind HOSTNAME", "Bind the server to a specific hostname or IP address") { |host| options[:bind] = host }
+  opts.on("--port PORT", Integer, "Bind the server to a specific port") { |port| options[:port] = port }
 end
 
 begin
-    parser.parse!(ARGV)
-rescue OptionParser::ParseError => e
-    STDOUT << "#{e.message}\n#{parser}\n"
-    exit 1
+  parser.parse!(ARGV)
+  raise OptionParser::InvalidArgument, "expected at most one config file path" if ARGV.length > 1
+rescue OptionParser::ParseError => error
+  STDOUT << "#{error.message}\n#{parser}\n"
+  exit 1
 end
 
-if ARGV.length > 1
-    STDOUT << "Invalid arguments received, expected at most one config file path\n#{parser}\n"
-    exit 1
+config_file = ConfigPathResolver.resolve_config_path(ARGV[0])
+unless config_file
+  STDOUT << "#{ConfigPathResolver.default_search_message}\n"
+  exit 1
 end
-
-CONFIG_FILE = ConfigPathResolver.resolve_config_path(ARGV[0])
-unless CONFIG_FILE
-    STDOUT << "#{ConfigPathResolver.default_search_message}\n"
-    exit 1
-end
-
-CONFIG_BASE_DIR = File.dirname(CONFIG_FILE)
 
 begin
-    CONFIG = ConfigLoader.load_config(CONFIG_FILE, with_path_map: true)
-rescue => e
-    STDOUT << "Config error: #{e.message}\n"
-    exit 1
-end
-CONFIG_DIGEST = Digest::SHA256.file(CONFIG_FILE).hexdigest
-
-exit 9 unless OllamaService.ensure_started(CONFIG, sections: [:embedding])
-
-DISMISSED_FILE = CONFIG.dismissedDuplicatesFile
-DISMISSED_CLUSTERS = if DISMISSED_FILE && File.exist?(DISMISSED_FILE)
-    Set.new(File.read(DISMISSED_FILE).split(/\n+/))
-else
-    Set.new
+  config = ConfigLoader.load_config(config_file, with_path_map: true)
+rescue => error
+  STDOUT << "Config error: #{error.message}\n"
+  exit 1
 end
 
-def save_dismissed
-    return unless DISMISSED_FILE
-    File.open(DISMISSED_FILE, "w") do |f|
-        DISMISSED_CLUSTERS.each { |id| f.puts(id) }
-    end
+# The provider functions still read CONFIG; all server modules receive explicit dependencies.
+CONFIG = config
+
+exit 9 unless OllamaService.ensure_started(config, sections: [:embedding])
+missing_key = ProviderEnvValidator.missing_key_message(config, sections: [:embedding])
+if missing_key
+  STDOUT << "#{missing_key}\n"
+  exit 9
 end
 
-def resolve_lookup_paths(selected, default_to_search_default: false)
-    QueryHelpers.resolve_lookup_paths(CONFIG, selected, default_to_search_default: default_to_search_default)
+locator = SimpleRag::DocumentLocator.new
+catalog = SimpleRag::IndexCatalog.new(locator: locator)
+cached_embedding = ->(query) { CACHE.get_or_set(query, method(:embedding).to_proc) }
+retriever = SimpleRag::RetrieverFactory.build(
+  chat_fn: method(:chat),
+  embedding_fn: cached_embedding,
+  locator: locator
+)
+similarity_retriever = SimpleRag::SimilarityRetriever.new(
+  embedding_fn: cached_embedding,
+  catalog: catalog
+)
+duplicate_finder = SimpleRag::DuplicateFinder.new(catalog: catalog, locator: locator)
+
+base_dir = File.dirname(config_file)
+dismissed_path = config.respond_to?(:dismissedDuplicatesFile) ? config.dismissedDuplicatesFile.to_s.strip : ""
+unless dismissed_path.empty? || Pathname.new(dismissed_path).absolute?
+  dismissed_path = File.expand_path(dismissed_path, base_dir)
 end
+dismissals = SimpleRag::DismissalStore.new(dismissed_path)
 
-def map_data_file_path
-    map_cfg = CONFIG.respond_to?(:map) ? CONFIG.map : nil
-    configured = if map_cfg.respond_to?(:path)
-        map_cfg.path
-    elsif map_cfg.is_a?(Hash)
-        map_cfg[:path] || map_cfg["path"]
-    end.to_s.strip
-    raise %(Config field "map.path" is required for map endpoints) if configured.empty?
-    raw = configured
-    path = Pathname.new(raw)
-    path.absolute? ? path.to_s : File.expand_path(raw, CONFIG_BASE_DIR)
+jina = config.respond_to?(:jina) ? config.jina : nil
+jina_token = jina.respond_to?(:token) ? jina.token : jina.is_a?(Hash) ? jina["token"] : nil
+cache_dir = jina.respond_to?(:cacheDir) ? jina.cacheDir : jina.is_a?(Hash) ? jina["cacheDir"] : nil
+if cache_dir && !cache_dir.to_s.strip.empty? && !Pathname.new(cache_dir.to_s).absolute?
+  cache_dir = File.expand_path(cache_dir.to_s, base_dir)
 end
+article_reader = SimpleRag::ArticleReader.new(
+  token: jina_token,
+  cache_dir: cache_dir,
+  chat_fn: method(:chat)
+)
 
-def top_n_by_score(entries, top_n)
-    QueryHelpers.top_n_by_score(entries, top_n)
-end
-
-def serialize_entries(entries)
-    QueryHelpers.serialize_entries(entries)
-end
-
-def parse_top_n(raw, default:)
-    return default if raw.nil?
-
-    Integer(raw)
-rescue ArgumentError, TypeError
-    raise RetrievalInputError, "topN must be an integer"
-end
-
-def find_indexed_note_ref(lookup, path, chunk, hash = nil)
-    lookup = lookup.to_s
-    path = path.to_s
-    return nil if lookup.empty? || path.empty?
-
-    chunk_idx = Integer(chunk)
-    path_cfg = CONFIG.path_map[lookup]
-    return nil unless path_cfg
-
-    with_sqlite_store(path_cfg) do |store|
-        row = store.find_chunk(path, chunk_idx, hash: hash)
-        return [path_cfg, row] if row
-    end
-
-    nil
-rescue ArgumentError, JSON::ParserError, TypeError
-    nil
-end
-
-missing_key_msg = ProviderEnvValidator.missing_key_message(CONFIG, sections: [:embedding])
-if missing_key_msg
-    STDOUT << "#{missing_key_msg}\n"
-    exit 9
-end
-
-RETRIEVER = build_retriever
+runtime = SimpleRag::ServerRuntime.new(
+  config_file: config_file,
+  config_digest: Digest::SHA256.file(config_file).hexdigest,
+  config: config,
+  retriever: retriever,
+  similarity_retriever: similarity_retriever,
+  duplicate_finder: duplicate_finder,
+  catalog: catalog,
+  locator: locator,
+  dismissals: dismissals,
+  article_reader: article_reader,
+  discuss_fn: method(:discuss_note)
+)
 
 begin
-    CONFIG.paths.each do |path_cfg|
-        with_sqlite_store(path_cfg) { |store| store.warm_vector_index! }
-    end
-rescue => e
-    STDOUT << "SQLite vector index error: #{e.message}\n"
-    exit 9
+  catalog.warm!(config.paths)
+rescue => error
+  STDOUT << "SQLite vector index error: #{error.message}\n"
+  exit 9
 end
 
-class SimpleRagServer < Sinatra::Application
-    set :server, :webrick if Gem::Platform.local.to_s.include?("mingw-ucrt")
-    set :root, File.expand_path("..", __dir__)
-    set :public_folder, File.expand_path("public", __dir__)
-    set :static, true
-
-    get "/health" do
-        content_type :json
-
-        { status: "ok", config: CONFIG_FILE, configDigest: CONFIG_DIGEST }.to_json
-    end
-
-    # list all the paths that can be searched
-    get "/paths" do
-        content_type :json
-
-        CONFIG.paths.map { |p| { name: p.name, searchDefault: p.searchDefault } }.to_json
-    end
-
-    # return generated cognition-map data JSON
-    get "/map_data" do
-        content_type :json
-
-        begin
-            path = map_data_file_path
-        rescue => e
-            status 500
-            next({ error: e.message }.to_json)
-        end
-        unless File.exist?(path)
-            status 404
-            next({ error: "Map data not found. Run run-index-map-v2 first. expected=#{path}" }.to_json)
-        end
-
-        begin
-            File.read(path)
-        rescue => e
-            status 500
-            { error: "Failed to load map data: #{e.class}: #{e.message}" }.to_json
-        end
-    end
-
-    # return full text for one indexed cognition-map note
-    post "/map_note" do
-        content_type :json
-
-        begin
-            data = JSON.parse(request.body.read)
-        rescue => e
-            status 400
-            next({ error: "Invalid JSON: #{e.message}" }.to_json)
-        end
-
-        ref = find_indexed_note_ref(data["lookup"], data["path"], data["chunk"], data["hash"])
-        unless ref
-            status 404
-            next({ error: "Map note not found in configured index" }.to_json)
-        end
-
-        path_cfg, row = ref
-        path = row["path"]
-        chunk_idx = row["chunk"]
-        text = row["text"]
-
-        if text.nil? || text.to_s.strip.empty?
-            status 404
-            next({ error: "Map note chunk is empty" }.to_json)
-        end
-
-        {
-            path: path,
-            lookup: path_cfg.name,
-            id: extract_id(path),
-            url: extract_url(path, path_cfg.url),
-            chunk: chunk_idx,
-            text: text,
-        }.to_json
-    end
-
-    # query within the paths
-    post "/q" do
-        content_type :json
-
-        begin
-            data = JSON.parse(request.body.read)
-            lookup_paths = resolve_lookup_paths(data["paths"], default_to_search_default: true)
-            top_n = parse_top_n(data["topN"], default: 20)
-            RETRIEVER.retrieve_q(lookup_paths, data["q"], top_n: top_n).to_json
-        rescue JSON::ParserError, RetrievalInputError => e
-            status 400
-            { error: e.message }.to_json
-        end
-    end
-
-    # recall-enhanced query with semantic rewrite and keyword variants
-    post "/q_plus" do
-        content_type :json
-
-        begin
-            data = JSON.parse(request.body.read)
-            lookup_paths = resolve_lookup_paths(data["paths"], default_to_search_default: true)
-            top_n = parse_top_n(data["topN"], default: 20)
-            RETRIEVER.retrieve_q_plus(lookup_paths, data["q"], top_n: top_n).to_json
-        rescue JSON::ParserError, RetrievalInputError => e
-            status 400
-            { error: e.message }.to_json
-        end
-    end
-
-    # generate discussion for a single note
-    post "/discuss" do
-        content_type :json
-
-        data = JSON.parse(request.body.read)
-        discussion = discuss_note(data["note"], data["query"])
-
-        { discussion: discussion }.to_json
-    end
-
-    # find duplicate notes across selected paths
-    post "/duplicates" do
-        content_type :json
-
-        data = JSON.parse(request.body.read)
-        threshold = (data["threshold"] || 0.9).to_f
-        cross_document_only = data.key?("cross_document_only") ? !!data["cross_document_only"] : true
-        lookup_paths = resolve_lookup_paths(data["paths"])
-
-        clusters = find_duplicates(lookup_paths, threshold, cross_document_only: cross_document_only)
-        clusters = clusters.map { |c| { id: cluster_key(c), items: c } }
-        clusters.reject! { |c| DISMISSED_CLUSTERS.include?(c[:id]) }
-
-        { clusters: clusters }.to_json
-    end
-
-    # dismiss a duplicate cluster
-    post "/dismiss" do
-        content_type :json
-
-        data = JSON.parse(request.body.read)
-        if data["id"]
-            DISMISSED_CLUSTERS.add(data["id"])
-            save_dismissed
-        end
-
-        { ok: true }.to_json
-    end
-
-    # return random notes from selected paths
-    post "/random" do
-        content_type :json
-
-        data = JSON.parse(request.body.read)
-        count = (data["count"] || 3).to_i
-        lookup_paths = resolve_lookup_paths(data["paths"])
-
-        samples = []
-        lookup_paths.each do |p|
-            with_sqlite_store(p) do |store|
-                store.random_chunks(count).each do |it|
-                    samples << {
-                        path: it["path"],
-                        lookup: p.name,
-                        id: extract_id(it["path"]),
-                        url: extract_url(it["path"], p.url),
-                        text: it["text"],
-                        score: 0,
-                    }
-                end
-            end
-        end
-
-        { data: samples.sample(count) }.to_json
-    end
-
-    # retrieve notes similar to provided note text
-    post "/similar" do
-        content_type :json
-
-        begin
-            data = JSON.parse(request.body.read)
-            lookup_paths = resolve_lookup_paths(data["paths"])
-            top_n = parse_top_n(data["topN"], default: 3)
-            note = data["note"]
-            RETRIEVER.validate_inputs!(lookup_paths, note, top_n)
-
-            entries = retrieve_by_embedding(lookup_paths, note, top_n: top_n)
-            ordered = top_n_by_score(entries, top_n)
-            { data: serialize_entries(ordered) }.to_json
-        rescue JSON::ParserError, RetrievalInputError => e
-            status 400
-            { error: e.message }.to_json
-        end
-    end
-
-    # list cached article files from jina.cacheDir
-    get "/reader/cache_articles" do
-        content_type :json
-        { data: list_cached_articles }.to_json
-    end
-
-    # load one cached article file by name
-    post "/reader/load_cache_article" do
-        content_type :json
-
-        data = JSON.parse(request.body.read)
-        begin
-            content = read_cached_article(data["name"])
-            { content: content }.to_json
-        rescue ArgumentError => e
-            status 400
-            { error: e.message }.to_json
-        end
-    end
-
-    # fetch URL content and cache it
-    post "/reader/fetch_url" do
-        content_type :json
-
-        data = JSON.parse(request.body.read)
-        url = data["url"].to_s.strip
-        if url.empty?
-            status 400
-            next({ error: "URL is required" }.to_json)
-        end
-
-        begin
-            article = fetch_article(url)
-        rescue StandardError => e
-            status 502
-            next({ error: "Failed to fetch URL content: #{e.message}" }.to_json)
-        end
-
-        cached_file = save_article_result(url, article, "", "")
-
-        { article: article, cached_file: cached_file }.to_json
-    end
-
-    # extract note groups from arbitrary text
-    post "/reader/extract_notes" do
-        content_type :json
-
-        data = JSON.parse(request.body.read)
-        text = data["text"].to_s
-        if text.strip.empty?
-            status 400
-            next({ error: "Input text is required" }.to_json)
-        end
-
-        begin
-            extraction = extract_article(text)
-            groups = split_extraction_groups(extraction)
-        rescue StandardError => e
-            status 502
-            next({ error: "Failed to extract notes: #{e.message}" }.to_json)
-        end
-
-        { extraction: extraction, groups: groups }.to_json
-    end
-
-end
+app = SimpleRag::ServerApp.for_runtime(runtime: runtime)
+app.set :server, :webrick if Gem::Platform.local.to_s.include?("mingw-ucrt")
+at_exit { runtime.close }
 
 run_options = {}
 run_options[:bind] = options[:bind] if options[:bind]
 run_options[:port] = options[:port] if options[:port]
-
-SimpleRagServer.run!(run_options)
+app.run!(run_options)

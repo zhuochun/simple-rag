@@ -1,20 +1,5 @@
 require_relative "http"
 
-# Send POST request to Gemini API with API key header
-
-def gemini_http_post(uri, key, data)
-  url = URI(uri)
-  http = Net::HTTP.new(url.host, url.port)
-  http.use_ssl = true
-  http.read_timeout = 600
-
-  headers = { "Content-Type" => "application/json", "x-goog-api-key" => key }
-  request = Net::HTTP::Post.new(url, headers)
-  request.body = data.to_json
-
-  http.request(request)
-end
-
 # Call Google Gemini chat API
 
 def gemini_chat(messages, model, base_url, opts = {})
@@ -28,11 +13,7 @@ def gemini_chat(messages, model, base_url, opts = {})
   end
   data = { "contents" => contents }.merge(opts)
 
-  response = gemini_http_post(api_url, ENV["DOT_GEMINI_KEY"], data)
-
-  if response.code != "200"
-    raise_http_error("Chat error", response, api_url)
-  end
+  response = LlmHttp.post_json!(api_url, data, error_prefix: "Chat error", headers: { "x-goog-api-key" => ENV["DOT_GEMINI_KEY"] })
 
   result = JSON.parse(response.body)
   result["candidates"][0]["content"]["parts"][0]["text"]
@@ -46,11 +27,7 @@ def gemini_embedding(txts, model, base_url, opts = {})
   content = { "parts" => [{ "text" => txts }] }
   data = { "model" => "models/#{model}", "content" => content }.merge(opts)
 
-  response = gemini_http_post(api_url, ENV["DOT_GEMINI_KEY"], data)
-
-  if response.code != "200"
-    raise_http_error("Embedding error", response, api_url)
-  end
+  response = LlmHttp.post_json!(api_url, data, error_prefix: "Embedding error", headers: { "x-goog-api-key" => ENV["DOT_GEMINI_KEY"] })
 
   result = JSON.parse(response.body)
   result["embedding"]["values"]

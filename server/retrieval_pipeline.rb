@@ -724,6 +724,10 @@ class Retriever
     end
   end
 
+  def close
+    @executor.close
+  end
+
   def validate_inputs!(lookup_paths, query, top_n)
     raise RetrievalInputError, "Query text is required" if query.to_s.strip.empty?
     raise RetrievalInputError, "top_n must be > 0" unless top_n.to_i > 0
