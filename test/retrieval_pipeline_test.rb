@@ -185,6 +185,64 @@ class RetrievalPipelineTest
 
     assert_equal ["b-high.md", "a-high.md", "b-mid.md"], entries.map { |item| item["path"] }
     assert_equal [1, 2, 3], entries.map { |item| item["_rank"] }
+    assert_equal [], entries.first.keys.grep(/\A_(?:backend|query_type|weight|source_list)\z/)
+  end
+
+  def test_retriever_executes_real_sqlite_query_end_to_end
+    Dir.mktmpdir("retriever-sqlite-") do |dir|
+      db_file = File.join(dir, "index.sqlite")
+      store = SqliteIndex.new(db_file, "chunks")
+      store.transaction do
+        store.upsert_chunks([
+          {
+            path: "alpha.md",
+            chunk: 0,
+            hash: "alpha-0",
+            embedding: [1.0, 0.0],
+            bucket: 0,
+            text: "alpha exact phrase"
+          },
+          {
+            path: "beta.md",
+            chunk: 0,
+            hash: "beta-0",
+            embedding: [0.0, 1.0],
+            bucket: 0,
+            text: "beta topic"
+          }
+        ])
+      end
+      store.close
+
+      executor = RetrievalExecutor.new(
+        embedding_fn: ->(_query) { [1.0, 0.0] },
+        id_fn: ->(value) { value },
+        url_fn: ->(value, _base) { value },
+        threads_max: 2
+      )
+      retriever = Retriever.new(
+        planner: QueryPlanner.new(chat_fn: ->(*) { raise "q must not call chat" }),
+        executor: executor
+      )
+      lookup = Path.new(
+        name: "docs",
+        db_file: db_file,
+        db_table: "chunks",
+        url: nil,
+        threshold: 0.0
+      )
+
+      result = retriever.retrieve_q([lookup], "alpha", top_n: 2)
+
+      assert_equal "alpha", result[:query]
+      assert_equal "q", result[:mode]
+      assert_equal "alpha.md", result[:data].first[:path]
+      assert_equal "alpha exact phrase", result[:data].first[:anchor_chunk][:text]
+      assert_equal ["bm25:phrase:docs", "vec:original"], result[:data].first[:source_summary][:source_lists]
+    ensure
+      retriever&.close
+      store&.close
+    end
   end
 
   def test_bm25_lists_remain_lookup_local
@@ -398,6 +456,12 @@ class RetrievalPipelineTest
     assert_raises(RetrievalInputError) { retriever.retrieve_q([], "alpha", top_n: 5) }
   end
 
+  def test_retriever_validation_is_not_a_public_interface
+    retriever = Retriever.new(planner: planner_with_responses, executor: StaticExecutor.new)
+
+    assert_equal false, retriever.respond_to?(:validate_inputs!)
+  end
+
   def test_retriever_closes_its_executor
     executor = StaticExecutor.new
     retriever = Retriever.new(planner: planner_with_responses, executor: executor)
@@ -423,6 +487,31 @@ class RetrievalPipelineTest
 
     error = assert_raises(RuntimeError) { executor.execute_plan(plan, [path("docs")], top_n: 5) }
     assert_equal "Embedding is empty", error.message
+  end
+
+  def test_invalid_embedding_errors_remain_backend_failures
+    plan = QueryPlan.new(
+      original_query: "alpha",
+      semantic_rewrite: nil,
+      keyword_variants: [],
+      lists: [{ name: "vec:original", backend: "vector", query_type: "original", query: "alpha", weight: 1.2 }]
+    )
+
+    {
+      ["not-a-number"] => "Embedding contains non-numeric values",
+      [0.0, 0.0] => "Embedding norm is zero"
+    }.each do |embedding, message|
+      executor = RetrievalExecutor.new(
+        embedding_fn: ->(_query) { embedding },
+        id_fn: ->(value) { value },
+        url_fn: ->(value, _base) { value },
+        store_factory: ->(_lookup) { FakeStore.new(vector_rows: [row("a.md", 0, 0.9)]) }
+      )
+
+      error = assert_raises(RuntimeError) { executor.execute_plan(plan, [path("docs")], top_n: 5) }
+      assert_equal message, error.message
+      executor.close
+    end
   end
 
   def test_query_helpers_resolve_lookup_paths_deduplicates_selected_names

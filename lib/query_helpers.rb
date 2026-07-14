@@ -22,18 +22,6 @@ module QueryHelpers
     names.map { |name| config.path_map[name] }.compact
   end
 
-  def top_n_by_score(entries, top_n)
-    n = top_n.to_i
-    return [] if n <= 0 || entries.empty?
-
-    if entries.length <= n
-      return entries.sort_by { |item| -sort_score(item) }
-    end
-
-    entries.max_by(n) { |item| sort_score(item) }
-           .sort_by { |item| -sort_score(item) }
-  end
-
   def serialize_entries(entries, concise: false, brief_chars: DEFAULT_BRIEF_CHARS)
     entries.map do |item|
       text = item["text"].to_s
@@ -57,7 +45,7 @@ module QueryHelpers
     end
   end
 
-  def compact_file_results(files, lookup_paths: nil, brief_chars: DEFAULT_BRIEF_CHARS)
+  def compact_file_results(files, brief_chars: DEFAULT_BRIEF_CHARS)
     Array(files).map do |file|
       matched_chunks = Array(file[:matched_chunks]).filter_map do |chunk|
         text = chunk[:text] || chunk["text"]
@@ -81,10 +69,6 @@ module QueryHelpers
 
     shortened = compact[0, max_chars - 3].to_s.rstrip
     "#{shortened}..."
-  end
-
-  def sort_score(item)
-    item.fetch("_sort_score", item["score"] || 0.0).to_f
   end
 
   def concise_file_path(file_path)

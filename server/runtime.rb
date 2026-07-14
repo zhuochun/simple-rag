@@ -119,7 +119,6 @@ module SimpleRag
       paths = resolve_paths(data["paths"])
       count = top_n(data["topN"], default: 3)
       note = data["note"]
-      @retriever.validate_inputs!(paths, note, count)
       entries = @similarity_retriever.retrieve(paths, note, top_n: count)
       { data: QueryHelpers.serialize_entries(entries) }
     end

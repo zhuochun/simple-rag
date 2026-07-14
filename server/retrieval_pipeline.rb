@@ -1,6 +1,7 @@
 require "thread"
 
 require_relative "../lib/query_helpers"
+require_relative "../llm/embedding"
 require_relative "../storage/sqlite_index"
 
 QueryPlan = Struct.new(
@@ -301,13 +302,13 @@ class RetrievalExecutor
       if source[:backend] == "vector"
         entries = results.flat_map { |result| result[:entries] }
         entries = stable_sort(entries).first(vector_candidate_depth(top_n))
-        entries.each_with_index { |entry, idx| annotate_rank!(entry, source[:name], idx + 1) }
+        entries.each_with_index { |entry, idx| annotate_rank!(entry, idx + 1) }
         source_lists << source_list(source, source[:name], entries)
       else
         results.sort_by { |result| result[:path].name.to_s }.each do |result|
           entries = stable_sort(result[:entries])
           name = "#{source[:name]}:#{result[:path].name}"
-          entries.each_with_index { |entry, idx| annotate_rank!(entry, name, idx + 1) }
+          entries.each_with_index { |entry, idx| annotate_rank!(entry, idx + 1) }
           source_lists << source_list(source, name, entries)
         end
       end
@@ -358,20 +359,20 @@ class RetrievalExecutor
           score = item["score"].to_f
           next if score < path.threshold.to_f
 
-          candidate(item, path, score, source)
+          candidate(item, path, score)
         end
       else
         store.text_search_any(
           source[:query],
           limit: bm25_candidate_depth(top_n),
           phrase: source[:phrase]
-        ).map { |item| candidate(item, path, item["score"].to_f, source) }
+        ).map { |item| candidate(item, path, item["score"].to_f) }
       end
     end
     { source: source, path: path, entries: entries }
   end
 
-  def candidate(item, path, score, source)
+  def candidate(item, path, score)
     {
       "path" => item["path"],
       "chunk" => item["chunk"].to_i,
@@ -380,9 +381,6 @@ class RetrievalExecutor
       "id" => @id_fn.call(item["path"]),
       "url" => @url_fn.call(item["path"], path.url),
       "score" => score,
-      "_backend" => source[:backend],
-      "_query_type" => source[:query_type],
-      "_weight" => source[:weight].to_f,
     }
   end
 
@@ -392,8 +390,7 @@ class RetrievalExecutor
     end
   end
 
-  def annotate_rank!(entry, source_name, rank)
-    entry["_source_list"] = source_name
+  def annotate_rank!(entry, rank)
     entry["_rank"] = rank
   end
 
@@ -408,18 +405,12 @@ class RetrievalExecutor
   end
 
   def normalized_embedding(raw)
-    values = Array(raw)
+    values = EmbeddingMath.normalize(raw)
     raise RuntimeError, "Embedding is empty" if values.empty?
 
-    values = values.map do |value|
-      Float(value)
-    rescue ArgumentError, TypeError
-      raise RuntimeError, "Embedding contains non-numeric values"
-    end
-    norm = Math.sqrt(values.sum { |value| value * value })
-    raise RuntimeError, "Embedding norm is zero" if norm <= 0.0
-
-    values.map { |value| value / norm }
+    values
+  rescue ArgumentError => error
+    raise RuntimeError, error.message
   end
 
   def vector_candidate_depth(top_n)
@@ -728,14 +719,14 @@ class Retriever
     @executor.close
   end
 
+  private
+
   def validate_inputs!(lookup_paths, query, top_n)
     raise RetrievalInputError, "Query text is required" if query.to_s.strip.empty?
     raise RetrievalInputError, "top_n must be > 0" unless top_n.to_i > 0
     raise RetrievalInputError, "top_n must be <= #{MAX_TOP_N}" if top_n.to_i > MAX_TOP_N
     raise RetrievalInputError, "At least one lookup path is required" if Array(lookup_paths).empty?
   end
-
-  private
 
   def execute(plan, lookup_paths, top_n, requested_mode:, fallback: nil, semantic_rewrite: plan.semantic_rewrite, keyword_variants: plan.keyword_variants)
     source_lists = @executor.execute_plan(plan, lookup_paths, top_n: top_n)

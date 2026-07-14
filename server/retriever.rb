@@ -14,6 +14,7 @@ module SimpleRag
     end
 
     def retrieve(paths, query, top_n:)
+      validate_inputs!(paths, query, top_n)
       embedding = EmbeddingMath.normalize(@embedding_fn.call(query))
       raise RuntimeError, "Embedding is empty" if embedding.empty?
 
@@ -23,6 +24,13 @@ module SimpleRag
     end
 
     private
+
+    def validate_inputs!(paths, query, top_n)
+      raise RetrievalInputError, "Query text is required" if query.to_s.strip.empty?
+      raise RetrievalInputError, "top_n must be > 0" unless top_n.to_i > 0
+      raise RetrievalInputError, "top_n must be <= #{QueryHelpers::MAX_TOP_N}" if top_n.to_i > QueryHelpers::MAX_TOP_N
+      raise RetrievalInputError, "At least one lookup path is required" if Array(paths).empty?
+    end
 
     def search_depth(top_n)
       count = top_n.to_i
