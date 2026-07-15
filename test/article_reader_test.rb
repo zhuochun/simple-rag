@@ -1,8 +1,11 @@
 require "tmpdir"
 
 require_relative "../server/article"
+require_relative "test_assertions"
 
 class ArticleReaderTest
+  include TestAssertions
+
   Response = Struct.new(:code, :message, :body) do
     def to_hash
       {}
@@ -48,12 +51,6 @@ class ArticleReaderTest
     raise "Expected #{expected.inspect}, got #{actual.inspect}" unless expected == actual
   end
 
-  def assert_raises(error_class)
-    yield
-    raise "Expected #{error_class}"
-  rescue error_class => error
-    error
-  end
 end
 
 if $PROGRAM_NAME == __FILE__

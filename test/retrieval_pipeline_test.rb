@@ -5,8 +5,11 @@ require "tmpdir"
 require_relative "../lib/config_loader"
 require_relative "../lib/query_helpers"
 require_relative "../server/retrieval_pipeline"
+require_relative "test_assertions"
 
 class RetrievalPipelineTest
+  include TestAssertions
+
   Path = Struct.new(:name, :db_file, :db_table, :url, :threshold, keyword_init: true)
 
   class FakeStore
@@ -497,10 +500,11 @@ class RetrievalPipelineTest
       lists: [{ name: "vec:original", backend: "vector", query_type: "original", query: "alpha", weight: 1.2 }]
     )
 
-    {
-      ["not-a-number"] => "Embedding contains non-numeric values",
-      [0.0, 0.0] => "Embedding norm is zero"
-    }.each do |embedding, message|
+    [
+      [["not-a-number"], "Embedding contains non-numeric values"],
+      [[0.0, 0.0], "Embedding norm is zero"],
+      [[Float::NAN], "Embedding norm is zero"]
+    ].each do |embedding, message|
       executor = RetrievalExecutor.new(
         embedding_fn: ->(_query) { embedding },
         id_fn: ->(value) { value },
@@ -657,12 +661,6 @@ class RetrievalPipelineTest
     raise "Expected #{left.inspect} #{operator} #{right.inspect}"
   end
 
-  def assert_raises(error_class)
-    yield
-    raise "Expected #{error_class}, but nothing was raised"
-  rescue error_class => e
-    e
-  end
 end
 
 if $PROGRAM_NAME == __FILE__

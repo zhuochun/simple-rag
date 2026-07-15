@@ -1,7 +1,10 @@
 require_relative "../server/retriever"
 require "ostruct"
+require_relative "test_assertions"
 
 class RetrieverTest
+  include TestAssertions
+
   class FakeCatalog
     attr_reader :embedding, :k
 
@@ -81,12 +84,6 @@ class RetrieverTest
     raise "Expected #{expected.inspect}, got #{actual.inspect}" unless expected == actual
   end
 
-  def assert_raises(error_class)
-    yield
-    raise "Expected #{error_class}, but nothing was raised"
-  rescue error_class => error
-    error
-  end
 end
 
 if $PROGRAM_NAME == __FILE__

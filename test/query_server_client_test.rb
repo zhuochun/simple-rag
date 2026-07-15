@@ -1,6 +1,8 @@
 require_relative "../lib/query_server_client"
+require_relative "test_assertions"
 
 module QueryServerClientTest
+  extend TestAssertions
   module_function
 
   def run
@@ -98,12 +100,6 @@ module QueryServerClientTest
     raise "Expected #{expected.inspect}, got #{actual.inspect}" unless expected == actual
   end
 
-  def assert_raises(error_class)
-    yield
-    raise "Expected #{error_class}, but nothing was raised"
-  rescue error_class => e
-    e
-  end
 end
 
 QueryServerClientTest.run if $PROGRAM_NAME == __FILE__

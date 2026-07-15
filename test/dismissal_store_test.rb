@@ -1,8 +1,11 @@
 require "tmpdir"
 
 require_relative "../server/dismissal_store"
+require_relative "test_assertions"
 
 class DismissalStoreTest
+  include TestAssertions
+
   def test_concurrent_dismissals_are_persisted_without_lost_updates
     Dir.mktmpdir("dismissals-", __dir__) do |dir|
       path = File.join(dir, "dismissed.txt")
@@ -39,12 +42,6 @@ class DismissalStoreTest
     raise "Expected #{expected.inspect}, got #{actual.inspect}" unless expected == actual
   end
 
-  def assert_raises(error_class)
-    yield
-    raise "Expected #{error_class}"
-  rescue error_class => error
-    error
-  end
 end
 
 if $PROGRAM_NAME == __FILE__

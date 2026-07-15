@@ -3,8 +3,11 @@ require "ostruct"
 require_relative "../server/dismissal_store"
 require_relative "../server/retriever"
 require_relative "../server/runtime"
+require_relative "test_assertions"
 
 class ServerRuntimeTest
+  include TestAssertions
+
   class FakeRetriever
     attr_reader :request
 
@@ -102,12 +105,6 @@ class ServerRuntimeTest
     raise "Expected #{expected.inspect}, got #{actual.inspect}" unless expected == actual
   end
 
-  def assert_raises(error_class)
-    yield
-    raise "Expected #{error_class}, but nothing was raised"
-  rescue error_class => error
-    error
-  end
 end
 
 if $PROGRAM_NAME == __FILE__

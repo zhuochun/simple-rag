@@ -15,6 +15,12 @@ class ServerAppTest
       @dismissed = data.fetch("id")
       { ok: true }
     end
+
+    def similar(data)
+      raise RetrievalInputError, "Query text is required" if data["note"].to_s.strip.empty?
+
+      { data: [] }
+    end
   end
 
   def test_all_json_routes_reject_malformed_json_consistently
@@ -63,6 +69,27 @@ class ServerAppTest
     assert_equal({ "ok" => true }, JSON.parse(response.body))
   end
 
+  def test_similar_preserves_http_validation_and_response_shape
+    app = SimpleRag::ServerApp.for_runtime(runtime: FakeRuntime.new)
+    client = Rack::MockRequest.new(app)
+
+    invalid = client.post(
+      "/similar",
+      "CONTENT_TYPE" => "application/json",
+      input: JSON.generate(note: " ")
+    )
+    assert_equal 400, invalid.status
+    assert_equal({ "error" => "Query text is required" }, JSON.parse(invalid.body))
+
+    valid = client.post(
+      "/similar",
+      "CONTENT_TYPE" => "application/json",
+      input: JSON.generate(note: "alpha")
+    )
+    assert_equal 200, valid.status
+    assert_equal({ "data" => [] }, JSON.parse(valid.body))
+  end
+
   private
 
   def assert_equal(expected, actual)
@@ -78,4 +105,6 @@ if $PROGRAM_NAME == __FILE__
   puts "test_health_uses_injected_runtime: passed"
   test.test_valid_json_is_delegated_to_the_runtime
   puts "test_valid_json_is_delegated_to_the_runtime: passed"
+  test.test_similar_preserves_http_validation_and_response_shape
+  puts "test_similar_preserves_http_validation_and_response_shape: passed"
 end

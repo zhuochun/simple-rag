@@ -1,8 +1,8 @@
 require "thread"
 
-require_relative "../lib/query_helpers"
 require_relative "../llm/embedding"
 require_relative "../storage/sqlite_index"
+require_relative "retrieval_input_validator"
 
 QueryPlan = Struct.new(
   :original_query,
@@ -11,9 +11,6 @@ QueryPlan = Struct.new(
   :lists,
   keyword_init: true
 )
-
-class RetrievalInputError < ArgumentError
-end
 
 class QueryPlanner
   ORIGINAL_QUERY_PHRASE_MAX_TOKENS = 5
@@ -682,8 +679,6 @@ class FileAggregator
 end
 
 class Retriever
-  MAX_TOP_N = QueryHelpers::MAX_TOP_N
-
   def initialize(planner:, executor:, fusion_engine: FusionEngine.new, file_aggregator: FileAggregator.new)
     @planner = planner
     @executor = executor
@@ -692,12 +687,12 @@ class Retriever
   end
 
   def retrieve_q(lookup_paths, query, top_n:)
-    validate_inputs!(lookup_paths, query, top_n)
+    SimpleRag::RetrievalInputValidator.validate!(lookup_paths, query, top_n)
     execute(@planner.build_q_plan(query), lookup_paths, top_n, requested_mode: "q")
   end
 
   def retrieve_q_plus(lookup_paths, query, top_n:)
-    validate_inputs!(lookup_paths, query, top_n)
+    SimpleRag::RetrievalInputValidator.validate!(lookup_paths, query, top_n)
     begin
       plan = @planner.build_q_plus_plan(query)
       execute(plan, lookup_paths, top_n, requested_mode: "q_plus")
@@ -720,13 +715,6 @@ class Retriever
   end
 
   private
-
-  def validate_inputs!(lookup_paths, query, top_n)
-    raise RetrievalInputError, "Query text is required" if query.to_s.strip.empty?
-    raise RetrievalInputError, "top_n must be > 0" unless top_n.to_i > 0
-    raise RetrievalInputError, "top_n must be <= #{MAX_TOP_N}" if top_n.to_i > MAX_TOP_N
-    raise RetrievalInputError, "At least one lookup path is required" if Array(lookup_paths).empty?
-  end
 
   def execute(plan, lookup_paths, top_n, requested_mode:, fallback: nil, semantic_rewrite: plan.semantic_rewrite, keyword_variants: plan.keyword_variants)
     source_lists = @executor.execute_plan(plan, lookup_paths, top_n: top_n)

@@ -3,16 +3,12 @@ require "ostruct"
 require_relative "../lib/ollama_service"
 require_relative "../lib/provider_env_validator"
 require_relative "../llm/llm"
+require_relative "test_assertions"
+
+include TestAssertions
 
 def assert_equal(expected, actual)
   raise "Expected #{expected.inspect}, got #{actual.inspect}" unless expected == actual
-end
-
-def assert_raises(error_class)
-  yield
-  raise "Expected #{error_class}, but nothing was raised"
-rescue error_class => e
-  e
 end
 
 config = OpenStruct.new(
