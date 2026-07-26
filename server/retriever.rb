@@ -37,7 +37,13 @@ module SimpleRag
   module RetrieverFactory
     module_function
 
-    def build(chat_fn:, embedding_fn:, locator: DocumentLocator.new, store_factory: nil)
+    def build(
+      chat_fn:,
+      embedding_fn:,
+      locator: DocumentLocator.new,
+      store_factory: nil,
+      trace_writer: NullQueryTraceWriter.new
+    )
       Retriever.new(
         planner: QueryPlanner.new(chat_fn: chat_fn),
         executor: RetrievalExecutor.new(
@@ -45,7 +51,8 @@ module SimpleRag
           id_fn: locator.method(:id),
           url_fn: locator.method(:url),
           store_factory: store_factory
-        )
+        ),
+        trace_writer: trace_writer
       )
     end
   end

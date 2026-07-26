@@ -2,6 +2,7 @@ require "thread"
 
 require_relative "../llm/embedding"
 require_relative "../storage/sqlite_index"
+require_relative "query_trace"
 require_relative "retrieval_input_validator"
 
 QueryPlan = Struct.new(
@@ -679,47 +680,142 @@ class FileAggregator
 end
 
 class Retriever
-  def initialize(planner:, executor:, fusion_engine: FusionEngine.new, file_aggregator: FileAggregator.new)
+  def initialize(
+    planner:,
+    executor:,
+    fusion_engine: FusionEngine.new,
+    file_aggregator: FileAggregator.new,
+    trace_writer: SimpleRag::NullQueryTraceWriter.new
+  )
     @planner = planner
     @executor = executor
     @fusion_engine = fusion_engine
     @file_aggregator = file_aggregator
+    @trace_writer = trace_writer
   end
 
   def retrieve_q(lookup_paths, query, top_n:)
-    SimpleRag::RetrievalInputValidator.validate!(lookup_paths, query, top_n)
-    execute(@planner.build_q_plan(query), lookup_paths, top_n, requested_mode: "q")
+    started_at = Time.now.utc
+    started_monotonic = monotonic_time
+    normalized_query = @planner.normalize_query(query)
+    SimpleRag::RetrievalInputValidator.validate!(lookup_paths, normalized_query, top_n)
+    session = start_trace(
+      normalized_query,
+      "q",
+      lookup_paths,
+      top_n,
+      started_at,
+      started_monotonic
+    )
+    plan = nil
+    effective_mode = nil
+    begin
+      plan = session.measure(:planning) { @planner.build_q_plan(normalized_query) }
+      effective_mode = "q"
+      result = execute(
+        plan,
+        lookup_paths,
+        top_n,
+        requested_mode: "q",
+        session: session
+      )
+      session.success(plan: plan, result: result, effective_mode: effective_mode)
+      result
+    rescue => error
+      session.failure(error: error, plan: plan, effective_mode: effective_mode)
+      raise
+    end
   end
 
   def retrieve_q_plus(lookup_paths, query, top_n:)
-    SimpleRag::RetrievalInputValidator.validate!(lookup_paths, query, top_n)
+    started_at = Time.now.utc
+    started_monotonic = monotonic_time
+    normalized_query = @planner.normalize_query(query)
+    SimpleRag::RetrievalInputValidator.validate!(lookup_paths, normalized_query, top_n)
+    session = start_trace(
+      normalized_query,
+      "q_plus",
+      lookup_paths,
+      top_n,
+      started_at,
+      started_monotonic
+    )
+    plan = nil
+    effective_mode = nil
+    fallback = nil
+    fallback_error = nil
+    attempted_expansion = nil
     begin
-      plan = @planner.build_q_plus_plan(query)
-      execute(plan, lookup_paths, top_n, requested_mode: "q_plus")
-    rescue QueryPlanner::ExpansionError => e
-      fallback_plan = @planner.build_q_plan(query)
-      execute(
-        fallback_plan,
+      plan = session.measure(:planning) do
+        begin
+          @planner.build_q_plus_plan(normalized_query).tap { effective_mode = "q_plus" }
+        rescue QueryPlanner::ExpansionError => error
+          fallback_error = error
+          attempted_expansion = {
+            semantic_rewrite: error.semantic_rewrite,
+            keyword_variants: error.keyword_variants,
+          }
+          fallback = { reason: "expansion_failed", message: error.message }
+          @planner.build_q_plan(normalized_query).tap { effective_mode = "q" }
+        end
+      end
+      result = execute(
+        plan,
         lookup_paths,
         top_n,
         requested_mode: "q_plus",
-        fallback: { reason: "expansion_failed", message: e.message },
-        semantic_rewrite: e.semantic_rewrite,
-        keyword_variants: e.keyword_variants
+        session: session,
+        fallback: fallback,
+        semantic_rewrite: fallback_error ? fallback_error.semantic_rewrite : plan.semantic_rewrite,
+        keyword_variants: fallback_error ? fallback_error.keyword_variants : plan.keyword_variants
       )
+      session.success(
+        plan: plan,
+        result: result,
+        effective_mode: effective_mode,
+        fallback: fallback,
+        fallback_error: fallback_error,
+        attempted_expansion: attempted_expansion
+      )
+      result
+    rescue => error
+      session.failure(
+        error: error,
+        plan: plan,
+        effective_mode: effective_mode,
+        attempted_expansion: attempted_expansion
+      )
+      raise
     end
   end
 
   def close
     @executor.close
+  ensure
+    @trace_writer.close
   end
 
   private
 
-  def execute(plan, lookup_paths, top_n, requested_mode:, fallback: nil, semantic_rewrite: plan.semantic_rewrite, keyword_variants: plan.keyword_variants)
-    source_lists = @executor.execute_plan(plan, lookup_paths, top_n: top_n)
-    fused_chunks = @fusion_engine.fuse_chunk_candidates(source_lists)
-    files = @file_aggregator.aggregate_files(fused_chunks, top_n: top_n)
+  def execute(
+    plan,
+    lookup_paths,
+    top_n,
+    requested_mode:,
+    session:,
+    fallback: nil,
+    semantic_rewrite: plan.semantic_rewrite,
+    keyword_variants: plan.keyword_variants
+  )
+    source_lists = session.measure(:retrieval) do
+      @executor.execute_plan(plan, lookup_paths, top_n: top_n)
+    end
+    fused_chunks = session.measure(:fusion) do
+      @fusion_engine.fuse_chunk_candidates(source_lists)
+    end
+    files = session.measure(:aggregation) do
+      @file_aggregator.aggregate_files(fused_chunks, top_n: top_n)
+    end
     {
       query: plan.original_query,
       requested_mode: requested_mode,
@@ -730,5 +826,20 @@ class Retriever
       count: files.length,
       data: files,
     }
+  end
+
+  def start_trace(query, requested_mode, lookup_paths, top_n, started_at, started_monotonic)
+    @trace_writer.start(
+      query: query,
+      requested_mode: requested_mode,
+      lookup_paths: lookup_paths,
+      top_n: top_n,
+      started_at: started_at,
+      started_monotonic: started_monotonic
+    )
+  end
+
+  def monotonic_time
+    Process.clock_gettime(Process::CLOCK_MONOTONIC)
   end
 end

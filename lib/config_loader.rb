@@ -16,6 +16,7 @@ module ConfigLoader
       normalize_path(OpenStruct.new(path_hash), idx + 1)
     end
     validate_unique_path_names!(config.paths)
+    config.query_log = normalize_query_log(config_hash["queryLog"], config_path, config.paths)
 
     if with_path_map
       config.path_map = {}
@@ -26,6 +27,72 @@ module ConfigLoader
     end
 
     config
+  end
+
+  def normalize_query_log(raw, config_path, paths)
+    return OpenStruct.new(enabled: false, db_file: nil) if raw.nil?
+    raise ArgumentError, '"queryLog" must be a JSON object.' unless raw.is_a?(Hash)
+
+    unknown = raw.keys - %w[enabled db]
+    unless unknown.empty?
+      raise ArgumentError, %(Unknown "queryLog" field(s): #{unknown.sort.join(", ")}.)
+    end
+
+    enabled = raw.fetch("enabled", false)
+    unless enabled == true || enabled == false
+      raise ArgumentError, '"queryLog.enabled" must be a JSON boolean.'
+    end
+
+    db = raw["db"]
+    if !db.nil? && !db.is_a?(String)
+      raise ArgumentError, '"queryLog.db" must be a JSON string.'
+    end
+    return OpenStruct.new(enabled: false, db_file: nil) unless enabled
+    raise ArgumentError, '"queryLog.db" is required when query logging is enabled.' if db.to_s.strip.empty?
+
+    db_file = File.expand_path(db, File.dirname(File.expand_path(config_path)))
+    collision = paths.find { |path| same_file_target?(db_file, path.db_file) }
+    if collision
+      raise ArgumentError, %(Query log database must differ from retrieval index "#{collision.name}".)
+    end
+
+    OpenStruct.new(enabled: true, db_file: db_file)
+  end
+
+  def same_file_target?(left, right)
+    return false if right.nil?
+
+    left_path = canonical_target(left)
+    right_path = canonical_target(right)
+    return true if comparable_path(left_path) == comparable_path(right_path)
+    return false unless File.exist?(left) && File.exist?(right)
+
+    File.identical?(left, right)
+  rescue SystemCallError
+    false
+  end
+
+  def canonical_target(path)
+    absolute = File.expand_path(path)
+    return File.realpath(absolute) if File.exist?(absolute)
+
+    missing = [File.basename(absolute)]
+    parent = File.dirname(absolute)
+    until File.exist?(parent)
+      next_parent = File.dirname(parent)
+      break if next_parent == parent
+
+      missing.unshift(File.basename(parent))
+      parent = next_parent
+    end
+    File.join(File.realpath(parent), *missing)
+  rescue SystemCallError
+    absolute
+  end
+
+  def comparable_path(path)
+    normalized = path.to_s.tr("\\", "/")
+    File::ALT_SEPARATOR == "\\" ? normalized.downcase : normalized
   end
 
   def parse_db_target(raw_db, path_name)

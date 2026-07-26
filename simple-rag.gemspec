@@ -16,6 +16,7 @@ Gem::Specification.new do |spec|
   spec.files         = Dir[
     "README.md",
     "example_config.json",
+    "docs/20260723-query-trace-logging.md",
     "lib/**/*",
     "llm/**/*",
     "readers/**/*",

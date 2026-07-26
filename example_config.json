@@ -18,6 +18,10 @@
     "includePaths": ["temp"]
   },
   "dismissedDuplicatesFile": "dismissed.txt",
+  "queryLog": {
+    "enabled": false,
+    "db": "D:\\Data\\simple-rag\\query-traces.sqlite"
+  },
   "paths": [
     {
       "name": "temp",

@@ -190,9 +190,21 @@ unless payload
   end
 
   begin
+    trace_writer = SimpleRag::QueryTraceWriter.build(
+      config: CONFIG,
+      config_file: config_file,
+      source: "local_cli"
+    )
+  rescue => e
+    STDOUT << "Query log error: #{e.message}\n"
+    exit 1
+  end
+
+  begin
     retriever = SimpleRag::RetrieverFactory.build(
       chat_fn: method(:chat),
-      embedding_fn: method(:embedding)
+      embedding_fn: method(:embedding),
+      trace_writer: trace_writer
     )
     payload = retriever.retrieve_q(lookup_paths, query, top_n: options[:limit])
   rescue RetrievalInputError => e

@@ -42,6 +42,29 @@ gem install simple-rag-zc
   - Default JSON output is a flat locator list with `path`, rounded `score`, anchor `chunk`, and brief `text`
   - Use `--full` for complete chunk text and retrieval debug details
 
+- Optionally record real queries for later retrieval evaluation:
+
+```json
+{
+  "queryLog": {
+    "enabled": true,
+    "db": "D:\\Data\\simple-rag\\query-traces.sqlite"
+  }
+}
+```
+
+  - Logging is disabled unless `queryLog.enabled` is `true`.
+  - Relative database paths resolve from the config file directory.
+  - The trace database must be separate from every retrieval-index database.
+  - Traces contain raw queries and retrieved note text. Store the database as private user data and do not commit it.
+  - Server queries and server-backed `run-query` calls are recorded once by the server; local CLI fallback records locally.
+  - See `docs/20260723-query-trace-logging.md` for the schema, timing semantics, and failure behavior.
+  - Verify synchronous trace overhead against its 25 ms p95 budget:
+
+```bash
+ruby test/benchmark/query_trace_overhead_benchmark.rb
+```
+
 - Benchmark retrieval latency with a representative query set:
 
 ```bash
