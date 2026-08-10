@@ -23,8 +23,8 @@ GEM
       rack-protection (= 4.2.1)
       rack-session (>= 2.0.0, < 3)
       tilt (~> 2.0)
-    sqlite3 (2.9.1-x64-mingw-ucrt)
-    sqlite3 (2.9.1-x86_64-linux-gnu)
+    sqlite3 (2.9.5-x64-mingw-ucrt)
+    sqlite3 (2.9.5-x86_64-linux-gnu)
     tilt (2.7.0)
     webrick (1.9.2)
 
@@ -38,7 +38,7 @@ DEPENDENCIES
   rack
   rackup
   sinatra
-  sqlite3
+  sqlite3 (>= 2.9.5)
   webrick
 
 BUNDLED WITH

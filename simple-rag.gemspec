@@ -36,16 +36,15 @@ Gem::Specification.new do |spec|
   spec.add_runtime_dependency "rackup", "~> 2.2"
   spec.add_runtime_dependency "fiddle", "~> 1.1"
   spec.add_runtime_dependency "ostruct", "~> 0.6"
+  spec.add_runtime_dependency "sqlite3", ">= 2.9.5"
   if Gem::Platform.local.to_s.include?("mingw-ucrt")
-    spec.add_runtime_dependency "sqlite3", "~> 2.9.2"
     spec.add_runtime_dependency "webrick", "~> 1.9"
   else
-    spec.add_runtime_dependency "sqlite3", "~> 1.6"
     spec.add_runtime_dependency "puma", "~> 6.5"
   end
   unless Gem::Platform.local.to_s.include?("mingw-ucrt")
     spec.add_runtime_dependency "sqlite-vec"
   end
 
-  spec.required_ruby_version = ">= 3.0"
+  spec.required_ruby_version = ">= 3.2"
 end
