@@ -3,11 +3,14 @@ require "thread"
 
 class MemCache
     DEFAULT_MAX_SIZE = 256
+    Flight = Struct.new(:condition, :owner, :done, :value, :error)
+    private_constant :Flight
 
     def initialize(max_size: DEFAULT_MAX_SIZE)
         @data = {}
         @max_size = max_size.to_i
         @mutex = Mutex.new
+        @inflight = {}
     end
 
     def set(data, val)
@@ -22,12 +25,41 @@ class MemCache
 
     def get_or_set(data, fn)
         hash = digest(data)
-        cached = @mutex.synchronize { @data[hash] if @data.key?(hash) }
-        return cached unless cached.nil?
+        flight = @mutex.synchronize do
+            cached = @data[hash]
+            return cached unless cached.nil?
 
-        val = fn.call(data)
-        @mutex.synchronize { store(hash, val) }
-        val
+            pending = @inflight[hash]
+            if pending
+                raise ThreadError, "Recursive cache load for the same key" if pending.owner == Thread.current
+                pending.condition.wait(@mutex) until pending.done
+                raise pending.error if pending.error
+                return pending.value
+            end
+            @inflight[hash] = Flight.new(ConditionVariable.new, Thread.current, false)
+        end
+
+        begin
+            val = fn.call(data)
+            @mutex.synchronize do
+                store(hash, val)
+                flight.value = val
+                flight.done = true
+            end
+            val
+        rescue Exception => error
+            # Publish failures to waiters, including non-StandardError exits,
+            # then propagate the original failure to the loading caller.
+            @mutex.synchronize { flight.error = error }
+            raise
+        ensure
+            @mutex.synchronize do
+                flight.error ||= RuntimeError.new("Cache load interrupted") unless flight.done
+                flight.done = true
+                @inflight.delete(hash)
+                flight.condition.broadcast
+            end
+        end
     end
 
     private

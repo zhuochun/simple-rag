@@ -24,6 +24,7 @@ require_relative "../../lib/config_loader"
 require_relative "../../lib/ollama_service"
 require_relative "../../lib/provider_env_validator"
 require_relative "../../lib/query_helpers"
+require_relative "../../llm/llm"
 require_relative "../../server/retriever"
 
 def parse_named_value(raw, option_name)

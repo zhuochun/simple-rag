@@ -151,6 +151,8 @@ module SimpleRag
 
     def close
       @retriever.close
+    ensure
+      @catalog.close
     end
 
     private

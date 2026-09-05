@@ -495,7 +495,8 @@ class SqliteIndex
     return @vector_dim_cache if @vector_dim_loaded
 
     raw = @db.get_first_value("SELECT value FROM #{quoted_meta_table} WHERE key = 'vector_dim'")
-    @vector_dim_loaded = true
+    # An empty index may be populated while this pooled reader stays open.
+    @vector_dim_loaded = !raw.nil?
     if raw.nil?
       @vector_dim_cache = nil
       return nil

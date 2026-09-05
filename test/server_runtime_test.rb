@@ -81,9 +81,21 @@ class ServerRuntimeTest
     assert_equal "alpha text", result[:data].first[:text]
   end
 
+  def test_close_releases_catalog_even_when_retriever_close_fails
+    retriever = FakeRetriever.new
+    retriever.define_singleton_method(:close) { raise 'close failed' }
+    catalog = Object.new
+    closed = false
+    catalog.define_singleton_method(:close) { closed = true }
+    runtime = build_runtime(retriever: retriever, catalog: catalog)
+    error = assert_raises(RuntimeError) { runtime.close }
+    assert_equal 'close failed', error.message
+    assert_equal true, closed
+  end
+
   private
 
-  def build_runtime(retriever: FakeRetriever.new, similarity_retriever: Object.new)
+  def build_runtime(retriever: FakeRetriever.new, similarity_retriever: Object.new, catalog: Object.new)
     path = OpenStruct.new(name: "notes", searchDefault: true)
     config = OpenStruct.new(paths: [path], path_map: { "notes" => path })
     SimpleRag::ServerRuntime.new(
@@ -93,7 +105,7 @@ class ServerRuntimeTest
       retriever: retriever,
       similarity_retriever: similarity_retriever,
       duplicate_finder: FakeDuplicateFinder.new,
-      catalog: Object.new,
+      catalog: catalog,
       locator: Object.new,
       dismissals: SimpleRag::DismissalStore.new(nil),
       article_reader: Object.new,
@@ -115,4 +127,6 @@ if $PROGRAM_NAME == __FILE__
   puts "test_dismissed_duplicate_clusters_are_filtered: passed"
   test.test_similar_preserves_validation_and_serialized_response
   puts "test_similar_preserves_validation_and_serialized_response: passed"
+  test.test_close_releases_catalog_even_when_retriever_close_fails
+  puts "test_close_releases_catalog_even_when_retriever_close_fails: passed"
 end

@@ -2,6 +2,7 @@ require "thread"
 
 require_relative "../llm/embedding"
 require_relative "../storage/sqlite_index"
+require_relative "../storage/sqlite_store_pool"
 require_relative "query_trace"
 require_relative "retrieval_input_validator"
 
@@ -78,16 +79,33 @@ class QueryPlanner
     original = normalize_query(query)
     rewrite = nil
     variants = []
+    workers = []
 
     begin
-      rewrite = semantic_rewrite(original)
-      variants = keyword_variants(original)
+      # Both prompts depend only on the original query. Collect both outcomes
+      # before returning so no provider work outlives this planning attempt.
+      [:semantic_rewrite, :keyword_variants].each do |operation|
+        workers << Thread.new do
+          [public_send(operation, original), nil]
+        rescue => error
+          [nil, error]
+        end
+      end
+      outcomes = workers.map(&:value)
+      # Consume in the original order to preserve error precedence and the
+      # partial expansion reported by fallback and query tracing.
+      raise outcomes[0][1] if outcomes[0][1]
+      rewrite = outcomes[0][0]
+      raise outcomes[1][1] if outcomes[1][1]
+      variants = outcomes[1][0]
     rescue => e
       raise ExpansionError.new(
         "Query expansion failed: #{e.class}: #{e.message}",
         semantic_rewrite: rewrite,
         keyword_variants: variants
       )
+    ensure
+      workers.each(&:join)
     end
 
     normalized_original = normalized_comparison(original)
@@ -191,80 +209,6 @@ class RetrievalExecutor
   VECTOR_CANDIDATE_DEPTH = { multiplier: 6, min: 64, max: 512 }.freeze
   BM25_CANDIDATE_DEPTH = { multiplier: 10, min: 100, max: 800 }.freeze
 
-  class StorePool
-    def initialize(factory, max_per_path:)
-      @factory = factory
-      @max_per_path = max_per_path
-      @available = Hash.new { |hash, key| hash[key] = [] }
-      @created = Hash.new(0)
-      @mutex = Mutex.new
-      @condition = ConditionVariable.new
-    end
-
-    def with(path)
-      key = [path.db_file.to_s, path.db_table.to_s]
-      store = checkout(key, path)
-      reusable = false
-      begin
-        result = yield store
-        reusable = true
-        result
-      ensure
-        reusable ? checkin(key, store) : discard(key, store)
-      end
-    end
-
-    def close
-      stores = @mutex.synchronize do
-        pooled = @available.values.flatten
-        @available.clear
-        @created.clear
-        pooled
-      end
-      stores.each { |store| store.close if store.respond_to?(:close) }
-    end
-
-    private
-
-    def checkout(key, path)
-      @mutex.synchronize do
-        loop do
-          return @available[key].pop unless @available[key].empty?
-
-          if @created[key] < @max_per_path
-            @created[key] += 1
-            begin
-              return @factory.call(path)
-            rescue
-              @created[key] -= 1
-              raise
-            end
-          end
-
-          @condition.wait(@mutex)
-        end
-      end
-    end
-
-    def checkin(key, store)
-      @mutex.synchronize do
-        @available[key] << store
-        @condition.signal
-      end
-    end
-
-    def discard(key, store)
-      begin
-        store.close if store.respond_to?(:close)
-      ensure
-        @mutex.synchronize do
-          @created[key] -= 1
-          @condition.signal
-        end
-      end
-    end
-  end
-
   def initialize(
     embedding_fn:,
     id_fn:,
@@ -281,7 +225,7 @@ class RetrievalExecutor
     @vector_candidate_depth_override = positive_depth(vector_candidate_depth, "vector_candidate_depth")
     @bm25_candidate_depth_override = positive_depth(bm25_candidate_depth, "bm25_candidate_depth")
     factory = store_factory || ->(path) { SqliteIndex.new(path.db_file, path.db_table) }
-    @store_pool = StorePool.new(factory, max_per_path: @threads_max)
+    @store_pool = SimpleRag::SqliteStorePool.new(factory, max_per_path: @threads_max)
   end
 
   def execute_plan(plan, lookup_paths, top_n:)

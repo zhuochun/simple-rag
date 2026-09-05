@@ -2,6 +2,7 @@ require "pathname"
 require "thread"
 
 require_relative "../storage/sqlite_index"
+require_relative "../storage/sqlite_store_pool"
 
 module SimpleRag
   class DocumentLocator
@@ -23,8 +24,9 @@ module SimpleRag
 
     def initialize(locator: DocumentLocator.new, store_factory: nil, threads_max: THREADS_MAX)
       @locator = locator
-      @store_factory = store_factory || ->(path) { SqliteIndex.new(path.db_file, path.db_table) }
+      factory = store_factory || ->(path) { SqliteIndex.new(path.db_file, path.db_table) }
       @threads_max = [[threads_max.to_i, 1].max, THREADS_MAX].min
+      @store_pool = SqliteStorePool.new(factory, max_per_path: @threads_max)
     end
 
     def warm!(paths)
@@ -68,6 +70,10 @@ module SimpleRag
       end
     end
 
+    def close
+      @store_pool.close
+    end
+
     private
 
     def decorate(row, path, score:)
@@ -83,10 +89,7 @@ module SimpleRag
     end
 
     def with_store(path)
-      store = @store_factory.call(path)
-      yield store
-    ensure
-      store&.close
+      @store_pool.with(path) { |store| yield store }
     end
 
     def parallel_map(paths)

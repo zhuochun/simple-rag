@@ -1,6 +1,7 @@
 require "json"
 require "ostruct"
 require "tmpdir"
+require "timeout"
 
 require_relative "../lib/config_loader"
 require_relative "../lib/query_helpers"
@@ -119,6 +120,52 @@ class RetrievalPipelineTest
     variants = plus.lists.find { |item| item[:name] == "bm25:variants" }
     assert_equal true, variants[:phrase]
     assert_equal ["别名", "alias", "API", "term"], plus.keyword_variants
+  end
+
+  def test_q_plus_runs_independent_prompts_concurrently
+    entered = Queue.new
+    release = Queue.new
+    planner = QueryPlanner.new(chat_fn: lambda do |messages|
+      entered << messages.first[:content]
+      release.pop
+      messages.first[:content] == QueryPlanner::REWRITE_PROMPT ? "semantic rewrite" : "alias"
+    end)
+    worker = Thread.new { planner.build_q_plus_plan("original") }
+
+    prompts = Timeout.timeout(5) { [entered.pop, entered.pop] }
+    assert_equal [QueryPlanner::REWRITE_PROMPT, QueryPlanner::VARIANT_PROMPT].sort, prompts.sort
+    2.times { release << true }
+    plan = Timeout.timeout(5) { worker.value }
+    assert_equal "semantic rewrite", plan.semantic_rewrite
+    assert_equal ["alias"], plan.keyword_variants
+    assert_equal %w[vec:original bm25:phrase vec:expanded bm25:variants], plan.lists.map { |item| item[:name] }
+  ensure
+    2.times { release << true }
+    worker&.join
+  end
+
+  def test_parallel_expansion_preserves_failure_precedence_and_partial_results
+    [[true, false], [false, true], [true, true]].each do |rewrite_fails, variants_fail|
+      completed = Queue.new
+      planner = QueryPlanner.new(chat_fn: lambda do |messages|
+        rewrite = messages.first[:content] == QueryPlanner::REWRITE_PROMPT
+        raise "rewrite failed" if rewrite && rewrite_fails
+        raise "variants failed" if !rewrite && variants_fail
+        rewrite ? "semantic rewrite" : "alias"
+      ensure
+        completed << true
+      end)
+      retriever = Retriever.new(planner: planner, executor: StaticExecutor.new)
+
+      result = retriever.retrieve_q_plus([path("docs")], "original", top_n: 5)
+
+      assert_equal 2, completed.size
+      assert_equal "q", result[:mode]
+      message = rewrite_fails ? "rewrite failed" : "variants failed"
+      assert_equal "Query expansion failed: RuntimeError: #{message}", result[:fallback][:message]
+      assert_equal(rewrite_fails ? nil : "semantic rewrite", result[:semantic_rewrite])
+      assert_equal [], result[:keyword_variants]
+    end
   end
 
   def test_q_plus_falls_back_when_expansion_fails
@@ -585,8 +632,10 @@ class RetrievalPipelineTest
   private
 
   def planner_with_responses(*responses)
-    queue = responses.dup
-    QueryPlanner.new(chat_fn: ->(_messages) { queue.shift.to_s })
+    QueryPlanner.new(chat_fn: lambda do |messages|
+      index = messages.first[:content] == QueryPlanner::REWRITE_PROMPT ? 0 : 1
+      responses[index].to_s
+    end)
   end
 
   def executor_for(stores)

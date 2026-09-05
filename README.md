@@ -27,6 +27,8 @@ gem install simple-rag-zc
   - Index summaries report matched files separately from read files; in delta mode, read files are the changed-file workload.
   
 - Run `run-server config.json`
+  - Concurrent cache misses for the same query share one embedding request; different queries can proceed independently.
+  - SQLite connections are reused across retrieval, similarity, random, and map-note requests. Restart the server after replacing index database files or changing the embedding model.
   - Open `http://localhost:4567/q.html` to search/ask from your knowledge bases
     - Use **Search** for standard retrieval
     - Use **Search+** for agentic query expansion and fast text match
@@ -71,7 +73,9 @@ ruby test/benchmark/query_trace_overhead_benchmark.rb
 ruby test/benchmark/retrieval_benchmark.rb --config config.json
 ```
 
-  - Reports minimum, median, p95, and maximum latency plus embedding and local retrieval time.
+  - Reports minimum, median, p95, and maximum latency plus planning, embedding, and local retrieval time.
+  - Use `--mode q_plus` to benchmark expanded search, including its concurrent rewrite and keyword prompts. Effective modes and fallback counts distinguish successful expansions from fallback searches.
+  - Concurrent prompts can reduce provider wait time; gains depend on whether the provider can serve both requests concurrently.
   - Use `--max-p95-ms 2000` or `RAG_RETRIEVAL_MAX_P95_MS=2000` to fail on a latency regression.
 
 - Compare top-10 retrieval results across configs and candidate depths:

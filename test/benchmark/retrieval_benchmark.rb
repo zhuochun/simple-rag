@@ -13,9 +13,36 @@ require_relative "../../lib/config_path_resolver"
 require_relative "../../lib/ollama_service"
 require_relative "../../lib/provider_env_validator"
 require_relative "../../lib/query_helpers"
+require_relative "../../llm/llm"
 require_relative "../../server/retriever"
 
 DEFAULT_QUERY_FILE = File.join(__dir__, "retrieval_queries.txt")
+
+class BenchmarkQueryPlanner < QueryPlanner
+  attr_reader :planning_ms
+
+  def initialize(**options)
+    super
+    @planning_ms = 0.0
+  end
+
+  def build_q_plan(query)
+    measure { super }
+  end
+
+  def build_q_plus_plan(query)
+    measure { super }
+  end
+
+  private
+
+  def measure
+    started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+    yield
+  ensure
+    @planning_ms += (Process.clock_gettime(Process::CLOCK_MONOTONIC) - started) * 1000.0
+  end
+end
 
 def monotonic_time
   Process.clock_gettime(Process::CLOCK_MONOTONIC)
@@ -39,6 +66,7 @@ options = {
   runs: 3,
   warmup: 1,
   limit: 10,
+  mode: "q",
   max_p95_ms: ENV["RAG_RETRIEVAL_MAX_P95_MS"]&.to_f,
   json: false,
 }
@@ -53,12 +81,19 @@ OptionParser.new do |opts|
   opts.on("--runs N", Integer, "Measured runs per query (default: 3)") { |value| options[:runs] = value }
   opts.on("--warmup N", Integer, "Warmup runs per query (default: 1)") { |value| options[:warmup] = value }
   opts.on("--limit N", Integer, "Top file limit (default: 10)") { |value| options[:limit] = value }
+  opts.on("--mode MODE", %w[q q_plus], "Retrieval mode: q or q_plus (default: q)") { |value| options[:mode] = value }
   opts.on("--max-p95-ms N", Float, "Fail when total p95 exceeds this budget") { |value| options[:max_p95_ms] = value }
   opts.on("--json", "Emit JSON") { options[:json] = true }
 end.parse!
 
 raise ArgumentError, "--runs must be > 0" unless options[:runs] > 0
 raise ArgumentError, "--warmup must be >= 0" unless options[:warmup] >= 0
+
+# Provider usage and startup messages must not corrupt the JSON report.
+if options[:json]
+  report_output = STDOUT.dup
+  STDOUT.reopen(STDERR)
+end
 
 config_file = ConfigPathResolver.resolve_config_path(options[:config])
 raise "Config file not found" unless config_file && File.exist?(config_file)
@@ -90,23 +125,28 @@ executor = RetrievalExecutor.new(
   id_fn: locator.method(:id),
   url_fn: locator.method(:url)
 )
+planner = BenchmarkQueryPlanner.new(chat_fn: method(:chat))
 retriever = Retriever.new(
-  planner: QueryPlanner.new(chat_fn: method(:chat)),
+  planner: planner,
   executor: executor
 )
 
 (options[:warmup] + options[:runs]).times do |run|
   queries.each do |query|
     embedding_before_ms = embedding_ms
+    planning_before_ms = planner.planning_ms
     started_at = monotonic_time
-    payload = retriever.retrieve_q(lookup_paths, query, top_n: options[:limit])
+    payload = retriever.public_send("retrieve_#{options[:mode]}", lookup_paths, query, top_n: options[:limit])
     total_ms = elapsed_ms(started_at)
     sample_embedding_ms = embedding_ms - embedding_before_ms
+    sample_planning_ms = planner.planning_ms - planning_before_ms
     sample = {
       query: query,
+      effective_mode: payload[:mode],
       total_ms: total_ms.round(1),
+      planning_ms: sample_planning_ms.round(1),
       embedding_ms: sample_embedding_ms.round(1),
-      local_retrieval_ms: (total_ms - sample_embedding_ms).round(1),
+      local_retrieval_ms: (total_ms - sample_embedding_ms - sample_planning_ms).round(1),
       result_count: payload[:count],
     }
     if run < options[:warmup]
@@ -117,6 +157,10 @@ retriever = Retriever.new(
   end
 end
 retriever.close
+if report_output
+  STDOUT.reopen(report_output)
+  report_output.close
+end
 
 totals = samples.map { |sample| sample[:total_ms] }
 summary = {
@@ -126,6 +170,8 @@ summary = {
   query_count: queries.length,
   sample_count: samples.length,
   runs_per_query: options[:runs],
+  requested_mode: options[:mode],
+  fallback_count: samples.count { |sample| sample[:effective_mode] != options[:mode] },
   latency_ms: {
     min: totals.min.round(1),
     median: percentile(totals, 0.50).round(1),
@@ -140,6 +186,7 @@ if options[:json]
   puts JSON.pretty_generate(summary)
 else
   puts "Retrieval benchmark: #{summary[:sample_count]} samples across #{summary[:paths].join(', ')}"
+  puts "mode: #{summary[:requested_mode]}, measured fallbacks: #{summary[:fallback_count]}"
   puts format("one-time process setup: %.1fms", summary[:setup_ms])
   unless warmup_samples.empty?
     puts format(
@@ -157,12 +204,14 @@ else
   )
   samples.each do |sample|
     puts format(
-      "%-24s total=%7.1f embedding=%7.1f local=%7.1f results=%d",
+      "%-24s total=%7.1f planning=%7.1f embedding=%7.1f local=%7.1f results=%d mode=%s",
       sample[:query],
       sample[:total_ms],
+      sample[:planning_ms],
       sample[:embedding_ms],
       sample[:local_retrieval_ms],
-      sample[:result_count]
+      sample[:result_count],
+      sample[:effective_mode]
     )
   end
 end

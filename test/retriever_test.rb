@@ -1,5 +1,6 @@
 require_relative "../server/retriever"
 require "ostruct"
+require "tmpdir"
 require_relative "test_assertions"
 
 class RetrieverTest
@@ -65,17 +66,38 @@ class RetrieverTest
     assert_equal 0, embedding_calls
   end
 
-  def test_index_catalog_decorates_hits_and_closes_stores
+  def test_index_catalog_decorates_hits_and_reuses_stores_until_close
     store = FakeStore.new
     path = OpenStruct.new(name: "notes", threshold: 0.5, url: "https://notes/")
-    catalog = SimpleRag::IndexCatalog.new(store_factory: ->(_path) { store })
+    opens = 0
+    catalog = SimpleRag::IndexCatalog.new(store_factory: ->(_path) { opens += 1; store })
 
     rows = catalog.vector_search([path], [1.0, 0.0], k: 10)
 
     assert_equal "notes", rows.first["lookup"]
     assert_equal "folder/note.md", rows.first["id"].tr("\\", "/")
     assert_equal "https://notes/note", rows.first["url"]
+    assert_equal nil, store.closed
+    assert_equal rows, catalog.vector_search([path], [1.0, 0.0], k: 10)
+    assert_equal 1, opens
+    catalog.close
     assert_equal true, store.closed
+  end
+
+  def test_pooled_catalog_sees_an_index_populated_after_an_empty_query
+    Dir.mktmpdir('pooled-index-') do |dir|
+      path = OpenStruct.new(name: 'notes', threshold: 0.0, db_file: File.join(dir, 'index.sqlite'), db_table: 'chunks')
+      catalog = SimpleRag::IndexCatalog.new
+      assert_equal [], catalog.vector_search([path], [1.0, 0.0], k: 10)
+      writer = SqliteIndex.new(path.db_file, path.db_table)
+      writer.transaction do
+        writer.upsert_chunks([{ path: 'note.md', chunk: 0, hash: 'alpha', embedding: [1.0, 0.0], text: 'alpha' }])
+      end
+      assert_equal ['alpha'], catalog.vector_search([path], [1.0, 0.0], k: 10).map { |row| row['text'] }
+    ensure
+      writer&.close
+      catalog&.close
+    end
   end
 
   private
@@ -92,6 +114,8 @@ if $PROGRAM_NAME == __FILE__
   puts "test_similarity_retriever_normalizes_orders_and_limits_results: passed"
   test.test_similarity_retriever_owns_its_input_validation
   puts "test_similarity_retriever_owns_its_input_validation: passed"
-  test.test_index_catalog_decorates_hits_and_closes_stores
-  puts "test_index_catalog_decorates_hits_and_closes_stores: passed"
+  test.test_index_catalog_decorates_hits_and_reuses_stores_until_close
+  puts "test_index_catalog_decorates_hits_and_reuses_stores_until_close: passed"
+  test.test_pooled_catalog_sees_an_index_populated_after_an_empty_query
+  puts "test_pooled_catalog_sees_an_index_populated_after_an_empty_query: passed"
 end
