@@ -39,7 +39,7 @@ Gem::Specification.new do |spec|
   if Gem::Platform.local.to_s.include?("mingw-ucrt")
     spec.add_runtime_dependency "webrick", "~> 1.9"
   else
-    spec.add_runtime_dependency "puma", "~> 6.5"
+    spec.add_runtime_dependency "puma", "~> 8.0"
   end
   unless Gem::Platform.local.to_s.include?("mingw-ucrt")
     spec.add_runtime_dependency "sqlite-vec"

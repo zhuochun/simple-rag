@@ -14,12 +14,11 @@ ranked retrieval evidence with trace-safe diagnostics, execution timings, and
 enough version and index context to support later performance and relevance
 evaluation.
 
-The trace store exists to turn real queries into durable evaluation evidence.
-Future agents should be able to select comparable historical queries, replay
+Future agents should be able to select comparable recorded queries, replay
 them after a retrieval change, measure latency and ranking movement, and inspect
 the retrieved text when judging relevance.
 
-The accountable owner has accepted these design constraints:
+The repository owner has accepted these design constraints:
 
 - logging is opt-in through configuration;
 - SQLite is the authoritative trace store;
@@ -27,10 +26,9 @@ The accountable owner has accepted these design constraints:
 - the first delivery creates `query_traces` and its indexes only; and
 - `query_evaluations` is a future extension and shall not be created now.
 
-Getting this wrong could silently collect private queries and note contents,
-change supported query behavior, introduce retrieval latency or failures, or
-produce incomparable records that appear useful but cannot support an
-evaluation.
+Incorrect logging could collect private queries and note contents without
+consent, change query behavior, add latency or failures, or record too little
+context to compare retrieval runs.
 
 ## 2. Evidence and current behavior
 
@@ -134,7 +132,7 @@ Explicitly requested logging must not silently degrade to disabled logging.
 
 ## 5. Trace ownership and lifecycle
 
-The shared retriever owns the semantic trace boundary because it is the first
+The shared retriever owns query tracing because it is the first
 common component that can observe the complete plan and the last common
 component before presentation-specific compaction.
 
@@ -221,8 +219,8 @@ CREATE TABLE IF NOT EXISTS query_traces (
 ```
 
 JSON values are stored as UTF-8 JSON text produced by the application. The
-schema deliberately does not require SQLite JSON functions; application-side
-serialization is the portability boundary.
+schema does not require SQLite JSON functions because the application
+serializes the values.
 
 The database schema version is also stored in `PRAGMA user_version`:
 
@@ -442,9 +440,10 @@ inspection or recovery.
 
 ## 10. Evaluation use
 
-The raw trace is evidence, not a relevance oracle. Future agents may use traces
-to choose representative real queries and compare only records or replay runs
-whose request and comparison context are meaningfully compatible.
+Traces record what retrieval returned; judging relevance requires a separate
+review. Future agents may use traces to choose representative real queries and
+compare only records or replay runs with compatible requests and comparison
+context.
 
 The trace supports these later measures:
 
@@ -557,12 +556,12 @@ benchmark report schemas must remain unchanged.
 
 ## 14. Delivery boundary and readiness
 
-The smallest coherent delivery is configuration validation, dedicated trace
+The first delivery includes configuration validation, dedicated trace
 database initialization, successful and failed query tracing through the shared
 retriever, canonical serialization, timing capture, lifecycle handling,
 documentation, and focused automated verification.
 
-Explicit non-goals for that delivery are:
+That delivery excludes:
 
 - creating `query_evaluations`;
 - building an evaluation UI, agent grader, replay runner, or JSONL exporter;
@@ -573,7 +572,7 @@ Explicit non-goals for that delivery are:
 - changing retrieval algorithms, scores, ranking, output payloads, or index
   schemas.
 
-Readiness: **ready**. The accountable owner has selected the material product
+Readiness: **ready**. The repository owner has selected the product
 and storage decisions. An implementer may rely on the configuration, trace
 scope, schema, field semantics, failure policy, privacy boundary, and acceptance
 claims in this document. The implementer must not infer permission to add

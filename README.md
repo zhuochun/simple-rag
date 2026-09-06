@@ -1,6 +1,6 @@
 # simple-rag
 
-Simple RAG on your knowledge bases. Only support Markdown Files.
+Search and ask questions across your Markdown knowledge bases.
 
 ![cognition-map](https://github.com/zhuochun/simple-rag/blob/main/docs/cognition-map.png?raw=true)
 
@@ -12,14 +12,14 @@ gem install simple-rag-zc
 
 ## Setup RAG
 
-- Setup Config JSON *Required
-  - Copy `example_config.json` to `config.json`, then edit the paths to absolute path.
+- Create the required JSON configuration.
+  - Copy `example_config.json` to `config.json`, then set absolute paths.
   - All `run-*` executables default to `./config.json`, then `~/.config/simple-rag/config.json` if no config path is provided.
   
-- SQLite index is required
+- Configure the required SQLite index.
   - Set per-path `db` as `sqlite_file_path@table_name`
 
-- Run `run-index config.json` *Required
+- Build the index with `run-index config.json`.
   - By default this uses delta build mode: after the first complete scan, it only reads files modified since the last completed scan.
   - Delta mode automatically falls back to a full build when the index DB or per-path scan timestamp is missing.
   - Use `run-index --build-mode full config.json` to scan all matching docs and rebuild/prune from the complete current file set.
@@ -36,7 +36,7 @@ gem install simple-rag-zc
   - Open `http://localhost:4567/random.html` to explore notes randomly
   - Open `http://localhost:4567/graph.html` to explore search results as a graph
 
-- Run `run-query "your question"` for CLI retrieval (LLM-friendly)
+- Run `run-query "your question"` for CLI retrieval.
   - `run-query --help` shows usage and all configured `paths` (`name => dir`)
   - Uses the same standard retrieval pipeline as the web UI **Search** action
   - Automatically uses a matching server at `http://127.0.0.1:4567`; otherwise it retrieves locally
@@ -111,10 +111,10 @@ ruby test/benchmark/retrieval_quality_benchmark.rb ^
 
 ## Setup Map Generator
 
-To create a fancy map like the screenshot, complete these additional steps:
+To create a map like the screenshot:
 
-- Setup Python map generator
-  - Python 3.10+ is required for the faster map generator.
+- Install the Python map generator.
+  - Python 3.10+ is required.
   - From the repo root, install the Python package and dependencies:
 
 ```bash

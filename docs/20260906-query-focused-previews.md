@@ -10,7 +10,7 @@ knowledge-base-specific semantics to simple-rag.
 
 Current code shortens each matched chunk from its beginning. The CLI already
 offers `--brief-chars` and `--full`; the web search page displays the full anchor
-chunk. The first slice changes only concise CLI presentation.
+chunk. This proposal changes only concise CLI presentation.
 
 ## Proposed behavior
 
@@ -68,7 +68,7 @@ same `matched_chunks` strings, in order, beneath each result's existing file
 locator and score. Use the available `path` and `file` fields; do not invent a
 chunk identifier absent from concise results.
 
-This includes a narrow existing-defect repair: the text renderer currently reads
+The text renderer currently reads
 `text` and `chunk` fields that concise results do not contain, leaving previews
 blank. Make it consume the existing concise fields. Full text output is unchanged.
 
@@ -92,7 +92,7 @@ blank. Make it consume the existing concise fields. Full text output is unchange
 
 ## Scope
 
-Shared preview formatting, the narrow concise text-renderer repair, CLI help,
+Shared preview formatting, the concise text-renderer repair, CLI help,
 and concise-output documentation.
 No reader/index/schema changes, re-embedding, ranking changes, role labels,
 provenance extraction, new endpoints, web UI redesign, or evidence-only mode.

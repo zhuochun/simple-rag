@@ -5,8 +5,11 @@ GEM
     fiddle (1.1.8)
     logger (1.7.0)
     mustermann (3.1.1)
+    nio4r (2.7.5)
     ostruct (0.6.3)
-    rack (3.2.6)
+    puma (8.0.2)
+      nio4r (~> 2.0)
+    rack (3.2.7)
     rack-protection (4.2.1)
       base64 (>= 0.1.0)
       logger (>= 1.6.0)
@@ -23,9 +26,10 @@ GEM
       rack-protection (= 4.2.1)
       rack-session (>= 2.0.0, < 3)
       tilt (~> 2.0)
-    sqlite3 (2.9.5-x64-mingw-ucrt)
-    sqlite3 (2.9.5-x86_64-linux-gnu)
-    tilt (2.7.0)
+    sqlite-vec (0.1.9-x86_64-linux)
+    sqlite3 (2.9.6-x64-mingw-ucrt)
+    sqlite3 (2.9.6-x86_64-linux-gnu)
+    tilt (2.9.0)
     webrick (1.9.2)
 
 PLATFORMS
@@ -35,11 +39,13 @@ PLATFORMS
 DEPENDENCIES
   fiddle
   ostruct
+  puma
   rack
   rackup
   sinatra
+  sqlite-vec
   sqlite3 (>= 2.9.5)
   webrick
 
 BUNDLED WITH
-   2.6.9
+  4.0.20

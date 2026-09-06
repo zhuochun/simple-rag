@@ -6,9 +6,11 @@ gem "rackup"
 gem "fiddle"
 gem "ostruct"
 gem "sqlite3", ">= 2.9.5"
-if Gem::Platform.local.to_s.include?("mingw-ucrt")
+platforms :windows do
   gem "webrick"
-else
+end
+
+platforms :ruby do
   gem "puma"
   gem "sqlite-vec"
 end

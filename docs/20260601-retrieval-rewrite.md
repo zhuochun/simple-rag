@@ -2,7 +2,7 @@
 
 ## 1. Goal
 
-Replace the existing retrieval logic with a new unified retrieval pipeline for both `q` and `q_plus`.
+Replace the existing retrieval logic with one pipeline shared by `q` and `q_plus`.
 
 The new pipeline should improve retrieval quality without adding a reranker. It should rely on:
 
@@ -37,7 +37,7 @@ There are two retrieval entry points:
 
 ### `q`
 
-`q` is deterministic, fast, and original-query focused.
+`q` uses deterministic retrieval on the original query without expansion.
 
 It should use:
 
@@ -52,7 +52,7 @@ It should use:
 
 ### `q_plus`
 
-`q_plus` is recall-enhanced.
+`q_plus` expands the query to seek additional matches.
 
 It should use:
 
@@ -499,9 +499,7 @@ This prevents semantic rewrite / keyword variants from overpowering exact origin
 
 ### Multi-chunk same-file evidence boost
 
-Do not apply this at chunk fusion stage.
-
-Apply it at file aggregation stage.
+Apply this only at file aggregation, after chunk fusion.
 
 Rule:
 
@@ -778,7 +776,7 @@ Replace the existing retrieval logic with these components.
 
 ### `QueryPlanner`
 
-Responsible for building query plans.
+Builds query plans.
 
 Methods:
 
@@ -791,7 +789,7 @@ keyword_variants(query)
 
 ### `RetrievalExecutor`
 
-Responsible for executing query plan lists.
+Executes query plan lists.
 
 Methods:
 
@@ -802,7 +800,7 @@ execute_list(list, lookup_paths, top_n:)
 
 ### `FusionEngine`
 
-Responsible for chunk-level weighted RRF and deterministic boosts.
+Applies chunk-level weighted RRF and deterministic boosts.
 
 Methods:
 
@@ -813,7 +811,7 @@ apply_chunk_boosts(fused_chunks)
 
 ### `FileAggregator`
 
-Responsible for turning fused chunks into top file results.
+Aggregates fused chunks into top file results.
 
 Methods:
 
@@ -975,7 +973,7 @@ Full output should include:
 * deterministic boosts;
 * file-level boosts.
 
-This is important for tuning weights later.
+Use these fields to inspect ranking decisions when tuning weights.
 
 ## 15. Test cases
 
@@ -1210,9 +1208,7 @@ Expected:
 
 ## 17. Important implementation rule
 
-Do not tune weights blindly until debug output exists.
-
-The first implementation should prioritize explainability:
+Do not tune weights until debug output shows:
 
 * why this chunk matched;
 * which source list found it;
@@ -1220,5 +1216,3 @@ The first implementation should prioritize explainability:
 * how much RRF contributed;
 * what boosts applied;
 * why this file outranked another file.
-
-Only after this visibility exists should weights be adjusted.
