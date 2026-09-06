@@ -41,8 +41,24 @@ gem install simple-rag-zc
   - Uses the same standard retrieval pipeline as the web UI **Search** action
   - Automatically uses a matching server at `http://127.0.0.1:4567`; otherwise it retrieves locally
   - Set `RAG_SERVER_URL` to use a different server URL
-  - Default JSON output is a flat locator list with `path`, rounded `score`, anchor `chunk`, and brief `text`
+  - Loopback HTTP health probes use a nonblocking connection with a 200 ms connect timeout and a 500 ms read timeout, avoiding the Windows blocking-connect delay when the server is absent.
+  - Default JSON output is a flat list with `path` (collection), `file`, rounded `score`, and `matched_chunks` previews
+  - Previews prefer a whole query-matching paragraph that fits `--brief-chars` (default 300), otherwise the start of the chunk. Omitted surrounding text is marked with `...`.
   - Use `--full` for complete chunk text and retrieval debug details
+
+On Windows, use the repository's [background server launcher](https://github.com/zhuochun/simple-rag/blob/main/scripts/start-server.ps1) for repeated CLI queries. From a repository checkout:
+
+```powershell
+.\scripts\start-server.ps1 -Config '.\config.json'
+```
+
+The helper binds to `127.0.0.1:4567`, reuses an already matching server, and refuses
+to replace a server using another configuration. It prints the PID and writes
+process logs under `%LOCALAPPDATA%\simple-rag`. Run it again after signing in or
+rebooting; it does not install a login task. To stop it, use `Stop-Process -Id <PID>`
+with the printed PID after checking that it still belongs to this server.
+Restart after replacing index files, changing configuration, or updating server code. Use `-Port` for
+another port and set `RAG_SERVER_URL` accordingly for clients.
 
 - Optionally record real queries for later retrieval evaluation:
 
@@ -60,7 +76,7 @@ gem install simple-rag-zc
   - The trace database must be separate from every retrieval-index database.
   - Traces contain raw queries and retrieved note text. Store the database as private user data and do not commit it.
   - Server queries and server-backed `run-query` calls are recorded once by the server; local CLI fallback records locally.
-  - See `docs/20260723-query-trace-logging.md` for the schema, timing semantics, and failure behavior.
+  - See the [query trace logging specification](https://github.com/zhuochun/simple-rag/blob/main/docs/20260723-query-trace-logging.md) for the schema, timing semantics, and failure behavior.
   - Verify synchronous trace overhead against its 25 ms p95 budget:
 
 ```bash

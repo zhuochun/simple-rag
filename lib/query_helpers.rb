@@ -45,11 +45,11 @@ module QueryHelpers
     end
   end
 
-  def compact_file_results(files, brief_chars: DEFAULT_BRIEF_CHARS)
+  def compact_file_results(files, brief_chars: DEFAULT_BRIEF_CHARS, query: "")
     Array(files).map do |file|
       matched_chunks = Array(file[:matched_chunks]).filter_map do |chunk|
         text = chunk[:text] || chunk["text"]
-        compact = brief_text(text, max_chars: brief_chars)
+        compact = query_brief_text(text, query: query, max_chars: brief_chars)
         compact unless compact.empty?
       end
 
@@ -60,6 +60,28 @@ module QueryHelpers
         matched_chunks: matched_chunks,
       }
     end
+  end
+
+  def query_brief_text(text, query:, max_chars: DEFAULT_BRIEF_CHARS)
+    terms = query.to_s.downcase.scan(/[\p{L}\p{N}]+/).uniq
+    paragraphs = text.to_s.split(/\r?\n(?:[ \t]*\r?\n)+/).reject { |part| part.strip.empty? }
+    best_index = nil
+    best_score = 0
+    paragraphs.each_with_index do |paragraph, index|
+      score = (paragraph.downcase.scan(/[\p{L}\p{N}]+/) & terms).length
+      next unless score > best_score
+
+      best_index = index
+      best_score = score
+    end
+    return brief_text(text, max_chars: max_chars) unless best_index
+
+    preview = paragraphs[best_index].gsub(/\s+/, " ").strip
+    preview = "...#{preview}" if best_index.positive?
+    preview = "#{preview}..." if best_index < paragraphs.length - 1
+    return preview if preview.length <= max_chars
+
+    brief_text(text, max_chars: max_chars)
   end
 
   def brief_text(text, max_chars: DEFAULT_BRIEF_CHARS)

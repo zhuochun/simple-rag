@@ -51,7 +51,7 @@ parser = OptionParser.new do |opts|
     options[:format] = v
   end
 
-  opts.on("--concise", "Concise output with short chunk text (default)") do
+  opts.on("--concise", "Concise output with query-matching paragraphs or start previews (default)") do
     options[:concise] = true
   end
 
@@ -111,11 +111,14 @@ def print_output(format, payload, concise)
   when "text"
     payload[:data].each_with_index do |row, idx|
       score = format("%.4f", row[:score].to_f)
-      anchor = concise ? row : row[:anchor_chunk]
-      lookup = concise ? "" : "[#{row[:lookup]}] "
-      STDOUT << "#{idx + 1}. #{lookup}#{row[:path]}##{anchor[:chunk]} score=#{score}\n"
-      STDOUT << "#{concise ? '   ' : ''}#{anchor[:text]}\n"
-      STDOUT << "\n" unless concise
+      if concise
+        STDOUT << "#{idx + 1}. [#{row[:path]}] #{row[:file]} score=#{score}\n"
+        row[:matched_chunks].each { |text| STDOUT << "   #{text}\n" }
+      else
+        anchor = row[:anchor_chunk]
+        STDOUT << "#{idx + 1}. [#{row[:lookup]}] #{row[:path]}##{anchor[:chunk]} score=#{score}\n"
+        STDOUT << "#{anchor[:text]}\n\n"
+      end
     end
   else
     raise ArgumentError, "Unsupported format: #{format}"
@@ -217,7 +220,7 @@ end
 
 payload[:concise] = options[:concise]
 payload[:limit] = options[:limit]
-payload[:data] = QueryHelpers.compact_file_results(payload[:data], brief_chars: options[:brief_chars]) if options[:concise]
+payload[:data] = QueryHelpers.compact_file_results(payload[:data], brief_chars: options[:brief_chars], query: query) if options[:concise]
 unless options[:concise]
   unless lookup_paths
     require_relative "../lib/config_loader"

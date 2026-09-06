@@ -10,6 +10,9 @@ module QueryServerClientTest
     test_matching_config
     test_symbolize
     test_health_failure_falls_back
+    test_unavailable_loopback_health_is_bounded
+    test_loopback_health_response
+    test_loopback_health_read_failure_falls_back
     test_query_transport_failure_is_not_retried_locally
     puts "query_server_client_test: passed"
   end
@@ -77,6 +80,72 @@ module QueryServerClientTest
         assert_equal 1, calls
       end
     end
+  end
+
+  def test_unavailable_loopback_health_is_bounded
+    listener = TCPServer.new("127.0.0.1", 0)
+    port = listener.addr[1]
+    listener.close
+    started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+    assert_equal nil, QueryServerClient.retrieve_health("http://127.0.0.1:#{port}")
+    elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - started
+    raise "Unavailable health check took #{elapsed.round(3)}s (budget 0.8s)" unless elapsed < 0.8
+  ensure
+    listener&.close unless listener&.closed?
+  end
+
+  def test_loopback_health_response
+    body = JSON.generate("config" => __FILE__, "configDigest" => "digest")
+    response = "HTTP/1.1 200 OK\r\nContent-Length: #{body.bytesize}\r\nConnection: close\r\n\r\n#{body}"
+    with_health_server(->(client) { client.write(response) }) do |url|
+      assert_equal JSON.parse(body), QueryServerClient.retrieve_health(url)
+    end
+    chunked = "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n#{body.bytesize.to_s(16)}\r\n#{body}\r\n0\r\n\r\n"
+    with_health_server(->(client) { client.write(chunked) }) do |url|
+      assert_equal JSON.parse(body), QueryServerClient.retrieve_health(url)
+    end
+  end
+
+  def test_loopback_health_read_failure_falls_back
+    with_health_server(->(_client) { sleep 1 }) do |url|
+      started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+      assert_equal nil, QueryServerClient.retrieve_health(url)
+      elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - started
+      raise "Stalled health response took #{elapsed.round(3)}s" unless elapsed < 0.9
+    end
+    [
+      "HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\nnope",
+      "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n[]",
+      "HTTP/1.1 503 Unavailable\r\nContent-Length: 2\r\n\r\n{}",
+      "invalid response\r\n\r\n",
+      "",
+    ].each do |response|
+      with_health_server(->(client) { client.write(response) }) do |url|
+        assert_equal nil, QueryServerClient.retrieve_health(url)
+      end
+    end
+  end
+
+  def with_health_server(handler)
+    listener = TCPServer.new("127.0.0.1", 0)
+    worker = Thread.new do
+      client = listener.accept
+      request = []
+      while (line = client.gets)
+        request << line
+        break if line == "\r\n"
+      end
+      assert_equal "GET /health HTTP/1.1\r\n", request.first
+      handler.call(client)
+    ensure
+      client&.close
+    end
+    yield "http://127.0.0.1:#{listener.addr[1]}"
+    worker.value
+  ensure
+    listener&.close
+    worker&.kill if worker&.alive?
+    worker&.join
   end
 
   def with_stubbed_method(name, implementation)

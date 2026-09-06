@@ -1,6 +1,7 @@
 require "json"
 require "digest"
 require "net/http"
+require "socket"
 require "uri"
 
 module QueryServerClient
@@ -41,18 +42,38 @@ module QueryServerClient
   end
 
   def retrieve_health(base_url)
-    get_json(
+    health = get_json(
       endpoint(base_url, "/health"),
       open_timeout: HEALTH_OPEN_TIMEOUT,
       read_timeout: HEALTH_READ_TIMEOUT
     )
-  rescue QueryError, Errno::ECONNREFUSED, Errno::EHOSTUNREACH, Errno::ETIMEDOUT,
-         SocketError, Net::OpenTimeout, Net::ReadTimeout, URI::InvalidURIError
+    health if health.is_a?(Hash)
+  rescue QueryError, SystemCallError, IOError, SocketError,
+         Net::OpenTimeout, Net::ReadTimeout, Net::WriteTimeout, Net::HTTPBadResponse, URI::InvalidURIError
     nil
   end
 
   def get_json(uri, open_timeout:, read_timeout:)
+    if uri.scheme == "http" && %w[127.0.0.1 localhost ::1].include?(uri.hostname)
+      return local_get_json(uri, open_timeout: open_timeout, read_timeout: read_timeout)
+    end
     request_json(Net::HTTP::Get.new(uri), uri, open_timeout: open_timeout, read_timeout: read_timeout)
+  end
+
+  def local_get_json(uri, open_timeout:, read_timeout:)
+    # Net::HTTP's blocking TCPSocket.open cannot be interrupted promptly on
+    # Windows Ruby. Use a nonblocking connect deadline for the local probe,
+    # then retain the standard HTTP parser (including chunked responses).
+    Socket.tcp(uri.hostname, uri.port, connect_timeout: open_timeout, resolv_timeout: open_timeout) do |socket|
+      io = Net::BufferedIO.new(socket, read_timeout: read_timeout, write_timeout: read_timeout)
+      request = Net::HTTP::Get.new(uri, "Connection" => "close", "Accept-Encoding" => "identity")
+      request.exec(io, "1.1", uri.request_uri)
+      begin
+        response = Net::HTTPResponse.read_new(io)
+      end while response.is_a?(Net::HTTPInformation)
+      response.reading_body(io, true) { response.body }
+      parse_response(response)
+    end
   end
 
   def post_json(uri, payload, open_timeout:, read_timeout:)
@@ -69,6 +90,10 @@ module QueryServerClient
       open_timeout: open_timeout,
       read_timeout: read_timeout
     ) { |http| http.request(request) }
+    parse_response(response)
+  end
+
+  def parse_response(response)
     body = response.body.to_s
     parsed = JSON.parse(body)
     return parsed if response.is_a?(Net::HTTPSuccess)
