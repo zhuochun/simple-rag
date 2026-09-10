@@ -1,0 +1,44 @@
+#!/usr/bin/env ruby
+# encoding: utf-8
+require "optparse"
+begin
+  require "bundler/setup"
+rescue LoadError
+end
+require_relative "../lib/config_path_resolver"
+require_relative "../lib/config_loader"
+require_relative "../lib/duplicate_audit"
+
+options = {}
+names = []
+format = "text"
+config_path = nil
+parser = OptionParser.new do |p|
+  p.banner = "Usage: run-duplicates [options]\nRead existing embeddings for document duplicate review; no API calls or source writes."
+  p.on("-c", "--config FILE", "Default: ./config.json, then ~/.config/simple-rag/config.json") { |v| config_path = v }
+  p.on("-p", "--paths NAMES", "Comma-separated configured names; default: all paths") { |v| names = v.split(",").map(&:strip).reject(&:empty?).uniq }
+  p.on("--prefix PATH", "Only documents at/below this filesystem path") { |v| options[:prefix] = v }
+  p.on("--threshold N", Float, "Chunk cosine threshold (default 0.95)") { |v| options[:threshold] = v }
+  p.on("--coverage N", Float, "Minimum BOTH chunk and character coverage on BOTH documents (default 0.8)") { |v| options[:coverage] = v }
+  p.on("--neighbors N", Integer, "Per-chunk candidate cap including self (default 64, max 4096)") { |v| options[:neighbors] = v }
+  p.on("-l", "--limit N", Integer, "Maximum pair clusters (default 20)") { |v| options[:limit] = v }
+  p.on("--evidence N", Integer, "Representative chunk pairs per cluster (default 3)") { |v| options[:evidence] = v }
+  p.on("--brief-chars N", Integer, "Characters per evidence snippet (default 240)") { |v| options[:brief_chars] = v }
+  p.on("-f", "--format FORMAT", %w[json text], "text (default) or JSON") { |v| format = v }
+  p.on("-h", "--help") { puts p; exit }
+end
+begin
+  parser.parse!
+  raise ArgumentError, "Unexpected arguments: #{ARGV.join(' ')}" unless ARGV.empty?
+  resolved = ConfigPathResolver.resolve_config_path(config_path)
+  raise ArgumentError, ConfigPathResolver.default_search_message unless resolved
+  config = ConfigLoader.load_config(resolved)
+  unknown = names - config.paths.map(&:name)
+  raise ArgumentError, "Unknown paths: #{unknown.join(', ')}" unless unknown.empty?
+  paths = names.empty? ? config.paths : config.paths.select { |path| names.include?(path.name) }
+  report = SimpleRag::DuplicateAudit.new(paths: paths, **options).run
+  puts(format == "json" ? JSON.pretty_generate(report) : SimpleRag::DuplicateAudit.text(report))
+rescue ArgumentError, OptionParser::ParseError, SQLite3::Exception, SystemCallError, JSON::ParserError => e
+  warn "run-duplicates: #{e.message}"
+  exit 1
+end

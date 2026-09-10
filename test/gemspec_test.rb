@@ -1,5 +1,6 @@
 spec = Gem::Specification.load(File.expand_path("../simple-rag.gemspec", __dir__))
 raise "Unable to load gemspec" if spec.nil?
+raise "Duplicate audit CLI must be packaged" unless spec.executables.include?("run-duplicates") && spec.files.include?("lib/duplicate_audit.rb")
 
 dll = "vendor/sqlite-vec/vec0.dll"
 raise "Missing packaged #{dll}" unless spec.files.include?(dll)

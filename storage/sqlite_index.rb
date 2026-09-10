@@ -104,6 +104,79 @@ class SqliteIndex
     end
   end
 
+  # Batch corpus traversal: keep float32 vectors inside SQLite and return only
+  # identities/scores. Avoid serializing embeddings and fetching text for every hit.
+  def each_vector_neighborhood(k = VECTOR_K_DEFAULT, threshold: nil)
+    return if row_count.zero?
+    warm_vector_index!
+    identities = @db.execute("SELECT rowid, path, chunk FROM #{quoted_table} ORDER BY rowid").to_h do |row|
+      [row["rowid"], {"path" => row["path"], "chunk" => row["chunk"].to_i}]
+    end
+    if threshold && vector_dim >= 512 && threshold >= 0.8
+      each_projected_neighborhood(identities, k, threshold) { |row, hits| yield row, hits }
+      return
+    end
+    query = @db.prepare("SELECT rowid, distance FROM #{quoted_vector_table} WHERE embedding MATCH ? AND k = ? ORDER BY distance")
+    @db.execute("SELECT rowid, embedding FROM #{quoted_vector_table} ORDER BY rowid") do |row|
+      hits = query.execute!(row["embedding"], k).map do |id, distance|
+        identities.fetch(id).merge("score" => 1.0 - distance.to_f)
+      end
+      yield identities.fetch(row["rowid"]), hits
+    end
+  ensure
+    query&.close
+  end
+
+  # Unit-vector prefix distance is a lower bound on full Euclidean distance.
+  # Search the prefix radius, then score survivors
+  # with full cosine. Dense radii fall back to full KNN, never approximate truncation.
+  def each_projected_neighborhood(identities, k, threshold)
+    vectors = @db.execute("SELECT rowid, embedding FROM #{quoted_vector_table} ORDER BY rowid").to_h { |r| [r["rowid"], r["embedding"]] }
+    @db.execute("CREATE VIRTUAL TABLE temp.duplicate_projection USING vec0(embedding float[256] distance_metric=l2)")
+    created = true
+    insert = @db.prepare("INSERT INTO temp.duplicate_projection(rowid, embedding) VALUES (?, ?)")
+    prefixes = vectors.to_h do |id, blob|
+      values = blob.unpack("f*")
+      norm = Math.sqrt(values.sum { |v| v * v })
+      prefix = SQLite3::Blob.new(values.first(256).map { |v| v / norm }.pack("f*"))
+      insert.execute!(id, prefix)
+      [id, prefix]
+    end
+    projected = @db.prepare("SELECT rowid, distance FROM temp.duplicate_projection WHERE embedding MATCH ? AND k = ? ORDER BY distance")
+    full = @db.prepare("SELECT rowid, distance FROM #{quoted_vector_table} WHERE embedding MATCH ? AND k = ? ORDER BY distance")
+    cosine = @db.prepare("SELECT vec_distance_cosine(?, ?)")
+    # Dimension-scaled conservative slack for float32 storage, dot products and
+    # norms at the threshold boundary (unit roundoff = 2^-24).
+    roundoff = vector_dim * 2.0**-24
+    radius = Math.sqrt(2.0 * (1.0 - threshold) + 16 * roundoff / (1 - roundoff))
+    cap = [[k, 128].max, vectors.length].min
+    vectors.each do |id, blob|
+      candidates = projected.execute!(prefixes.fetch(id), cap)
+      exhausted = cap >= vectors.length || candidates.length < cap || candidates.last[1] > radius
+      hits = if exhausted
+        scored = candidates.filter_map do |other_id, distance|
+          next if distance > radius
+          exact = cosine.execute!(blob, vectors.fetch(other_id)).first.first
+          [other_id, exact] if 1.0 - exact >= threshold
+        end.sort_by { |other_id, distance| [distance, other_id] }
+        # sqlite-vec owns membership when equal distances straddle the cap.
+        # Sorting a subset cannot reproduce the full index's tie selection.
+        if scored.length > k && scored[k - 1][1] == scored[k][1]
+          full.execute!(blob, k)
+        else
+          scored.first(k)
+        end
+      else
+        full.execute!(blob, k)
+      end
+      yield identities.fetch(id), hits.map { |other_id, distance| identities.fetch(other_id).merge("score" => 1.0 - distance) }
+    end
+  ensure
+    [insert, projected, full, cosine].each { |statement| statement&.close }
+    @db.execute("DROP TABLE temp.duplicate_projection") if created
+  end
+  private :each_projected_neighborhood
+
   def warm_vector_index!
     return true if row_count.zero?
     raise RuntimeError, "SQLite vector index is missing for #{@db_file} table #{@table}. Rebuild the database with run-index." unless vector_enabled?

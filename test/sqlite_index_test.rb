@@ -18,6 +18,74 @@ class SqliteIndexTest
     FileUtils.remove_entry(expanded_tmpdir) if expanded_tmpdir.start_with?(test_dir)
   end
 
+  def test_projected_neighborhoods_match_full_cosine_with_dense_fallback
+    rng = Random.new(712)
+    store = nil
+    # First half exercises pruning; zero prefixes in the second half force
+    # dense-radius fallback (>128 candidates), including non-unit embeddings.
+    [false, true].each do |dense|
+      store = SqliteIndex.new(":memory:", "projected")
+      vectors = 140.times.map do |index|
+        prefix = dense ? Array.new(256, 0.0) : Array.new(256) { rng.rand - 0.5 }
+        prefix + Array.new(256) { rng.rand - 0.5 }
+      end
+      vectors[1] = vectors[0].map { |v| 2 * v + 0.001 }
+      vectors[2] = vectors[0].map { |v| v + 0.02 }
+      store.upsert_chunks(vectors.each_with_index.map do |vector, index|
+        {path: "#{index}.md", chunk: 0, hash: index.to_s, embedding: vector, text: "text"}
+      end)
+      [0.8, 0.95, 0.999999, 1.0].each do |threshold|
+        expected = vectors.each_with_index.to_h do |vector, index|
+          hits = store.vector_search(vector, 8).select { |hit| hit["score"] >= threshold }
+          ["#{index}.md", hits.map { |hit| [hit["path"], hit["score"]] }.sort]
+        end
+        actual = {}
+        store.each_vector_neighborhood(8, threshold: threshold) do |row, hits|
+          actual[row["path"]] = hits.select { |hit| hit["score"] >= threshold }.map { |hit| [hit["path"], hit["score"]] }.sort
+        end
+        assert_equal expected, actual
+      end
+      # Temp projection tables/statements are cleaned up when the consumer fails.
+      error = begin
+        store.each_vector_neighborhood(8, threshold: 0.95) { raise "consumer failed" }
+        nil
+      rescue RuntimeError => e
+        e
+      end
+      assert_equal "consumer failed", error&.message
+      count = 0
+      store.each_vector_neighborhood(8, threshold: 0.95) { count += 1 }
+      assert_equal vectors.length, count
+      store.close
+      store = nil
+    end
+  ensure
+    store&.close
+  end
+
+  def test_capped_equal_scores_preserve_full_search_members
+    store = nil
+    # Covers exhausted prefix radii and the dense-radius fallback, with ties
+    # exactly at k as well as extending beyond k.
+    [[10, 3], [100, 64], [140, 64], [10, 10]].each do |count, k|
+      store = SqliteIndex.new(":memory:", "ties")
+      vector = [1.0] + Array.new(511, 0.0)
+      store.upsert_chunks(count.times.map do |index|
+        {path: "#{index}.md", chunk: 0, hash: index.to_s, embedding: vector, text: "same"}
+      end)
+      expected = store.vector_search(vector, k).map { |hit| hit.values_at("path", "chunk", "score") }.sort
+      2.times do
+        store.each_vector_neighborhood(k, threshold: 0.95) do |_row, hits|
+          assert_equal expected, hits.map { |hit| hit.values_at("path", "chunk", "score") }.sort
+        end
+      end
+      store.close
+      store = nil
+    end
+  ensure
+    store&.close
+  end
+
   def test_vector_search_uses_cosine_distance
     upsert("cosine.md", 0, "cosine", [10.0, 0.0])
     upsert("l2.md", 0, "l2", [1.0, 0.1])
@@ -152,6 +220,8 @@ end
 
 if $PROGRAM_NAME == __FILE__
   tests = %w[
+    test_capped_equal_scores_preserve_full_search_members
+    test_projected_neighborhoods_match_full_cosine_with_dense_fallback
     test_vector_search_uses_cosine_distance
     test_upsert_chunks_persists_a_batch_across_all_indexes
     test_text_search_uses_bm25_and_tracks_updates_and_deletes
