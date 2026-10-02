@@ -72,6 +72,7 @@ another port and set `RAG_SERVER_URL` accordingly for clients.
 ```
 
   - Logging is disabled unless `queryLog.enabled` is `true`.
+  - New traces include `plan_json.retrieval`: embedding/cache timings and per-backend connection, wait, opening and search timings. Existing version-1 trace databases remain compatible; older records lack these details.
   - Relative database paths resolve from the config file directory.
   - The trace database must be separate from every retrieval-index database.
   - Traces contain raw queries and retrieved note text. Store the database as private user data and do not commit it.

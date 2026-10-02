@@ -110,7 +110,8 @@ class RetrievalPipelineTest
     planner = planner_with_responses("semantic rewrite", "别名, alias, API, alias, original, term")
 
     short = planner.build_q_plan("alpha beta")
-    assert_equal ["vec:original", "bm25:phrase"], short.lists.map { |item| item[:name] }
+    assert_equal ["vec:original", "bm25:original", "bm25:phrase"], short.lists.map { |item| item[:name] }
+    assert_equal ["vec:original", "bm25:phrase"], planner.build_q_plan("alpha").lists.map { |item| item[:name] }
     assert_equal 2, planner.token_count("你好，世界")
 
     long = planner.build_q_plan("one two three four five six")
@@ -142,6 +143,114 @@ class RetrievalPipelineTest
   ensure
     2.times { release << true }
     worker&.join
+  end
+
+  def test_short_technical_keywords_retrieve_without_vector_or_phrase_match
+    Dir.mktmpdir("short-keywords-") do |dir|
+      db_file = File.join(dir, "index.sqlite")
+      store = SqliteIndex.new(db_file, "chunks")
+      store.transaction do
+        store.upsert_chunks([{
+          path: "rxjava.md", chunk: 0, hash: "rxjava-0", embedding: [0.0, 1.0], bucket: 0,
+          text: "RxJava supports onBackpressureBuffer, onBackpressureDrop and onBackpressureLatest for backpressure."
+        }])
+      end
+      store.close
+      lookup = Path.new(name: "docs", db_file: db_file, db_table: "chunks", threshold: 0.5)
+      executor = RetrievalExecutor.new(
+        embedding_fn: ->(*) { [1.0, 0.0] }, id_fn: ->(value) { value }, url_fn: ->(value, *) { value }
+      )
+      retriever = Retriever.new(planner: planner_with_responses, executor: executor)
+      result = retriever.retrieve_q([lookup], "RxJava backpressure onBackpressureBuffer onBackpressureDrop onBackpressureLatest", top_n: 5)
+      assert_equal ["rxjava.md"], result[:data].map { |item| item[:path] }
+      assert_equal ["bm25:original:docs"], result[:data].first[:source_summary][:source_lists]
+    ensure
+      retriever&.close
+      store&.close
+    end
+  end
+
+  def test_executor_diagnostics_separate_embedding_checkout_and_search
+    executor = executor_for("docs" => FakeStore.new(text_rows: [row("alpha.md", 0, 1.0)]))
+    details = nil
+    plan = planner_with_responses.build_q_plan("alpha beta")
+    lists = executor.execute_plan(plan, [path("docs")], top_n: 5) { |value| details = value }
+    assert_equal 3, lists.length
+    assert_equal "uncached", details["embeddings"].first["cache_status"]
+    assert_equal 3, details["searches"].length
+    details["searches"].each do |sample|
+      assert_equal "ok", sample["status"]
+      assert_equal "search", sample["stage"]
+      assert_operator sample["elapsed_ms"], :>=, sample["open_ms"]
+      assert_operator sample["pool_wait_ms"], :>=, 0
+      assert_operator sample["search_ms"], :>=, 0
+    end
+    assert_equal "opened", details["searches"].find { |sample| sample["connection"] == "opened" }["connection"]
+    # A broken observer cannot change a successful query.
+    assert_equal lists, executor.execute_plan(plan, [path("docs")], top_n: 5) { raise "observer failure" }
+  ensure
+    executor&.close
+  end
+
+  def test_lexical_search_runs_while_one_shared_embedding_is_pending
+    embedding_entered = Queue.new
+    lexical_entered = Queue.new
+    release = Queue.new
+    calls = 0
+    store = FakeStore.new
+    store.define_singleton_method(:text_search_any) do |*args, **options|
+      lexical_entered << true
+      []
+    end
+    executor = RetrievalExecutor.new(
+      embedding_fn: ->(*) { calls += 1; embedding_entered << true; release.pop; [1.0, 0.0] },
+      id_fn: ->(value) { value }, url_fn: ->(value, *) { value }, store_factory: ->(*) { store }, threads_max: 1
+    )
+    worker = Thread.new { executor.execute_plan(planner_with_responses.build_q_plan("alpha beta"), [path("one"), path("two")], top_n: 5) }
+    Timeout.timeout(5) { embedding_entered.pop; 4.times { lexical_entered.pop } }
+    assert_equal 1, calls
+    release << true
+    lists = Timeout.timeout(5) { worker.value }
+    assert_equal %w[vec:original bm25:original:one bm25:original:two bm25:phrase:one bm25:phrase:two], lists.map { |source| source[:name] }
+  ensure
+    release << true
+    worker&.join
+    executor&.close
+  end
+
+  def test_embedding_failure_keeps_precedence_and_diagnostics_after_lexical_failure
+    lexical_finished = Queue.new
+    store = FakeStore.new
+    store.define_singleton_method(:text_search_any) do |*args, **options|
+      lexical_finished << true
+      raise "search failed"
+    end
+    executor = RetrievalExecutor.new(
+      embedding_fn: ->(*) { lexical_finished.pop; raise "embedding SECRET failed" },
+      id_fn: ->(value) { value }, url_fn: ->(value, *) { value }, store_factory: ->(*) { store }, threads_max: 1
+    )
+    details = nil
+    error = Timeout.timeout(5) do
+      assert_raises(RuntimeError) do
+        executor.execute_plan(planner_with_responses.build_q_plan("alpha beta"), [path("docs")], top_n: 5) { |value| details = value }
+      end
+    end
+    assert_equal "embedding SECRET failed", error.message
+    assert_equal "error", details["embeddings"].first["status"]
+    assert_equal "RuntimeError", details["embeddings"].first["error_class"]
+    assert_equal false, JSON.generate(details).include?("SECRET")
+  ensure
+    executor&.close
+  end
+
+  def test_backend_thread_error_is_not_treated_as_an_empty_job_queue
+    store = FakeStore.new
+    store.define_singleton_method(:text_search_any) { |*args, **options| raise ThreadError, "backend thread failure" }
+    executor = executor_for("docs" => store)
+    error = assert_raises(ThreadError) { executor.execute_plan(planner_with_responses.build_q_plan("alpha"), [path("docs")], top_n: 5) }
+    assert_equal "backend thread failure", error.message
+  ensure
+    executor&.close
   end
 
   def test_parallel_expansion_preserves_failure_precedence_and_partial_results

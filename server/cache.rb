@@ -23,14 +23,19 @@ class MemCache
         @mutex.synchronize { @data[hash] }
     end
 
-    def get_or_set(data, fn)
+    def get_or_set(data, fn, &observer)
+        cache_status = nil
         hash = digest(data)
         flight = @mutex.synchronize do
             cached = @data[hash]
-            return cached unless cached.nil?
+            unless cached.nil?
+                cache_status = :hit
+                return cached
+            end
 
             pending = @inflight[hash]
             if pending
+                cache_status = :wait
                 raise ThreadError, "Recursive cache load for the same key" if pending.owner == Thread.current
                 pending.condition.wait(@mutex) until pending.done
                 raise pending.error if pending.error
@@ -38,6 +43,7 @@ class MemCache
             end
             @inflight[hash] = Flight.new(ConditionVariable.new, Thread.current, false)
         end
+        cache_status = :miss
 
         begin
             val = fn.call(data)
@@ -59,6 +65,13 @@ class MemCache
                 @inflight.delete(hash)
                 flight.condition.broadcast
             end
+        end
+    ensure
+        begin
+            observer&.call(cache_status) if cache_status
+        rescue StandardError
+            # Optional diagnostics must not change cache behavior.
+            nil
         end
     end
 

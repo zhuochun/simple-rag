@@ -12,9 +12,9 @@ module SimpleRag
       @closed = false
     end
 
-    def with(path)
+    def with(path, metrics: nil)
       key = [path.db_file.to_s, path.db_table.to_s]
-      store = checkout(key, path)
+      store = checkout(key, path, metrics)
       reusable = false
       begin
         result = yield store
@@ -38,11 +38,15 @@ module SimpleRag
 
     private
 
-    def checkout(key, path)
+    def checkout(key, path, metrics)
+      started = clock if metrics
       @mutex.synchronize do
         loop do
           raise IOError, "SQLite store pool is closed" if @closed
-          return @available[key].pop unless @available[key].empty?
+          unless @available[key].empty?
+            metrics&.merge!("connection" => "reused", "pool_wait_ms" => elapsed_ms(started), "open_ms" => 0.0)
+            return @available[key].pop
+          end
           if @created[key] < @max_per_path
             @created[key] += 1
             break
@@ -50,6 +54,8 @@ module SimpleRag
           @condition.wait(@mutex)
         end
       end
+      metrics&.merge!("connection" => "opened", "pool_wait_ms" => elapsed_ms(started))
+      open_started = clock if metrics
       # Opening a database must not serialize checkouts for other indexes.
       opened = false
       begin
@@ -57,8 +63,19 @@ module SimpleRag
         opened = true
         store
       ensure
+        metrics["open_ms"] = elapsed_ms(open_started) if metrics
         release_slot(key) unless opened
       end
+    ensure
+      metrics["pool_wait_ms"] ||= elapsed_ms(started) if metrics && started
+    end
+
+    def clock
+      Process.clock_gettime(Process::CLOCK_MONOTONIC)
+    end
+
+    def elapsed_ms(started)
+      ((clock - started) * 1000.0).round(3)
     end
 
     def checkin(key, store)

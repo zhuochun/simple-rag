@@ -1,5 +1,13 @@
 # Replace Retrieval Logic with Weighted RRF + Query Plan Fusion
 
+October 2026 update: the five-token lexical cutoff described below is
+superseded. Every original query with more than one token now includes both
+`bm25:original` and `bm25:phrase`; single-token queries retain only the
+equivalent phrase list. Lexical search overlaps embedding preparation while
+the SQLite worker limit and final plan ordering are preserved. See the
+[retrieval diagnostics extension](20260723-query-trace-logging.md#retrieval-diagnostics-october-2026-extension)
+for the additive trace fields.
+
 ## 1. Goal
 
 Replace the existing retrieval logic with one pipeline shared by `q` and `q_plus`.

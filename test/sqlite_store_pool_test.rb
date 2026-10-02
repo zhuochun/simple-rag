@@ -80,6 +80,32 @@ class SqliteStorePoolTest
     pool&.close
   end
 
+  def test_checkout_metrics_distinguish_opening_reuse_and_waiting
+    path = OpenStruct.new(db_file: "one.sqlite", db_table: "chunks")
+    pool = SimpleRag::SqliteStorePool.new(->(*) { Store.new(false) }, max_per_path: 1)
+    metrics = {}
+    pool.with(path, metrics: metrics) {}
+    assert_equal "opened", metrics["connection"]
+    raise "Missing opening time" unless metrics["open_ms"] >= 0
+    held = Queue.new
+    release = Queue.new
+    borrower = Thread.new { pool.with(path) { held << true; release.pop } }
+    Timeout.timeout(5) { held.pop }
+    reused = {}
+    waiter = Thread.new { pool.with(path, metrics: reused) {} }
+    Timeout.timeout(5) { Thread.pass until waiter.status == "sleep" }
+    release << true
+    Timeout.timeout(5) { waiter.value }
+    assert_equal "reused", reused["connection"]
+    assert_equal 0.0, reused["open_ms"]
+    raise "Missing pool wait time" unless reused["pool_wait_ms"] > 0
+  ensure
+    release << true if release
+    borrower&.join
+    waiter&.join
+    pool&.close
+  end
+
   private
 
   def assert_equal(expected, actual)

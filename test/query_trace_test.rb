@@ -176,7 +176,7 @@ class QueryTraceTest
 
       plan = JSON.parse(row["plan_json"])
       assert_equal "alpha beta", plan.dig("effective", "original_query")
-      assert_equal %w[vec:original bm25:phrase], plan.dig("effective", "lists").map { |item| item["name"] }
+      assert_equal %w[vec:original bm25:original bm25:phrase], plan.dig("effective", "lists").map { |item| item["name"] }
       assert_equal nil, plan["attempted_expansion"]
 
       traced_result = JSON.parse(row["result_json"])
@@ -237,6 +237,45 @@ class QueryTraceTest
       assert_equal "retrieval failed", row["error_summary"]
       assert_equal nil, row["result_json"]
       refute_includes row.values.compact.join(" "), secret
+    end
+  end
+
+  def test_retrieval_details_persist_in_existing_schema_for_success_and_failure
+    with_writer do |writer, trace_file, _config, path|
+      require_relative "../server/cache"
+      cache = MemCache.new
+      executor = RetrievalExecutor.new(
+        embedding_fn: ->(query, &observer) { cache.get_or_set(query, ->(*) { [1.0, 0.0] }, &observer) },
+        id_fn: ->(value) { value }, url_fn: ->(value, *) { value },
+        store_factory: ->(*) { raise "SECRET database open failed" }
+      )
+      retriever = Retriever.new(planner: QueryPlanner.new(chat_fn: ->(*) {}), executor: executor, trace_writer: writer)
+      2.times do
+        error = assert_raises(RuntimeError) { retriever.retrieve_q([path], "alpha beta", top_n: 5) }
+        assert_equal "SECRET database open failed", error.message
+      end
+      rows = trace_rows(trace_file)
+      assert_equal ["miss", "hit"], rows.map { |row| JSON.parse(row["plan_json"]).dig("retrieval", "embeddings", 0, "cache_status") }
+      rows.each do |row|
+        refute_includes row.values.compact.join(" "), "SECRET"
+        details = JSON.parse(row["plan_json"])["retrieval"]
+        details["searches"].each do |sample|
+          assert_equal "sqlite_checkout", sample["stage"]
+          assert_equal "RuntimeError", sample["error_class"]
+          assert_operator sample["open_ms"], :>=, 0
+        end
+        assert_equal 1, row["schema_version"]
+      end
+      # A custom executor's optional diagnostics also survive successful writes.
+      static = StaticExecutor.new
+      static.define_singleton_method(:execute_plan) do |*args, **kwargs, &observer|
+        observer.call("embeddings" => [], "searches" => [])
+        []
+      end
+      Retriever.new(planner: QueryPlanner.new(chat_fn: ->(*) {}), executor: static, trace_writer: writer).retrieve_q([path], "alpha", top_n: 5)
+      assert_equal({ "embeddings" => [], "searches" => [] }, JSON.parse(trace_rows(trace_file).last["plan_json"])["retrieval"])
+    ensure
+      retriever&.close
     end
   end
 

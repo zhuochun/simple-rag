@@ -63,7 +63,7 @@ end
 
 locator = SimpleRag::DocumentLocator.new
 catalog = SimpleRag::IndexCatalog.new(locator: locator)
-cached_embedding = ->(query) { CACHE.get_or_set(query, method(:embedding).to_proc) }
+cached_embedding = ->(query, &observer) { CACHE.get_or_set(query, method(:embedding).to_proc, &observer) }
 begin
   trace_writer = SimpleRag::QueryTraceWriter.build(
     config: config,

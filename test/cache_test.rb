@@ -76,3 +76,20 @@ ensure
   workers.each(&:join)
 end
 puts "cache_concurrency_test: passed"
+
+cache = MemCache.new
+events = []
+2.times { cache.get_or_set("observed", ->(*) { "value" }) { |status| events << status } }
+raise "Missing cache diagnostics" unless events == [:miss, :hit]
+raise "Observer changed cache result" unless cache.get_or_set("observed", ->(*) { raise "unexpected load" }) { raise "observer failed" } == "value"
+entered = Queue.new
+release = Queue.new
+leader = Thread.new { cache.get_or_set("waiting", ->(*) { entered << true; release.pop; "shared" }) }
+Timeout.timeout(5) { entered.pop }
+waiter = Thread.new { cache.get_or_set("waiting", ->(*) { raise "duplicate load" }) { |status| events << status } }
+Timeout.timeout(5) { Thread.pass until waiter.status == "sleep" }
+release << true
+raise "Waiter changed result" unless Timeout.timeout(5) { waiter.value } == "shared"
+leader.join
+raise "Missing waiter diagnostics" unless events.last == :wait
+puts "cache_diagnostics_test: passed"

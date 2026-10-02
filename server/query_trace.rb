@@ -18,6 +18,7 @@ module SimpleRag
 
     def success(**); end
     def failure(**); end
+    def retrieval_observer; nil; end
   end
 
   class NullQueryTraceWriter
@@ -38,8 +39,11 @@ module SimpleRag
       File.join(ROOT, "llm", "llm.rb"),
       File.join(ROOT, "server", "retrieval_pipeline.rb"),
       File.join(ROOT, "server", "retriever.rb"),
+      File.join(ROOT, "server", "retrieval_diagnostics.rb"),
+      File.join(ROOT, "server", "cache.rb"),
       __FILE__,
       File.join(ROOT, "storage", "sqlite_index.rb"),
+      File.join(ROOT, "storage", "sqlite_store_pool.rb"),
     ].freeze
     INSERT_COLUMNS = %w[
       id schema_version started_at completed_at status source
@@ -280,6 +284,7 @@ module SimpleRag
         projection_started = clock
         fallback_trace = fallback_projection(fallback, fallback_error)
         plan_trace = plan_projection(plan, attempted_expansion, fallback_trace)
+        plan_trace["retrieval"] = session.retrieval_details if session.retrieval_details
         result_trace = result_projection(result, fallback_trace)
         projection_ms = overhead_ms(projection_started)
 
@@ -316,6 +321,7 @@ module SimpleRag
         total_started = clock
         projection_started = clock
         plan_trace = plan || attempted_expansion ? plan_projection(plan, attempted_expansion, nil) : nil
+        plan_trace["retrieval"] = session.retrieval_details if plan_trace && session.retrieval_details
         projection_ms = overhead_ms(projection_started)
 
         serialization_started = clock
@@ -608,7 +614,7 @@ module SimpleRag
   end
 
   class QueryTraceSession
-    attr_reader :id, :failure_stage
+    attr_reader :id, :failure_stage, :retrieval_details
 
     def initialize(
       writer:,
@@ -645,6 +651,10 @@ module SimpleRag
     rescue
       @failure_stage ||= stage
       raise
+    end
+
+    def retrieval_observer
+      ->(details) { @retrieval_details = details }
     end
 
     def success(plan:, result:, effective_mode:, fallback: nil, fallback_error: nil, attempted_expansion: nil)

@@ -4,6 +4,7 @@ require_relative "../llm/embedding"
 require_relative "../storage/sqlite_index"
 require_relative "../storage/sqlite_store_pool"
 require_relative "query_trace"
+require_relative "retrieval_diagnostics"
 require_relative "retrieval_input_validator"
 
 QueryPlan = Struct.new(
@@ -15,8 +16,6 @@ QueryPlan = Struct.new(
 )
 
 class QueryPlanner
-  ORIGINAL_QUERY_PHRASE_MAX_TOKENS = 5
-
   LIST_WEIGHTS = {
     "vec:original" => 1.2,
     "bm25:original" => 1.1,
@@ -169,7 +168,9 @@ class QueryPlanner
 
   def original_lists(query)
     lists = [list("vec:original", "vector", "original", query)]
-    if token_count(query) > ORIGINAL_QUERY_PHRASE_MAX_TOKENS
+    # Multi-term keyword queries need lexical recall even when they are short.
+    # A single token already has the same lexical semantics in the phrase list.
+    if token_count(query) > 1
       lists << list("bm25:original", "bm25", "original", query)
     end
     lists << list("bm25:phrase", "bm25", "original", query, phrase: true)
@@ -228,16 +229,25 @@ class RetrievalExecutor
     @store_pool = SimpleRag::SqliteStorePool.new(factory, max_per_path: @threads_max)
   end
 
-  def execute_plan(plan, lookup_paths, top_n:)
+  def execute_plan(plan, lookup_paths, top_n:, &observer)
+    diagnostics = SimpleRag::RetrievalDiagnostics.new if observer
+    vector_sources = plan.lists.select { |source| source[:backend] == "vector" }
+    unless vector_sources.empty?
+      embedding_worker = Thread.new do
+        Thread.current.report_on_exception = false
+        vector_sources.to_h { |source| [source.object_id, embed(source, diagnostics)] }
+      end
+    end
     jobs = []
-    plan.lists.each do |source|
-      query_embedding = source[:backend] == "vector" ? normalized_embedding(@embedding_fn.call(source[:query])) : nil
+    # Lexical search can run while the provider prepares embeddings. Keep the
+    # SQLite worker bound and reconstruct source lists in original plan order.
+    plan.lists.sort_by { |source| source[:backend] == "vector" ? 1 : 0 }.each do |source|
       lookup_paths.each do |path|
-        jobs << { source: source, path: path, query_embedding: query_embedding }
+        jobs << { source: source, path: path, embedding_worker: embedding_worker }
       end
     end
 
-    job_results = run_jobs(jobs, top_n)
+    job_results = run_jobs(jobs, top_n, diagnostics)
     source_lists = []
     plan.lists.each do |source|
       results = job_results.select { |result| result[:source].equal?(source) }
@@ -256,6 +266,19 @@ class RetrievalExecutor
       end
     end
     source_lists
+  ensure
+    begin
+      embedding_worker&.join
+    rescue StandardError
+      # The provider's original failure is propagated by run_jobs.
+      nil
+    end
+    # Diagnostics must never replace the retrieval result or original failure.
+    begin
+      observer&.call(diagnostics.snapshot) if diagnostics
+    rescue StandardError
+      nil
+    end
   end
 
   def close
@@ -264,7 +287,19 @@ class RetrievalExecutor
 
   private
 
-  def run_jobs(jobs, top_n)
+  def embed(source, diagnostics)
+    return normalized_embedding(@embedding_fn.call(source[:query])) unless diagnostics
+
+    diagnostics.measure("embeddings", "source_list" => source[:name], "cache_status" => "uncached") do |sample|
+      sample["stage"] = "embedding"
+      raw = @embedding_fn.call(source[:query]) do |cache_status|
+        sample["cache_status"] = cache_status.to_s if %i[hit miss wait].include?(cache_status)
+      end
+      normalized_embedding(raw)
+    end
+  end
+
+  def run_jobs(jobs, top_n, diagnostics)
     queue = Queue.new
     jobs.each { |job| queue << job }
     results = []
@@ -275,11 +310,19 @@ class RetrievalExecutor
     workers = worker_count.times.map do
       Thread.new do
         loop do
-          job = queue.pop(true)
-          result = execute_job(job, top_n)
+          begin
+            job = queue.pop(true)
+          rescue ThreadError
+            break
+          end
+          result = if diagnostics
+            diagnostics.measure("searches", "source_list" => job[:source][:name], "backend" => job[:source][:backend], "lookup" => job[:path].name) do |sample|
+              execute_job(job, top_n, sample)
+            end
+          else
+            execute_job(job, top_n)
+          end
           results_mutex.synchronize { results << result }
-        rescue ThreadError
-          break
         rescue => e
           errors << e
           break
@@ -287,17 +330,30 @@ class RetrievalExecutor
       end
     end
     workers.each(&:join)
+    # Embedding failures retain precedence over search failures, as before.
+    jobs.first&.fetch(:embedding_worker)&.value
     raise errors.pop unless errors.empty?
 
     results
   end
 
-  def execute_job(job, top_n)
+  def execute_job(job, top_n, sample = nil)
+    search_started = nil
     source = job[:source]
     path = job[:path]
-    entries = @store_pool.with(path) do |store|
+    if source[:backend] == "vector"
+      sample["stage"] = "embedding_wait" if sample
+      wait_started = Process.clock_gettime(Process::CLOCK_MONOTONIC) if sample
+      query_embedding = job[:embedding_worker].value.fetch(source.object_id)
+      sample["embedding_wait_ms"] = ((Process.clock_gettime(Process::CLOCK_MONOTONIC) - wait_started) * 1000.0).round(3) if sample
+    end
+    sample["stage"] = "sqlite_checkout" if sample
+    checkout = sample ? {} : nil
+    entries = @store_pool.with(path, metrics: checkout) do |store|
+      sample.merge!(checkout).merge!("stage" => "search") if sample
+      search_started = Process.clock_gettime(Process::CLOCK_MONOTONIC) if sample
       if source[:backend] == "vector"
-        store.vector_search(job[:query_embedding], vector_candidate_depth(top_n)).filter_map do |item|
+        store.vector_search(query_embedding, vector_candidate_depth(top_n)).filter_map do |item|
           score = item["score"].to_f
           next if score < path.threshold.to_f
 
@@ -311,7 +367,11 @@ class RetrievalExecutor
         ).map { |item| candidate(item, path, item["score"].to_f) }
       end
     end
+    sample["candidate_count"] = entries.length if sample
     { source: source, path: path, entries: entries }
+  ensure
+    sample.merge!(checkout) if sample && checkout
+    sample["search_ms"] = ((Process.clock_gettime(Process::CLOCK_MONOTONIC) - search_started) * 1000.0).round(3) if sample && search_started
   end
 
   def candidate(item, path, score)
@@ -752,7 +812,7 @@ class Retriever
     keyword_variants: plan.keyword_variants
   )
     source_lists = session.measure(:retrieval) do
-      @executor.execute_plan(plan, lookup_paths, top_n: top_n)
+      @executor.execute_plan(plan, lookup_paths, top_n: top_n, &session.retrieval_observer)
     end
     fused_chunks = session.measure(:fusion) do
       @fusion_engine.fuse_chunk_candidates(source_lists)

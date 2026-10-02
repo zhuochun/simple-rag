@@ -314,6 +314,36 @@ Every effective list records `name`, `backend`, `query_type`, `query`, `phrase`,
 and `weight`, even when a value is false or empty. This makes plan comparison
 independent of Ruby defaulting behavior.
 
+### Retrieval diagnostics (October 2026 extension)
+
+New executor traces add an optional `retrieval` object to `plan_json` without
+changing the version-1 SQLite schema. Older records and custom executors may
+omit it. It contains `embeddings` and `searches` arrays sorted by source-list
+name and lookup name. No diagnostics are collected when tracing is disabled.
+
+Embedding samples contain `source_list`, `elapsed_ms`, `cache_status`
+(`hit`, `miss`, `wait`, or `uncached`), `stage`, and `status`. `wait` means
+another request owns the same in-flight embedding load; it does not mean a
+provider queue wait. `uncached` means the callable did not report cache state.
+
+Search samples contain `source_list`, `backend`, `lookup`, `elapsed_ms`,
+`stage`, and `status`. Vector jobs additionally report `embedding_wait_ms`.
+Connection checkout reports `pool_wait_ms` (including mutex acquisition),
+`open_ms`, and `connection` (`opened` or `reused`). `search_ms` measures index
+search and candidate projection after checkout, and `candidate_count` counts
+retained candidates before cross-lookup merging. Durations are monotonic
+milliseconds. `elapsed_ms` includes any embedding wait, checkout, and search;
+concurrent sample durations must not be added to infer wall-clock latency.
+An unfinished substage is absent. Failed samples retain completed timing data,
+the failure `stage`, and `error_class`, but never raw exception messages.
+
+Lexical jobs now run while a single per-request worker prepares embeddings in
+plan order. At most eight SQLite workers run per request. Every worker is
+joined before the query returns, embedding errors retain precedence over
+search errors, and final source lists retain plan order. Multi-term queries
+include non-phrase BM25 even below six tokens; single-token queries keep just
+the equivalent phrase list to avoid duplicate lexical voting.
+
 For a successful expanded plan, `attempted_expansion` is null because the
 effective plan already contains the expansion. When expanded planning fails
 and falls back, `effective` contains the standard plan and
@@ -378,8 +408,10 @@ Comparison context is captured once per invocation:
 - `retrieval_code_digest`: SHA-256 of the bytes of the retrieval implementation
   files selected by the implementation. The file set must include planning,
   execution, fusion, aggregation, storage search, configuration interpretation,
-  and the trace schema version, and must remain stable for a given schema
-  version. It is computed once at process startup so uncommitted or unversioned
+  and the trace schema version. When retrieval responsibilities move to new
+  files, include their bytes too; a changed file set changes this digest and
+  starts a new comparison cohort without changing the SQLite schema version.
+  It is computed once at process startup so uncommitted or unversioned
   retrieval changes remain distinguishable without per-query subprocesses.
 - `config_digest`: SHA-256 of the loaded configuration file bytes.
 - `index_fingerprint`: SHA-256 captured immediately after shared validation and

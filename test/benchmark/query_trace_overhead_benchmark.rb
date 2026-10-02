@@ -97,6 +97,19 @@ def record_once(writer, path, plan, result)
     started_at: Time.now.utc,
     started_monotonic: started
   )
+  session.retrieval_observer&.call({
+    "embeddings" => [{ "source_list" => "vec:original", "cache_status" => "miss", "status" => "ok", "stage" => "embedding", "elapsed_ms" => 50.0 }],
+    "searches" => %w[vector bm25].flat_map do |backend|
+      %w[notes talks papers].map do |lookup|
+        {
+          "source_list" => backend == "vector" ? "vec:original" : "bm25:phrase",
+          "backend" => backend, "lookup" => lookup, "status" => "ok", "stage" => "search",
+          "elapsed_ms" => 5.0, "pool_wait_ms" => 0.01, "open_ms" => 0.0,
+          "connection" => "reused", "search_ms" => 4.9, "candidate_count" => 64,
+        }
+      end
+    end,
+  })
   session.success(plan: plan, result: result, effective_mode: "q")
   elapsed_ms(started)
 end
